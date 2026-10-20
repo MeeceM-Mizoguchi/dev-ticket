@@ -584,8 +584,11 @@ export function FileBoxPage() {
     });
   }, [startUpload, toast]);
 
+  const movingRef = useRef(false);
+  const [moving, setMoving] = useState(false);
   const handleMoveFile = useCallback(async (file: ProjectFile, targetFolderId: string | null) => {
     if (!project) return;
+    if (movingRef.current) return; // BUG-05 移動中に重ねて落とされても1回だけ動かす
     if (file.isFolder && file.id === targetFolderId) return;
     const fromFolderId = file.parentId ?? null;
     if (fromFolderId === targetFolderId) return;
@@ -595,15 +598,22 @@ export function FileBoxPage() {
       toast(`移動先に同じ名前の${file.isFolder ? "フォルダ" : "ファイル"}「${file.fileName}」があるため移動できません。名前を変更してから移動してください`, "error");
       return;
     }
+    // BRU20-019 移動は数秒かかることがあり、その間なにも出ないと「移動できていない」と思われて
+    // 何度も落とし直される。一覧を引き直して元の場所から消えるまで、ぐるぐるを出しておく。
+    movingRef.current = true;
+    setMoving(true);
     try {
       // 移動はサーバー側で行う。上の重複チェックは画面に見えているファイルしか見られないが、
       // 移動先に自分からは見えない限定公開の同名ファイルがあると版が混ざるので、サーバーで確かめ直す。
       await moveProjectFile(file.id, targetFolderId);
+      await load();
       const targetFolder = files.find(f => f.id === targetFolderId);
       toast(`「${file.fileName}」を「${targetFolder?.fileName ?? "ファイルボックス（ルート）"}」へ移動しました`);
-      load();
     } catch (e) {
       toast(e instanceof Error ? e.message : "ファイルの移動に失敗しました", "error");
+    } finally {
+      movingRef.current = false;
+      setMoving(false);
     }
   }, [project, files, toast, load]);
 
@@ -1430,6 +1440,7 @@ export function FileBoxPage() {
       </div>
 
       {convertingUpload && <BlockingSpinner label="Google形式に変換してアップロードしています" />}
+      {moving && <BlockingSpinner label="ファイルを移動しています" />}
       {convertingOpen && <BlockingSpinner label="Google形式にコピーしています" />}
       {exportingOffice && <BlockingSpinner label={`${OFFICE_APP_LABEL[exportingOffice]}に変換しています`} />}
       {googleLinkGate.dialog}
