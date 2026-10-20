@@ -44,7 +44,6 @@ import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
 import { fetchSprintOrder, applySprintOrder } from "@/app/lib/sprintOrder";
 import { MdBulkCreateDialog } from "@/app/components/tickets/MdBulkCreateDialog";
-import { AiImplementDialog } from "@/app/components/tickets/AiImplementDialog";
 import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDialog";
 import { useTruncatedTip } from "@/app/components/shared/TruncatedText";
 import { TicketDetailLoadingOverlay } from "@/app/components/tickets/TicketDetailLoadingOverlay";
@@ -341,6 +340,8 @@ export function TicketDetailPanel({
   const canManageApiKeys = userRole === "admin" || userRole === "owner";
   const effectivePermissions = (userRole === "owner") ? userPermissions : (projectPermissions ?? userPermissions);
   const canEdit = userRole === "owner" || userRole === "admin" || userRole === "project-manager" || !!effectivePermissions?.canEditDelete || !!effectivePermissions?.canEdit;
+  // API連携で子チケットを登録できるか（スプリント画面の「API連携」と同じ条件。buildCreateTicketDisabled）
+  const canRegisterChildrenByApi = canEdit && canManageApiKeys && !!ticket && !ticket.parentId && plan.featureBulkCreate;
   const hasReviewPermission = effectivePermissions.canReview;
   const hasSkipReviewPermission = effectivePermissions.canSkipReview;
 
@@ -496,9 +497,8 @@ export function TicketDetailPanel({
   const [showCreateChild, setShowCreateChild] = useState(false);
   // MDファイルから子チケットをまとめて作る（1件ずつの showCreateChild と同じ場所から開く）
   const [showMdChildImport, setShowMdChildImport] = useState(false);
-  // AIにこのチケットを読み取らせて実装させる手順をコピーする（子チケットからも開ける）
-  const [showAiImplement, setShowAiImplement] = useState(false);
-  // AIに子チケットを登録させる手順（親チケット番号入り）をコピーする。スプリント画面の「API連携」と同じモーダル
+  // API連携（スプリント画面の「API連携」と同じモーダル）。「AIで実装」タブを初めに開く。
+  // AIにこのチケットを読み取らせて実装させる手順と、子チケットを登録させる手順（親チケット番号入り）をコピーする
   const [showApiIntegration, setShowApiIntegration] = useState(false);
 
   // 🌟 追加(BRU11-046): 子チケットの実績工数の合計。
@@ -924,7 +924,7 @@ export function TicketDetailPanel({
   const arrowNavBlockedRef = useRef(false);
   arrowNavBlockedRef.current = isClosing || prGuardActive || showMonitor || !!pendingHandover || showRecommend
     || showDeleteConfirm || showWithdrawConfirm || showParentStartConfirm || showMoveModal
-    || showCreateChild || showMdChildImport || showAiImplement || showApiIntegration || showPrLeaveConfirm || showUndecidedConfirm
+    || showCreateChild || showMdChildImport || showApiIntegration || showPrLeaveConfirm || showUndecidedConfirm
     || showChangeDatePicker || showCompletionOverlay || assigneeOpen || reviewerOpen;
 
   useEffect(() => {
@@ -2541,22 +2541,15 @@ export function TicketDetailPanel({
           onCreated={() => { setShowMdChildImport(false); loadChildTickets(ticket.id); onUpdated?.(); }}
         />
       )}
-      {showAiImplement && ticket && projectId && (
-        <AiImplementDialog
-          ticket={{ wbs: ticket.wbs, title: ticket.title, parentId: ticket.parentId }}
-          childCount={childTickets.length}
-          projectId={projectId}
-          projectName={breadcrumbProjName}
-          onClose={() => setShowAiImplement(false)}
-        />
-      )}
-      {showApiIntegration && ticket && !ticket.parentId && projectId && (
+      {showApiIntegration && ticket && projectId && (
         <ApiIntegrationDialog
           sprintId={sprintId ?? ""}
           sprintName={breadcrumbSprintName}
           projectId={projectId}
           projectName={breadcrumbProjName}
-          parentTicket={{ wbs: ticket.wbs, title: ticket.title }}
+          implementTicket={{ wbs: ticket.wbs, title: ticket.title, parentId: ticket.parentId, childCount: childTickets.length }}
+          // 子チケットの登録は、管理者・親チケット・一括作成が使えるプランのときだけ（渡さないとタブが出ない）
+          parentTicket={canRegisterChildrenByApi ? { wbs: ticket.wbs, title: ticket.title } : undefined}
           zIndexBase={310}
           onClose={() => setShowApiIntegration(false)}
         />
@@ -2979,12 +2972,15 @@ export function TicketDetailPanel({
                   </button>
                 </PlanTooltip>
               )}
+              {/* API連携。「AIで実装」タブは編集権限があれば誰でも（子チケットでも・プランの制限なし）使えるので、
+                  ボタンはその条件で出す。子チケット登録のタブは ApiIntegrationDialog 側で出し分ける */}
               {canEdit && projectId && isSupabaseEnabled && (
-                <button onClick={() => setShowAiImplement(true)} title="AIで実装（チケットを読み取らせる手順をコピー）"
+                <button onClick={() => setShowApiIntegration(true)}
+                  title={canRegisterChildrenByApi ? "API連携（AIで実装する手順・子チケットを登録する手順をコピー）" : "API連携（AIで実装する手順をコピー）"}
                   style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; (e.currentTarget as HTMLElement).style.color = "#7C3AED"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
-                  <Sparkles style={{ width: 15, height: 15 }} />
+                  <KeyRound style={{ width: 15, height: 15 }} />
                 </button>
               )}
               {canEdit && !ticket.parentId && (
@@ -3007,22 +3003,6 @@ export function TicketDetailPanel({
                 <PlanTooltip text="現在のプランではご利用できません" active={true} placement="bottom-left">
                   <button style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "not-allowed", color: "#D1CEC9", opacity: 0.5 }}>
                     <FileText style={{ width: 15, height: 15 }} />
-                  </button>
-                </PlanTooltip>
-              )}
-              {/* 表示条件はスプリント画面の「API連携」と同じ（buildCreateTicketDisabled）。管理者以外には出さない */}
-              {canEdit && canManageApiKeys && !ticket.parentId && projectId && plan.featureBulkCreate && (
-                <button onClick={() => setShowApiIntegration(true)} title="API連携で子チケットを作成（AIに渡す手順をコピー）"
-                  style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
-                  <KeyRound style={{ width: 15, height: 15 }} />
-                </button>
-              )}
-              {canEdit && canManageApiKeys && !ticket.parentId && projectId && !plan.featureBulkCreate && (
-                <PlanTooltip text="現在のプランではご利用できません" active={true} placement="bottom-left">
-                  <button style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "not-allowed", color: "#D1CEC9", opacity: 0.5 }}>
-                    <KeyRound style={{ width: 15, height: 15 }} />
                   </button>
                 </PlanTooltip>
               )}

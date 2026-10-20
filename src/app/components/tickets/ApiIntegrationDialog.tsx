@@ -1,10 +1,14 @@
 // API連携モーダル。「新規チケット」メニューの「API連携」から開く。
-// チケット詳細の 🔑 からも開ける。そのときは parentTicket を受け取り、
-// 「すべてこの親の子として登録する」プロンプトをコピーさせる。
+// チケット詳細の 🔑（API連携）からも開ける。そのときは implementTicket を受け取り、
+// 「AIで実装」タブ（AiImplementPanel）を出す。子チケットを登録できる人・チケット・プランのときだけ
+// parentTicket も受け取り、「すべてこの親の子として登録する」プロンプトをコピーさせる。
 //
-// 2つのタブを持つ:
-//   ・使い方   … AIに貼り付けるプロンプトをコピーする（毎フェーズ使う）
+// タブ:
+//   ・AIで実装 … AIにチケットを読み取らせて実装させる手順をコピーする（チケット詳細から開いたときだけ）
+//   ・使い方   … AIに貼り付ける、チケットを登録するプロンプトをコピーする（毎フェーズ使う）
+//   ・組み込み … 外部のシステムから API を叩くサンプル（登録・読み取り・ステータス更新・PR紐づけ）
 //   ・APIキー … キーの発行・失効・棚卸し（年に数回しか使わない）
+// チケット詳細から開いたときは、表示条件の違うタブを出し分ける（TicketDetailPanel の 🔑 の注記を参照）。
 //
 // キーの平文は AES-256-GCM で暗号化して保存してある（暗号鍵はサーバー側の環境変数から導出）。
 // そのため「使用するキー」で選ぶだけで、サーバーが復号した平文をプロンプトへ埋め込める。
@@ -22,11 +26,15 @@ import { useToast } from "@/app/contexts/ToastContext";
 import {
   listApiKeys, createApiKey, revealApiKey, revokeApiKey, deleteApiKey,
   isActiveKey, keyStatus, maskedKey, formatRelative, formatDay,
-  API_KEY_SCOPES, scopeLabel, canCreateTickets,
+  API_KEY_SCOPES, scopeLabel, canCreateTickets, canReadTickets, canUpdateStatus,
   type ApiKeyRow, type ApiKeyScope,
 } from "@/app/lib/apiKeys";
 import { buildApiSetupPrompt } from "@/app/lib/apiKeyPrompt";
-import { buildApiSample, buildKeySetupSnippet, SAMPLE_LANGS, API_LIMITS, type SampleLang } from "@/app/lib/apiSamples";
+import {
+  buildApiSample, buildKeySetupSnippet, SAMPLE_LANGS, SAMPLE_KINDS, API_LIMITS,
+  type SampleLang, type SampleKind,
+} from "@/app/lib/apiSamples";
+import { AiImplementPanel } from "@/app/components/tickets/AiImplementDialog";
 import { MD_STATUS_LABELS, MD_PRIORITY_LABELS } from "@/app/lib/mdTickets/parse";
 
 const GREEN = "#059669";
@@ -63,8 +71,10 @@ function SectionNote({ children }: { children: React.ReactNode }) {
   return <p style={{ fontSize: 11.5, color: "#9E9690", lineHeight: 1.7 }}>{children}</p>;
 }
 
+type DialogTab = "implement" | "usage" | "embed" | "keys";
+
 export function ApiIntegrationDialog({
-  sprintId, sprintName, projectId, projectName, parentTicket, zIndexBase = 300, onClose,
+  sprintId, sprintName, projectId, projectName, parentTicket, implementTicket, zIndexBase = 300, onClose,
 }: {
   sprintId: string;
   sprintName: string;
@@ -72,6 +82,11 @@ export function ApiIntegrationDialog({
   projectName: string;
   /** チケット詳細から開いたときの登録先の親チケット。渡すとプロンプトが親指定の文面になる */
   parentTicket?: { wbs: string; title: string };
+  /**
+   * チケット詳細から開いたときの対象チケット。渡すと「AIで実装」タブを出し、そこを初めに開く。
+   * 渡さないとき（スプリント画面）は「使い方」を初めに開く。
+   */
+  implementTicket?: { wbs: string; title: string; parentId?: string | null; childCount: number };
   /** チケット詳細（zIndex 300/301）の上に重ねるときに上げる */
   zIndexBase?: number;
   onClose: () => void;
@@ -81,9 +96,29 @@ export function ApiIntegrationDialog({
 
   const canManage = userRole === "admin" || userRole === "owner";
 
-  const [tab, setTab] = useState<"usage" | "embed" | "keys">("usage");
+  // チケット詳細から開いたときは、タブごとに使える人が違う。
+  //   AIで実装 … 編集権限があれば誰でも（子チケットでも・プランの制限なし）
+  //   使い方   … 子チケットを登録できるとき（親から parentTicket が渡されたとき）だけ
+  //   組み込み・APIキー … 管理者だけ（管理者以外はキーの一覧が RLS で空になる）
+  const tabs = useMemo(() => {
+    const list: [DialogTab, string][] = [];
+    if (implementTicket) list.push(["implement", "AIで実装"]);
+    if (!implementTicket || parentTicket) list.push(["usage", parentTicket ? "AIで子チケット登録" : "AIから使う"]);
+    if (!implementTicket || canManage) {
+      list.push(["embed", "システムに組み込む"]);
+      list.push(["keys", "APIキー"]);
+    }
+    return list;
+  }, [implementTicket, parentTicket, canManage]);
+  const initialTab: DialogTab = implementTicket ? "implement" : "usage";
+
+  const [tab, setTab] = useState<DialogTab>(initialTab);
   /** 「組み込み」タブで表示中のサンプル言語 */
   const [lang, setLang] = useState<SampleLang>("curl");
+  /** 「組み込み」タブで表示中のサンプルの種類 */
+  const [sampleKind, setSampleKind] = useState<SampleKind>("create");
+  /** 「AIで実装」タブにキーの一覧を読み直させる（この画面で発行・失効したとき） */
+  const [keysRevision, setKeysRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const [keys, setKeys] = useState<ApiKeyRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -260,6 +295,7 @@ export function ApiIntegrationDialog({
     setKeys(prev => [result.result.row, ...prev]);
     // 「読み取りのみ」のキーは登録に使えないので、「使用するキー」の選択は動かさない
     if (canCreateTickets(result.result.row)) setSelectedKeyId(result.result.row.id);
+    setKeysRevision(v => v + 1);
   };
 
   const handleRevoke = async (key: ApiKeyRow) => {
@@ -268,7 +304,13 @@ export function ApiIntegrationDialog({
     if (error) { toast(error, "error"); return; }
     toast(`「${key.name}」を失効させました`);
     await reloadKeys();
+    setKeysRevision(v => v + 1);
   };
+
+  // 「AIで実装」タブで発行したキーを「APIキー」タブの一覧にも出す
+  const handleImplementKeyIssued = useCallback((row: ApiKeyRow) => {
+    setKeys(prev => (prev.some(k => k.id === row.id) ? prev : [row, ...prev]));
+  }, []);
 
   /** 一覧からキーの平文をコピーする。暗号化して保存してあるので後からでも取り出せる。 */
   const handleCopyKey = async (key: ApiKeyRow) => {
@@ -329,7 +371,7 @@ export function ApiIntegrationDialog({
           <p style={{ fontSize: 12.5, fontWeight: 700, color: "#1A1714" }}>AIにチケットを読み取らせて実装する場合</p>
           <SectionNote>
             このキー（権限: {scopeLabel(issuedKey.scope)}）は、AIがチケットの本文・画像・コメント・子チケットを読み取るのに使えます。
-            <strong>チケットの詳細画面を開き、ヘッダーの ✨（AIで実装）</strong>から、どこまでやるかを選んで手順をコピーしてください。
+            <strong>チケットの詳細画面を開き、ヘッダーの 🔑（API連携）の「AIで実装」タブ</strong>から、どこまでやるかを選んで手順をコピーしてください。
             キーはそこで自動的に埋め込まれます。
           </SectionNote>
         </div>
@@ -493,9 +535,22 @@ export function ApiIntegrationDialog({
   // ── 組み込みタブ ──────────────────────────────────────────────
   /** 自社システム・CI・バッチから叩くための説明。MCP など追加の仕組みは要らない。 */
   const renderEmbed = () => {
+    const kindInfo = SAMPLE_KINDS.find(k => k.id === sampleKind) ?? SAMPLE_KINDS[0];
+    // curl に埋め込むのは「使い方」タブで選んでいるキー（登録できるキー）。
+    // その権限でこのサンプルの操作ができないときは、埋め込まずにプレースホルダを出す（送ると 403 になるため）
+    const selectedKey = activeKeys.find(k => k.id === selectedKeyId) ?? null;
+    const keyFits = !!selectedKey && (
+      sampleKind === "create" ? canCreateTickets(selectedKey)
+        : sampleKind === "read" ? canReadTickets(selectedKey)
+          : canUpdateStatus(selectedKey));
+    const sampleKey = keyFits ? revealedKey ?? undefined : undefined;
+    // 例の WBS は親チケットのもの（子の例は「親-1」で出す）。子チケットから開いたときは枝番を落とす
+    const sampleWbs = implementTicket
+      ? (implementTicket.parentId ? implementTicket.wbs.replace(/-\d+$/, "") : implementTicket.wbs)
+      : parentTicket?.wbs;
     const sample = buildApiSample(lang, {
-      baseUrl, sprintId, plainKey: revealedKey ?? undefined,
-    });
+      baseUrl, sprintId, plainKey: sampleKey, wbs: sampleWbs,
+    }, sampleKind);
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 15 }}>
@@ -581,10 +636,36 @@ export function ApiIntegrationDialog({
           </div>
         </div>
 
-        {/* サンプルコード */}
+        {/* サンプルコード。登録だけでなく、読み取り・ステータス更新・PR紐づけも外部のシステムから使える */}
         <div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 7 }}>
-            <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458" }}>サンプルコード</p>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 7 }}>サンプルコード</p>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 9 }}>
+            {SAMPLE_KINDS.map(k => (
+              <button key={k.id} type="button" onClick={() => setSampleKind(k.id)}
+                style={{
+                  padding: "6px 12px", fontSize: 11.5, fontWeight: 700, borderRadius: 8, cursor: "pointer",
+                  border: `1px solid ${sampleKind === k.id ? GREEN : "rgba(26,23,20,0.12)"}`,
+                  background: sampleKind === k.id ? "#ECFDF5" : "#FFFFFF",
+                  color: sampleKind === k.id ? GREEN : "#6B6458",
+                }}>{k.label}</button>
+            ))}
+          </div>
+
+          <div style={{ padding: "10px 12px", marginBottom: 9, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <code style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "#1A1714", fontWeight: 600 }}>{kindInfo.endpoint}</code>
+              <span style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", background: "#F3F4F6", padding: "2px 8px", borderRadius: 5 }}>
+                必要なキーの権限: {kindInfo.permission}
+              </span>
+            </div>
+            {kindInfo.notes.length > 0 && (
+              <ul style={{ margin: "7px 0 0", paddingLeft: 17, fontSize: 11, color: "#4B4640", lineHeight: 1.8 }}>
+                {kindInfo.notes.map(n => <li key={n}>{n}</li>)}
+              </ul>
+            )}
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 7 }}>
             <div style={{ display: "flex", gap: 3 }}>
               {SAMPLE_LANGS.map(l => (
                 <button key={l.id} type="button" onClick={() => setLang(l.id)}
@@ -611,11 +692,13 @@ export function ApiIntegrationDialog({
             </Btn>
             {/* curl は手元で1回叩く用途なのでキーを直に入れる。
                 コード側は環境変数から読む形にしてあるので、埋め込み済みと書くと嘘になる。 */}
-            <span style={{ fontSize: 10.5, color: lang === "curl" && revealedKey ? GREEN : "#9E9690", lineHeight: 1.6 }}>
+            <span style={{ fontSize: 10.5, color: lang === "curl" && sampleKey ? GREEN : "#9E9690", lineHeight: 1.6 }}>
               {lang === "curl"
-                ? (revealedKey
+                ? (sampleKey
                   ? "✅ キーが埋め込まれています。このまま実行できます"
-                  : "キーの部分は自分で差し替えてください")
+                  : selectedKey && revealedKey && !keyFits
+                    ? `選択中のキー（権限: ${scopeLabel(selectedKey.scope)}）ではこの操作ができません。キーの部分を権限が「${kindInfo.permission}」のキーに差し替えてください`
+                    : "キーの部分は自分で差し替えてください")
                 : "このコードにキーは含まれません。上の「APIキーの置き場所」で環境変数に設定してください"}
             </span>
           </div>
@@ -869,6 +952,8 @@ export function ApiIntegrationDialog({
   );
 
   // ── 描画 ──────────────────────────────────────────────────────
+  const showImplement = !!implementTicket && tab === "implement" && !issuedKey;
+
   return (
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: zIndexBase, background: "rgba(10,14,12,0.35)", backdropFilter: "blur(3px)" }} />
@@ -891,7 +976,7 @@ export function ApiIntegrationDialog({
                 {issuedKey ? "APIキーを発行しました" : "API連携"}
               </p>
               <p style={{ fontSize: 11, color: "#9E9690", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {projectName} ／ {sprintName}
+                {implementTicket ? `${implementTicket.wbs} ／ ${implementTicket.title}` : `${projectName} ／ ${sprintName}`}
               </p>
             </div>
           </div>
@@ -899,8 +984,8 @@ export function ApiIntegrationDialog({
             style={{ width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(26,23,20,0.10)", background: "#FFFFFF", cursor: "pointer", color: "#9E9690", flexShrink: 0, fontSize: 15, lineHeight: 1 }}>×</button>
         </div>
 
-        {/* 登録先の親チケット。チケット詳細から開いたときだけ出し、何をコピーするのかを先に見せる */}
-        {parentTicket && (
+        {/* 登録先の親チケット。チケット詳細から開いたときの「使い方」タブだけに出し、何をコピーするのかを先に見せる */}
+        {parentTicket && tab === "usage" && !issuedKey && (
           <div style={{ padding: "11px 24px", background: "#F5F3FF", borderBottom: "1px solid rgba(124,58,237,0.12)", flexShrink: 0, display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
             <GitBranch style={{ width: 14, height: 14, color: PURPLE, flexShrink: 0 }} />
             <span style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", flexShrink: 0 }}>登録先の親チケット</span>
@@ -912,9 +997,9 @@ export function ApiIntegrationDialog({
         )}
 
         {/* タブ（発行直後は隠す。キーのコピーに集中させるため） */}
-        {!issuedKey && (
-          <div style={{ display: "flex", gap: 4, padding: "12px 24px 0", background: "#FAFAF8", flexShrink: 0 }}>
-            {([["usage", "AIから使う"], ["embed", "システムに組み込む"], ["keys", "APIキー"]] as const).map(([id, label]) => (
+        {!issuedKey && tabs.length > 1 && (
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", padding: "12px 24px 0", background: "#FAFAF8", flexShrink: 0 }}>
+            {tabs.map(([id, label]) => (
               <button key={id} type="button" onClick={() => setTab(id)}
                 style={{
                   padding: "7px 16px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer",
@@ -926,7 +1011,22 @@ export function ApiIntegrationDialog({
 
         {/* 本文 */}
         <div style={{ padding: "18px 24px 20px", overflowY: "auto", flex: 1 }}>
-          {loadError
+          {/* 「AIで実装」はキーの読み込みを自分で持つので、下の読み込み中の表示を待たない。
+              タブを切り替えてもチェックの状態が消えないよう、外さずに隠すだけにする */}
+          {implementTicket && projectId && (
+            <div style={{ display: showImplement ? "block" : "none" }}>
+              <AiImplementPanel
+                ticket={{ wbs: implementTicket.wbs, title: implementTicket.title, parentId: implementTicket.parentId }}
+                childCount={implementTicket.childCount}
+                projectId={projectId}
+                projectName={projectName}
+                zIndexBase={zIndexBase}
+                keysRevision={keysRevision}
+                onKeyIssued={handleImplementKeyIssued}
+              />
+            </div>
+          )}
+          {!showImplement && (loadError
             ? <p style={{ fontSize: 12, color: "#DC2626" }}>{loadError}</p>
             : loading
               ? (
@@ -939,7 +1039,7 @@ export function ApiIntegrationDialog({
                 ? renderIssued()
                 : tab === "usage" ? renderUsage()
                   : tab === "embed" ? renderEmbed()
-                    : renderKeys()}
+                    : renderKeys())}
 
           {manualCopyText && (
             <div style={{ marginTop: 14 }}>
@@ -964,7 +1064,7 @@ export function ApiIntegrationDialog({
         {/* フッター */}
         <div style={{ padding: "13px 24px", borderTop: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", display: "flex", justifyContent: "flex-end", gap: 8, flexShrink: 0 }}>
           {issuedKey
-            ? <Btn onClick={() => { setIssuedKey(null); setTab("usage"); }}>コピーしました。閉じる</Btn>
+            ? <Btn onClick={() => { setIssuedKey(null); setTab(initialTab); }}>コピーしました。閉じる</Btn>
             : <Btn tone="ghost" onClick={onClose}>閉じる</Btn>}
         </div>
       </div>
