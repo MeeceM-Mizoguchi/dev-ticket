@@ -282,6 +282,7 @@ interface TicketInput {
   children?: unknown;
   parentWbs?: unknown;
   parentId?: unknown;
+  prLinkWaived?: unknown;
 }
 
 interface NormalizedTicket {
@@ -302,6 +303,11 @@ interface NormalizedTicket {
    */
   parentWbs: string | null;
   parentId: string | null;
+  /**
+   * PR不要（sprint_tickets.pr_link_waived）。null は1件ずつの指定なし。
+   * 指定なしのものは、リクエスト直下の prLinkWaived（それも無ければ false）で登録する。
+   */
+  prLinkWaived: boolean | null;
 }
 
 /** 既存チケットの子を足すときに引いてくる親チケットの行 */
@@ -407,6 +413,12 @@ function normalizeTicket(input: TicketInput, ctx: NormalizeCtx, isChild: boolean
     warn("子チケットの中の parentWbs / parentId は使われません（親は既に決まっています）");
   }
 
+  let prLinkWaived: boolean | null = null;
+  if (typeof input.prLinkWaived === "boolean") prLinkWaived = input.prLinkWaived;
+  else if (input.prLinkWaived !== undefined && input.prLinkWaived !== null) {
+    warn(`prLinkWaived「${String(input.prLinkWaived)}」は true / false ではないため無視しました`);
+  }
+
   const children: NormalizedTicket[] = [];
   if (!isChild && (parentWbs || parentId)) {
     // 既存チケットの子として作るものに、さらに子は付けられない（階層は1段まで）
@@ -428,7 +440,7 @@ function normalizeTicket(input: TicketInput, ctx: NormalizeCtx, isChild: boolean
 
   return {
     title, status, priority, categoryId, assignee, startDate, dueDate,
-    estimatedHours, descriptionHtml, children, parentWbs, parentId,
+    estimatedHours, descriptionHtml, children, parentWbs, parentId, prLinkWaived,
   };
 }
 
@@ -1156,6 +1168,14 @@ async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any
     warnings: [],
   };
 
+  // リクエスト直下の prLinkWaived は、子チケットも含めてこのリクエストで登録するものすべての既定値。
+  // 1件ずつの指定があればそちらを優先する（toRow で適用）。
+  let defaultPrLinkWaived = false;
+  if (typeof body?.prLinkWaived === "boolean") defaultPrLinkWaived = body.prLinkWaived;
+  else if (body?.prLinkWaived !== undefined && body?.prLinkWaived !== null) {
+    ctx.warnings.push(`prLinkWaived「${String(body.prLinkWaived)}」は true / false ではないため無視しました`);
+  }
+
   const tickets: NormalizedTicket[] = [];
   for (const raw of rawTickets) {
     const normalized = normalizeTicket((raw ?? {}) as TicketInput, ctx, false);
@@ -1336,6 +1356,8 @@ async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any
     category_id: t.categoryId,
     created_by: key.created_by || null,
     images: [], parent_id: parentId,
+    // 列は not null default false。指定なしは既定値と同じ false を書く（行ごとに列をそろえるため省略しない）
+    pr_link_waived: t.prLinkWaived ?? defaultPrLinkWaived,
   });
 
   // created は入力順（tickets の並び）で返す

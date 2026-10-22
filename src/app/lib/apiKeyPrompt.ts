@@ -29,6 +29,11 @@ export interface ApiSetupContext {
    * 渡すと「すべてこの親の子として登録する」文面になり、sprintId と children の説明は載せない。
    */
   parentTicket?: { wbs: string; title: string };
+  /**
+   * 「登録するチケットをすべて PR不要にする」にチェックを入れてコピーしたとき true。
+   * true のときだけ JSON 例・項目表・指示に prLinkWaived が入る（外したままなら一切出さない）。
+   */
+  prLinkWaived?: boolean;
 }
 
 const KEY_PLACEHOLDER = "<ここに Dev Ticket のAPIキーを貼る>";
@@ -122,6 +127,25 @@ ${plainKey
 - キーはパスワードと同じもの。**ソースコードに直接書かず、ログや出力にも書き出さないこと。**`;
 }
 
+/** PR不要で登録するときに JSON 例のリクエスト直下へ入れる1行（オフのときは空） */
+function prLinkWaivedJsonLine(ctx: ApiSetupContext): string {
+  return ctx.prLinkWaived ? `\n  "prLinkWaived": true,` : "";
+}
+
+/** PR不要で登録するときの項目表の行（オフのときは空） */
+function prLinkWaivedTableRow(ctx: ApiSetupContext): string {
+  return ctx.prLinkWaived
+    ? `\n| prLinkWaived | ✅ | **必ず \`true\`**（リクエスト直下に書く。子チケットも含めて、登録するものすべてが「PR不要」になる） | — |`
+    : "";
+}
+
+/** PR不要で登録するときの指示（オフのときは空） */
+function prLinkWaivedNote(ctx: ApiSetupContext): string {
+  return ctx.prLinkWaived
+    ? `\n- **リクエスト直下に \`"prLinkWaived": true\` を必ず付けること。**利用者が「プルリクエストを作らない作業（仕様の確認・資料作成など）」として登録を求めている。`
+    : "";
+}
+
 function memberCandidates(ctx: ApiSetupContext): string {
   return ctx.memberNames.length > 0
     ? ctx.memberNames.join(" / ")
@@ -173,7 +197,7 @@ ${buildKeySection(ctx.plainKey)}
 
 \`\`\`json
 {
-  "sprintId": "${ctx.sprintId}",
+  "sprintId": "${ctx.sprintId}",${prLinkWaivedJsonLine(ctx)}
   "tickets": [
     {
       "title": "ログイン画面のバリデーション追加",
@@ -205,12 +229,12 @@ ${buildKeySection(ctx.plainKey)}
 | estimatedHours | | 時間数（整数） | 0 |
 | description | | 本文（Markdown 文字列） | 空欄 |
 | children | | 子チケットの配列（同じ形・1階層まで） | なし |
-| parentWbs | | **既に登録されているチケット**のWBS（例: \`T-012\`）。指定するとその子として登録される | 新しい親チケットとして登録 |
+| parentWbs | | **既に登録されているチケット**のWBS（例: \`T-012\`）。指定するとその子として登録される | 新しい親チケットとして登録 |${prLinkWaivedTableRow(ctx)}
 
 - 上の項目は**できる限りすべて埋める**。ただし**根拠なく推測しない**。判断材料が無い項目は**キーごと省略**する（空文字や「未定」とは書かない）。
 - 表に無いキーは送らない（送っても無視される）。
 - assignee / category は上に挙げた名前のいずれかを書く。該当が無ければキーごと省略する。
-- 1回のリクエストで送れる \`tickets\` は 200 件まで、親1件あたりの子は 50 件まで。
+- 1回のリクエストで送れる \`tickets\` は 200 件まで、親1件あたりの子は 50 件まで。${prLinkWaivedNote(ctx)}
 
 ## 既に登録されているチケットに子チケットを足す
 
@@ -331,7 +355,7 @@ ${buildKeySection(ctx.plainKey)}
 ## リクエストの形
 
 \`\`\`json
-{
+{${prLinkWaivedJsonLine(ctx)}
   "tickets": [
     {
       "title": "ログイン画面のバリデーション追加",
@@ -367,12 +391,12 @@ ${buildKeySection(ctx.plainKey)}
 | startDate | | \`YYYY/MM/DD\` | 空欄 |
 | dueDate | | \`YYYY/MM/DD\` | 空欄 |
 | estimatedHours | | 時間数（整数） | 0 |
-| description | | 本文（Markdown 文字列） | 空欄 |
+| description | | 本文（Markdown 文字列） | 空欄 |${prLinkWaivedTableRow(ctx)}
 
 - 上の項目は**できる限りすべて埋める**。ただし**根拠なく推測しない**。判断材料が無い項目は**キーごと省略**する（空文字や「未定」とは書かない）。
 - 表に無いキーは送らない（送っても無視される）。
 - assignee / category は上に挙げた名前のいずれかを書く。該当が無ければキーごと省略する。
-- 1回のリクエストで足せる子チケットは 50 件まで。超えるときはリクエストを分ける。
+- 1回のリクエストで足せる子チケットは 50 件まで。超えるときはリクエストを分ける。${prLinkWaivedNote(ctx)}
 
 ${DESCRIPTION_SPEC}
 
