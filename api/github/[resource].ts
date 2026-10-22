@@ -19,9 +19,17 @@
 //   POST /api/github/comment   { projectId, number, body }
 //   POST /api/github/link      { projectId, ticketId, kind, number }
 //   POST /api/github/unlink    { projectId, id }
+//   POST /api/github/ticket-pull-create { wbs, head, title, body?, base? } … APIキーで bot 名義のPRを作り、チケットへ紐づける
+//   POST /api/github/ticket-merge       { wbs, number }                   … APIキーで、チケットに紐づいたPRを bot 名義で Squash マージする
 //
 // 認証は「ログイン中ユーザーの Supabase アクセストークン」。
 //   Authorization: Bearer <supabase access_token>
+// ticket-pull-create / ticket-merge だけは Dev Ticket の APIキー（権限「すべて」）で認証する（BRU21-001）。
+//   Authorization: Bearer dvt_live_xxxxx
+//   「AIで実装」で AI が gh pr create / gh pr merge を使うと、PRとマージコミットが個人アカウント名義になり、
+//   Vercel のプロジェクトに権限の無いアカウントだと本番デプロイが「Deployment was blocked」で止まる。
+//   そこで、画面の「PRを作成」「マージ」と同じ処理（GitHub App の bot 名義）をAPIキーからも呼べるようにしている。
+//   権限は、キーを発行した人（api_keys.created_by）の GitHub 権限で判定する。
 //
 // ★ 権限はここで必ずやり直す ★
 //   ブラウザ側の githubPermission は表示の出し分け用でしかない。
@@ -35,6 +43,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import dns from "dns";
+import { authenticateApiKey, SCOPE_LABEL, type ApiKeyRow } from "../_lib/apiKeyAuth.js";
 
 const GITHUB_API = "https://api.github.com";
 const UA = "dev-ticket";
@@ -539,7 +548,12 @@ interface Caller {
   name: string;
   role: string;
   organizationId: string | null;
+  /** APIキー経由の呼び出し（BRU21-001）。ログ・PRの本文・マージコミットに「APIキー経由」と残す */
+  viaApiKey?: boolean;
 }
+
+/** 実行者の後ろに付ける印。GitHub上は bot 名義になるので、誰がどの経路で動かしたかを残す */
+const viaLabel = (caller: Caller) => (caller.viaApiKey ? "（APIキー経由）" : "");
 
 async function getCaller(sb: SupabaseClient, req: any): Promise<Caller | null> {
   const header: string = req.headers?.authorization || req.headers?.Authorization || "";
@@ -558,6 +572,40 @@ async function getCaller(sb: SupabaseClient, req: any): Promise<Caller | null> {
     name: (profile.name as string) ?? "",
     role: (profile.role as string) ?? "",
     organizationId: (profile.organization_id as string | null) ?? null,
+  };
+}
+
+/**
+ * APIキーから呼び出し元を組み立てる（BRU21-001）。
+ *
+ * 権限の判定は、キーを発行した人の GitHub 権限で行う（projectContext にそのまま渡す）。
+ * api_keys.created_by は profiles.name（supabase/add_api_keys.sql）なので、
+ * キーの組織のメンバーから名前で引く。owner は組織をまたいで発行できるので候補に含める。
+ * 1人に決まらないときは、誰の権限で動かすのか分からないので通さない。
+ */
+async function callerFromApiKey(sb: SupabaseClient, key: ApiKeyRow): Promise<Caller> {
+  const name = String(key.created_by ?? "").trim();
+  if (!name) {
+    throw new HttpError(403, "このAPIキーには発行した人の記録が無いため、PRの作成・マージには使えません。APIキーを発行し直してください。");
+  }
+  const { data } = await sb
+    .from("profiles").select("id, name, role, organization_id").eq("name", name)
+    .order("id", { ascending: true });
+  const rows = (data ?? []) as any[];
+  const inOrg = rows.filter(p => String(p.organization_id ?? "") === String(key.organization_id ?? ""));
+  const candidates = inOrg.length ? inOrg : rows.filter(p => p.role === "owner");
+  if (candidates.length !== 1) {
+    throw new HttpError(403, candidates.length
+      ? `APIキーを発行した「${name}」と同じ名前のメンバーが複数いるため、GitHubの権限を判定できません。`
+      : `APIキーを発行した「${name}」がメンバーに見つかりません。APIキーを発行し直してください。`);
+  }
+  const p = candidates[0];
+  return {
+    id: String(p.id),
+    name: (p.name as string) ?? name,
+    role: (p.role as string) ?? "",
+    organizationId: (p.organization_id as string | null) ?? null,
+    viaApiKey: true,
   };
 }
 
@@ -1801,6 +1849,15 @@ export default async function handler(req: any, res: any) {
     }
   }
 
+  // APIキーで bot 名義のPR作成・マージを行う入口（BRU21-001）。ログインのアクセストークンは受けない
+  if (resource === "ticket-pull-create" || resource === "ticket-merge") {
+    try {
+      return await handleApiKeyAction(sb, resource, req, res);
+    } catch (e) {
+      return sendError(resource, e, res);
+    }
+  }
+
   const caller = await getCaller(sb, req);
   if (!caller) return res.status(401).json({ error: "認証が必要です" });
 
@@ -1850,11 +1907,15 @@ export default async function handler(req: any, res: any) {
       default:         return res.status(404).json({ error: "Not Found" });
     }
   } catch (e) {
-    if (e instanceof HttpError) return res.status(e.status).json({ error: e.message, ...(e.payload ?? {}) });
-    const m = jaMessage(e);
-    console.error("[github]", resource, (e as Error)?.message);
-    return res.status(m.status).json({ error: m.message });
+    return sendError(resource, e, res);
   }
+}
+
+function sendError(resource: string, e: unknown, res: any) {
+  if (e instanceof HttpError) return res.status(e.status).json({ error: e.message, ...(e.payload ?? {}) });
+  const m = jaMessage(e);
+  console.error("[github]", resource, (e as Error)?.message);
+  return res.status(m.status).json({ error: m.message });
 }
 
 // ── リリースノートへの自動反映 ───────────────────────────────
@@ -3748,7 +3809,7 @@ async function writeLog(sb: SupabaseClient, ctx: ProjectCtx, caller: Caller, act
   await sb.from("github_action_logs").insert({
     project_id: ctx.id,
     actor_id: caller.id,
-    actor_name: caller.name,
+    actor_name: `${caller.name}${viaLabel(caller)}`,
     action,
     repo: ctx.repo,
     pr_number: prNumber,
@@ -3994,7 +4055,17 @@ async function handleCreatePull(sb: SupabaseClient, caller: Caller, req: any, re
   if (req.method !== "POST") throw new HttpError(405, "Method Not Allowed");
   const body = parseBody(req);
   const ctx = await projectContext(sb, caller, String(body.projectId ?? ""), "create-pull");
+  const r = await createPull(sb, ctx, caller, body);
+  return res.status(r.status).json(r.body);
+}
 
+/**
+ * PR作成の本体。画面からの create-pull と、APIキーからの ticket-pull-create（BRU21-001）で共用する。
+ * 入力の誤りは HttpError を投げ、GitHub 側の失敗は status と本文で返す（従来の handleCreatePull と同じ）。
+ */
+async function createPull(
+  sb: SupabaseClient, ctx: ProjectCtx, caller: Caller, body: Record<string, any>,
+): Promise<{ status: number; body: Record<string, any>; pr?: any }> {
   const head = String(body.head ?? "").trim();
   const base = String(body.base ?? "").trim() || ctx.defaultBranch || "main";
   const title = String(body.title ?? "").trim();
@@ -4018,19 +4089,23 @@ async function handleCreatePull(sb: SupabaseClient, caller: Caller, req: any, re
         base,
         draft,
         // 誰が Dev Ticket から作ったのかを本文に残す（GitHub上は App 名義になるため）
-        body: `${text}${text ? "\n\n" : ""}---\n_Dev Ticket の ${caller.name} が作成_`,
+        body: `${text}${text ? "\n\n" : ""}---\n_Dev Ticket の ${caller.name} が作成${viaLabel(caller)}_`,
       },
     });
     await writeLog(sb, ctx, caller, "create_pull", pr?.number ?? 0, "ok", `${head} → ${base} / ${title}`);
     // 作成した時点で紐付けておく。PR一覧を開かないまま GitHub 側でマージされると、
     // 紐付けが残らずリリース反映の判定材料が無くなるため
     if (pr?.number) await autoLink(sb, ctx.id, ctx.repo, [mapPull(pr)]).catch(() => {});
-    return res.status(200).json({
-      ok: true,
-      number: pr?.number ?? null,
-      url: pr?.html_url ?? null,
-      title: pr?.title ?? title,
-    });
+    return {
+      status: 200,
+      pr,
+      body: {
+        ok: true,
+        number: pr?.number ?? null,
+        url: pr?.html_url ?? null,
+        title: pr?.title ?? title,
+      },
+    };
   } catch (e) {
     // 作成時の 422 は「差分が無い」「既にPRがある」が大半で、
     // マージ時の 422（ブランチ保護）とは意味が違うので専用に訳す
@@ -4051,7 +4126,7 @@ async function handleCreatePull(sb: SupabaseClient, caller: Caller, req: any, re
     }
     console.error("[github create-pull]", (e as Error)?.message);
     await writeLog(sb, ctx, caller, "create_pull", 0, "error", (e as Error)?.message ?? "");
-    return res.status(status).json({ error: message });
+    return { status, body: { error: message } };
   }
 }
 
@@ -4295,7 +4370,19 @@ async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: an
   const number = Number(body.number ?? 0);
   const method = ["merge", "squash", "rebase"].includes(body.method) ? body.method : "squash";
   if (!number) throw new HttpError(400, "PR番号が不正です。");
+  const r = await mergePull(sb, ctx, caller, number, method, overrideReason(body));
+  return res.status(r.status).json(r.body);
+}
 
+/**
+ * 1件のマージの本体。画面からの merge と、APIキーからの ticket-merge（BRU21-001）で共用する。
+ * マージ前の確認（権限・衝突・CI・層A）で止めるときは HttpError を投げ、
+ * GitHub 側の失敗は status と本文で返す（従来の handleMerge と同じ）。
+ */
+async function mergePull(
+  sb: SupabaseClient, ctx: ProjectCtx, caller: Caller,
+  number: number, method: "merge" | "squash" | "rebase", reason: string,
+): Promise<{ status: number; body: Record<string, any> }> {
   // GitHub を叩く前に権限で止める。実行して初めて分かる状態にしない。
   // 止めた事実もログに残す。残さないと「誰も直さないまま何度も起きている」ことに気付けない
   const pre = await permissionBlock(ctx.installationId, "merge");
@@ -4323,7 +4410,7 @@ async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: an
   }
 
   // 層A。ここを通さないと、失敗したままのPRが黙って本番ブランチへ入る
-  await enforceCheckGate(sb, ctx, caller, token, p, number, overrideReason(body));
+  await enforceCheckGate(sb, ctx, caller, token, p, number, reason);
 
   const retry = { refreshed: false };
   try {
@@ -4335,7 +4422,7 @@ async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: an
           // rebase は commit_title/message を受け付けないため付けない
           ...(method === "rebase" ? {} : {
             commit_title: `${p.title} (#${number})`,
-            commit_message: `Merged via Dev Ticket by ${caller.name}`,
+            commit_message: `Merged via Dev Ticket by ${caller.name}${caller.viaApiKey ? " (API key)" : ""}`,
           }),
           sha: p.head?.sha,
         },
@@ -4344,14 +4431,161 @@ async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: an
     await markLinksMerged(sb, ctx.id, [number]);
     // マージした直後に「リリース待ち → リリース済み」を反映する
     await syncReleasesNow(sb, ctx.id);
-    return res.status(200).json({ ok: true, sha: result?.sha ?? null });
+    return { status: 200, body: { ok: true, sha: result?.sha ?? null } };
   } catch (e) {
     const block = await explainForbidden(ctx.installationId, "merge", e);
     const m = jaMessage(e);
     await writeLog(sb, ctx, caller, "merge", number, "error", (e as Error)?.message ?? "");
-    return res.status(block ? 403 : m.status).json(
-      block ? { error: block.message, permission: block } : { error: m.message },
-    );
+    return {
+      status: block ? 403 : m.status,
+      body: block ? { error: block.message, permission: block } : { error: m.message },
+    };
+  }
+}
+
+// ── APIキーからのPR作成・マージ（BRU21-001） ──────────────────
+//
+// 「AIで実装」の手順書で、AI が gh pr create / gh pr merge を使う代わりに呼ぶ入口。
+// 画面の「PRを作成」「マージ」と同じ処理（createPull / mergePull）を通すので、
+// PRとマージコミットは GitHub App の bot 名義になり、衝突・CI・層Aの確認もそのまま効く。
+// 違いは、呼び出し元をAPIキーの発行者で組み立てることと、対象をチケット1件に縛ること。
+
+/** WBS は英数字とハイフンだけ（ticketsByWbs の ilike に _ や % を混ぜないため） */
+const API_WBS_RE = /^[A-Za-z0-9-]+$/;
+
+/** APIキーのプロジェクトの中から、WBS でチケットを1件引く（api/v1 の lookupTicket と同じ結論にする） */
+async function ticketForApiKey(sb: SupabaseClient, projectId: string, wbs: string): Promise<{ id: string; wbs: string }> {
+  if (!wbs) throw new HttpError(400, "wbs（チケット番号）は必須です。");
+  if (!API_WBS_RE.test(wbs)) throw new HttpError(400, `wbs の形式が正しくありません: ${wbs}`);
+  const { data: sprints } = await sb.from("sprints").select("id").eq("project_id", projectId);
+  const rows = await ticketsByWbs(sb, (sprints ?? []).map(s => (s as any).id), [wbs], "id, wbs");
+  const exact = rows.filter(r => r.wbs === wbs);
+  const hit = exact.length ? exact : rows;
+  if (!hit.length) throw new HttpError(404, `チケット「${wbs}」がこのAPIキーのプロジェクトに見つかりません。`);
+  if (hit.length > 1) throw new HttpError(409, `WBS「${wbs}」のチケットが複数あります。`);
+  return { id: String(hit[0].id), wbs: String(hit[0].wbs) };
+}
+
+/** ブランチ名にチケット番号が入っているか。T-012 が T-0123 に当たらないよう、前後が番号の続きでないことも見る */
+function branchHasWbs(head: string, wbs: string): boolean {
+  return new RegExp(`(^|[^A-Za-z0-9])${wbs}(?![0-9])`, "i").test(head);
+}
+
+async function handleApiKeyAction(sb: SupabaseClient, resource: string, req: any, res: any) {
+  if (req.method !== "POST") throw new HttpError(405, "POST を使ってください。");
+  const auth = await authenticateApiKey(sb, req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+
+  const key = auth.key;
+  const what = resource === "ticket-merge" ? "PRをマージ" : "PRを作成";
+  if (key.scope !== "full") {
+    throw new HttpError(403, `このAPIキー（権限: ${SCOPE_LABEL[key.scope]}）では${what}できません。権限が「すべて」のキーを発行して使ってください。`);
+  }
+  const caller = await callerFromApiKey(sb, key);
+  const body = parseBody(req);
+  const ticket = await ticketForApiKey(sb, key.project_id, String(body.wbs ?? "").trim());
+
+  return resource === "ticket-merge"
+    ? handleTicketMerge(sb, caller, key, ticket, body, res)
+    : handleTicketPullCreate(sb, caller, key, ticket, body, res);
+}
+
+/**
+ * POST /api/github/ticket-pull-create { wbs, head, title, body?, base? }
+ *
+ * bot 名義でPRを作り、そのままチケットへ紐づける。
+ * ブランチ名にチケット番号が無いものは作らない。番号が無いと Webhook・リリース反映の
+ * 自動紐づけから外れ、どのチケットのPRかを後から辿れなくなるため。
+ */
+async function handleTicketPullCreate(
+  sb: SupabaseClient, caller: Caller, key: ApiKeyRow, ticket: { id: string; wbs: string },
+  body: Record<string, any>, res: any,
+) {
+  const head = String(body.head ?? "").trim();
+  if (!head) throw new HttpError(400, "head（push したブランチ名）は必須です。");
+  if (!branchHasWbs(head, ticket.wbs)) {
+    throw new HttpError(400, `ブランチ名「${head}」にチケット番号「${ticket.wbs}」が入っていないため、PRを作成しません。ブランチ名に ${ticket.wbs} を含めてください。`);
+  }
+
+  const ctx = await projectContext(sb, caller, key.project_id, "create-pull");
+  const r = await createPull(sb, ctx, caller, {
+    head, title: body.title, body: body.body, base: body.base,
+  });
+  if (r.status !== 200 || !r.pr?.number) return res.status(r.status).json(r.body);
+
+  // 指定されたチケットへ紐づける。createPull の autoLink はWBSの綴りが割れていると候補止まりになるため、
+  // ここで確実に付ける。人が手で付けた紐づけ（auto_linked=false）は上書きしない
+  const pr = r.pr;
+  let linked = false;
+  let linkError: string | null = null;
+  try {
+    const { data: prev } = await sb
+      .from("ticket_github_links").select("auto_linked")
+      .eq("project_id", ctx.id).eq("ticket_id", ticket.id).eq("kind", "pull").eq("number", pr.number)
+      .maybeSingle();
+    if (prev?.auto_linked === false) {
+      linked = true;
+    } else {
+      const { error } = await sb.from("ticket_github_links").upsert({
+        project_id: ctx.id,
+        ticket_id: ticket.id,
+        kind: "pull",
+        number: pr.number,
+        title: pr.title ?? "",
+        state: "open",
+        url: pr.html_url ?? "",
+        auto_linked: true,
+        auto_reason: "AIで実装（APIからPR作成）",
+      }, { onConflict: "project_id,ticket_id,kind,number" });
+      linked = !error;
+      if (error) linkError = error.message;
+    }
+  } catch (e) {
+    linkError = (e as Error)?.message ?? String(e);
+  }
+
+  return res.status(200).json({
+    ...r.body,
+    wbs: ticket.wbs,
+    linked,
+    ...(linkError ? { linkError: `PRは作成しましたが、チケットへの紐づけに失敗しました: ${linkError}` } : {}),
+  });
+}
+
+/**
+ * POST /api/github/ticket-merge { wbs, number }
+ *
+ * そのチケットに紐づいたPRだけを、bot 名義で Squash マージする。
+ * 確認（権限・衝突・CI・層A）は画面からのマージと同じ mergePull を通す。
+ * 層Aが reason のときは、押し切る理由を書くのは人なので、APIではマージせずに止める。
+ */
+async function handleTicketMerge(
+  sb: SupabaseClient, caller: Caller, key: ApiKeyRow, ticket: { id: string; wbs: string },
+  body: Record<string, any>, res: any,
+) {
+  const number = Number(body.number ?? 0);
+  if (!Number.isInteger(number) || number <= 0) throw new HttpError(400, "number（プルリクエストの番号）は正の整数で指定してください。");
+
+  const ctx = await projectContext(sb, caller, key.project_id, "merge");
+
+  const { data: link } = await sb
+    .from("ticket_github_links").select("id")
+    .eq("project_id", ctx.id).eq("ticket_id", ticket.id).eq("kind", "pull").eq("number", number)
+    .maybeSingle();
+  if (!link) {
+    throw new HttpError(400, `PR #${number} はチケット「${ticket.wbs}」に紐づいていないため、マージしません。`);
+  }
+
+  try {
+    const r = await mergePull(sb, ctx, caller, number, "squash", "");
+    return res.status(r.status).json(r.status === 200 ? { ...r.body, wbs: ticket.wbs, number } : r.body);
+  } catch (e) {
+    if (e instanceof HttpError && (e.payload as any)?.precheck?.needsReason) {
+      throw new HttpError(e.status,
+        `${e.message.replace(/続ける場合は理由を入力してください。$/, "")}理由を入力して押し切るかどうかは人が判断するため、APIではマージしません。Dev Ticket の画面からマージしてください。`,
+        e.payload);
+    }
+    throw e;
   }
 }
 

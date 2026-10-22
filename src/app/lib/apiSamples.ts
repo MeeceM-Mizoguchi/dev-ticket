@@ -4,10 +4,12 @@
 // AI に渡す手順書（apiKeyPrompt.ts / apiImplementPrompt.ts）とは読者が違う。あちらは AI 向けの仕様書、
 // こちらは人間が自分のコードへ写すためのもの。
 //
-// サンプルは4種類（登録・読み取り・ステータス更新・PR紐づけ）。読み取り以降は、
+// サンプルは6種類（登録・読み取り・ステータス更新・PR紐づけ・PR作成・マージ）。読み取り以降は、
 // AI を通さずに外部のシステムからも同じ API を使えることを見せるためのもの。
+// PR作成・マージ（BRU21-001）は api/github/[resource].ts にあり、PRとマージコミットが Dev Ticket の bot 名義になる。
 //
-// ⚠️ ここのサンプルは api/v1/[resource].ts の実装と一致していなければならない。
+// ⚠️ ここのサンプルは api/v1/[resource].ts・api/github/[resource].ts（ticket-pull-create / ticket-merge）の
+//    実装と一致していなければならない。
 //    エンドポイント・ヘッダー・上限値・受けるステータス・エラーの条件を変えたら、こちらも直すこと。
 
 /** サンプルを出せる言語 */
@@ -20,7 +22,7 @@ export const SAMPLE_LANGS: { id: SampleLang; label: string }[] = [
 ];
 
 /** サンプルの種類（どの API を叩くか） */
-export type SampleKind = "create" | "read" | "status" | "pull";
+export type SampleKind = "create" | "read" | "status" | "pull" | "pull-create" | "merge";
 
 /**
  * 種類ごとの説明。画面ではサンプルの上に「必要な権限」と注意を出す。
@@ -56,6 +58,24 @@ export const SAMPLE_KINDS: { id: SampleKind; label: string; endpoint: string; pe
     notes: [
       "url はプロジェクトに登録した GitHub リポジトリのプルリクエストで、number と url の番号が一致している必要があります（違うと 400）",
       "すでに紐づいていれば changed: false が返ります。画面から手動で紐づけたPRは上書きしません",
+    ],
+  },
+  {
+    id: "pull-create", label: "PR作成", endpoint: "POST /api/github/ticket-pull-create",
+    permission: "すべて",
+    notes: [
+      "PRは Dev Ticket の bot 名義で作られ、指定したチケットへそのまま紐づきます",
+      "ブランチ（head）は先に push しておきます。ブランチ名にチケット番号が入っていないと 400 になります",
+      "キーを発行した人に GitHub のPR作成権限が無いと 403 になります",
+    ],
+  },
+  {
+    id: "merge", label: "マージ", endpoint: "POST /api/github/ticket-merge",
+    permission: "すべて",
+    notes: [
+      "そのチケットに紐づいたPRだけを、bot 名義で Squash マージします。紐づいていないPRの番号は 400 になります",
+      "コンフリクト・CIの失敗・必須のチェックやレビュー承認の不足・理由の入力が必要なときは、マージせずに 409 で理由を返します",
+      "キーを発行した人に GitHub のマージ権限が無いと 403 になります",
     ],
   },
 ];
@@ -600,6 +620,206 @@ link_pull_request(
 )`;
 }
 
+// ── PR作成・マージ（POST /api/github/ticket-pull-create・ticket-merge） ─────
+
+const PULL_CREATE_RULES = [
+  "PRは Dev Ticket の bot 名義で作られ、wbs のチケットへそのまま紐づく",
+  "head は push 済みのブランチ名。チケット番号が入っていないと 400",
+  "base を省くと、プロジェクトの既定ブランチへのPRになる",
+  "403: キーを発行した人に GitHub のPR作成権限が無い ／ 409: 同じブランチのPRが既にある・差分が無い",
+];
+
+const MERGE_RULES = [
+  "wbs のチケットに紐づいたPRだけを、bot 名義で Squash マージする（紐づいていないPRは 400）",
+  "409: コンフリクト・CIの失敗・必須のチェックやレビュー承認の不足・理由の入力が必要（人が画面からマージする）",
+  "403: キーを発行した人に GitHub のマージ権限が無い",
+];
+
+function pullCreateCurlSample(c: SampleContext, key: string, wbs: string): string {
+  return `# 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+#
+${commentLines("#", PULL_CREATE_RULES)}
+curl -X POST ${c.baseUrl}/api/github/ticket-pull-create \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "wbs": "${wbs}",
+    "head": "feature/${wbs}",
+    "title": "${wbs} ログイン画面のバリデーション追加",
+    "body": "## 概要\\nメールアドレス欄に入力チェックを追加"
+  }'
+
+# 応答の例
+# { "ok": true, "number": 123, "url": "${PULL_URL_EXAMPLE}", "title": "…", "wbs": "${wbs}", "linked": true }`;
+}
+
+function pullCreateJsSample(c: SampleContext, wbs: string): string {
+  return `// 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+//
+${commentLines("//", PULL_CREATE_RULES)}
+const API_KEY = process.env.DEV_TICKET_API_KEY;
+
+async function createPullRequest(wbs, { head, title, body, base }) {
+  const res = await fetch("${c.baseUrl}/api/github/ticket-pull-create", {
+    method: "POST",
+    headers: {
+      "Authorization": \`Bearer \${API_KEY}\`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ wbs, head, title, body, base }),
+  });
+
+  const json = await res.json();
+  if (!res.ok) {
+    // 400:ブランチ名にチケット番号が無い 401:キーが無効 403:権限不足 404:チケットが無い 409:PRが既にある・差分が無い
+    throw new Error(\`\${res.status}: \${json.error}\`);
+  }
+  // linked が false なら、PRは作れたがチケットへの紐づけに失敗している（理由は linkError）
+  if (!json.linked) console.warn(json.linkError);
+  return json; // { ok, number, url, title, wbs, linked }
+}
+
+// ── ここから下が「自分のシステム」で使う部分 ──
+// 例: 自社のリリースツールが push したブランチから、PRを bot 名義で作る
+const pr = await createPullRequest("${wbs}", {
+  head: "feature/${wbs}",
+  title: "${wbs} ログイン画面のバリデーション追加",
+  body: "## 概要\\nメールアドレス欄に入力チェックを追加",
+});
+console.log(pr.url);`;
+}
+
+function pullCreatePythonSample(c: SampleContext, wbs: string): string {
+  return `# 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+#
+${commentLines("#", PULL_CREATE_RULES)}
+import os
+import requests
+
+API_KEY = os.environ["DEV_TICKET_API_KEY"]
+BASE_URL = "${c.baseUrl}"
+
+
+def create_pull_request(wbs, head, title, body="", base=None):
+    payload = {"wbs": wbs, "head": head, "title": title, "body": body}
+    if base:
+        payload["base"] = base
+    res = requests.post(
+        f"{BASE_URL}/api/github/ticket-pull-create",
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=60,
+    )
+
+    data = res.json()
+    if not res.ok:
+        # 400:ブランチ名にチケット番号が無い 401:キーが無効 403:権限不足 404:チケットが無い 409:PRが既にある・差分が無い
+        raise RuntimeError(f"{res.status_code}: {data.get('error')}")
+    # linked が False なら、PRは作れたがチケットへの紐づけに失敗している（理由は linkError）
+    if not data.get("linked"):
+        print("警告:", data.get("linkError"))
+    return data  # {"ok", "number", "url", "title", "wbs", "linked"}
+
+
+# ── ここから下が「自分のシステム」で使う部分 ──
+# 例: 自社のリリースツールが push したブランチから、PRを bot 名義で作る
+pr = create_pull_request(
+    "${wbs}",
+    head="feature/${wbs}",
+    title="${wbs} ログイン画面のバリデーション追加",
+    body="## 概要\\nメールアドレス欄に入力チェックを追加",
+)
+print(pr["url"])`;
+}
+
+function mergeCurlSample(c: SampleContext, key: string, wbs: string): string {
+  return `# 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+#
+${commentLines("#", MERGE_RULES)}
+curl -X POST ${c.baseUrl}/api/github/ticket-merge \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "wbs": "${wbs}", "number": 123 }'
+
+# 応答の例
+# { "ok": true, "sha": "<マージコミットのSHA>", "wbs": "${wbs}", "number": 123 }`;
+}
+
+function mergeJsSample(c: SampleContext, wbs: string): string {
+  return `// 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+//
+${commentLines("//", MERGE_RULES)}
+const API_KEY = process.env.DEV_TICKET_API_KEY;
+
+async function mergePullRequest(wbs, number) {
+  const res = await fetch("${c.baseUrl}/api/github/ticket-merge", {
+    method: "POST",
+    headers: {
+      "Authorization": \`Bearer \${API_KEY}\`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ wbs, number }),
+  });
+
+  const json = await res.json();
+  if (res.status === 409) {
+    // コンフリクト・CIの失敗・承認不足など。送り直しても通らないので、理由を残して人に任せる
+    console.warn(json.error);
+    return null;
+  }
+  if (!res.ok) {
+    // 400:チケットに紐づいていないPR 401:キーが無効 403:権限不足 404:チケットが無い
+    throw new Error(\`\${res.status}: \${json.error}\`);
+  }
+  return json; // { ok, sha, wbs, number }
+}
+
+// ── ここから下が「自分のシステム」で使う部分 ──
+// 例: 自社のリリースツールで承認が済んだら、チケットのPRを bot 名義でマージする
+await mergePullRequest("${wbs}", 123);`;
+}
+
+function mergePythonSample(c: SampleContext, wbs: string): string {
+  return `# 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+#
+${commentLines("#", MERGE_RULES)}
+import os
+import requests
+
+API_KEY = os.environ["DEV_TICKET_API_KEY"]
+BASE_URL = "${c.baseUrl}"
+
+
+def merge_pull_request(wbs, number):
+    res = requests.post(
+        f"{BASE_URL}/api/github/ticket-merge",
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={"wbs": wbs, "number": number},
+        timeout=60,
+    )
+
+    body = res.json()
+    if res.status_code == 409:
+        # コンフリクト・CIの失敗・承認不足など。送り直しても通らないので、理由を残して人に任せる
+        print("マージできません:", body.get("error"))
+        return None
+    if not res.ok:
+        # 400:チケットに紐づいていないPR 401:キーが無効 403:権限不足 404:チケットが無い
+        raise RuntimeError(f"{res.status_code}: {body.get('error')}")
+    return body  # {"ok", "sha", "wbs", "number"}
+
+
+# ── ここから下が「自分のシステム」で使う部分 ──
+# 例: 自社のリリースツールで承認が済んだら、チケットのPRを bot 名義でマージする
+merge_pull_request("${wbs}", 123)`;
+}
+
 export function buildApiSample(lang: SampleLang, ctx: SampleContext, kind: SampleKind = "create"): string {
   const key = ctx.plainKey ?? KEY_PLACEHOLDER;
   const wbs = ctx.wbs ?? "T-012";
@@ -611,6 +831,12 @@ export function buildApiSample(lang: SampleLang, ctx: SampleContext, kind: Sampl
   }
   if (kind === "pull") {
     return lang === "js" ? pullJsSample(ctx, wbs) : lang === "python" ? pullPythonSample(ctx, wbs) : pullCurlSample(ctx, key, wbs);
+  }
+  if (kind === "pull-create") {
+    return lang === "js" ? pullCreateJsSample(ctx, wbs) : lang === "python" ? pullCreatePythonSample(ctx, wbs) : pullCreateCurlSample(ctx, key, wbs);
+  }
+  if (kind === "merge") {
+    return lang === "js" ? mergeJsSample(ctx, wbs) : lang === "python" ? mergePythonSample(ctx, wbs) : mergeCurlSample(ctx, key, wbs);
   }
   if (lang === "js") return jsSample(ctx);
   if (lang === "python") return pythonSample(ctx);

@@ -6,7 +6,10 @@
 //   POST /api/v1/tickets        … チケットの登録（親子1階層まで／既存チケットへの子の追加も可）
 //   GET  /api/v1/ticket         … チケット1件の中身（本文・画像・添付・コメント・子チケット）
 //   POST /api/v1/ticket-status  … ステータスを前へ進める（進行中／レビュー中／対応完了）
-//   POST /api/v1/ticket-pull    … AI が作ったプルリクエストをチケットへ紐づける
+//   POST /api/v1/ticket-pull    … 外部で作ったプルリクエストをチケットへ紐づける
+//
+// PRの作成とマージを bot 名義で行うAPI（ticket-pull-create / ticket-merge）は、GitHub App の
+// ヘルパーがある api/github/[resource].ts 側に置いている（BRU21-001）。「AIで実装」の手順書はそちらを使う。
 //
 // 下の3つは「AIがチケットを読み取って実装する」ためのもの。キーの権限（scope）で使える範囲が変わる:
 //   write … 登録のみ（context / tickets）    ← これまでに発行されたキーはすべてこれ
@@ -33,13 +36,10 @@
 //     ・supabase/add_api_key_scopes.sql       （api_keys.scope）
 // ============================================================
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import crypto from "crypto";
+import { authenticateApiKey, SCOPE_LABEL, type ApiKeyRow } from "../_lib/apiKeyAuth.js";
 
 // ── 定数 ──────────────────────────────────────────────────────
-const KEY_PREFIX = "dvt_live_";
-/** 1キーあたり: RATE_WINDOW_SEC 秒間に RATE_LIMIT 回まで */
-const RATE_LIMIT = 60;
-const RATE_WINDOW_SEC = 60;
+// キーの形式・権限（scope）・レート制限は api/_lib/apiKeyAuth.ts にある（api/github と共用。BRU21-001）
 /** 1リクエストで送れる tickets[] の要素数 */
 const MAX_PARENTS_PER_REQUEST = 200;
 /** 親1件あたりの子チケット数（1リクエストで足せる数。既存の子の数は数えない） */
@@ -51,14 +51,6 @@ const LIST_DEFAULT_LIMIT = 100;
 const LIST_MAX_LIMIT = 500;
 /** GET /api/v1/ticket で1チケットあたりに返すコメントの上限（新しいほうから） */
 const MAX_COMMENTS_PER_TICKET = 200;
-
-// ── キーの権限 ────────────────────────────────────────────────
-type KeyScope = "write" | "read" | "full";
-const SCOPE_LABEL: Record<KeyScope, string> = { write: "登録のみ", read: "読み取りのみ", full: "すべて" };
-/** scope 列が無い（add_api_key_scopes.sql 未適用）・未知の値は、従来どおりの「登録のみ」に倒す */
-function scopeOf(raw: unknown): KeyScope {
-  return raw === "read" || raw === "full" ? raw : "write";
-}
 
 // ── ステータス／優先度の写像（src/app/lib/mdTickets/parse.ts と同じ内容） ──
 const STATUS_LABELS = ["未着手", "進行中", "レビュー中", "レビュー完了", "STG完了", "UAT完了", "クローズ"];
@@ -261,77 +253,6 @@ function admin(): SupabaseClient {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error("Supabase not configured");
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
-}
-
-interface ApiKeyRow {
-  id: string;
-  name: string;
-  project_id: string;
-  organization_id: string | null;
-  created_by: string | null;
-  expires_at: string | null;
-  revoked_at: string | null;
-  scope: KeyScope;
-}
-
-type AuthResult =
-  | { ok: true; key: ApiKeyRow }
-  | { ok: false; status: number; error: string };
-
-/**
- * Authorization ヘッダの APIキーを検証する。
- *
- * service_role で接続するため RLS は効かない。ここで引いた key.project_id が
- * 唯一のテナント境界になるので、この先の処理は必ず project_id で絞ること。
- */
-async function authenticate(sb: SupabaseClient, req: any): Promise<AuthResult> {
-  const header: string = req.headers?.authorization || req.headers?.Authorization || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-
-  if (!token) {
-    return { ok: false, status: 401, error: "APIキーがありません。Authorization: Bearer <APIキー> を付けてください" };
-  }
-  if (!token.startsWith(KEY_PREFIX)) {
-    return { ok: false, status: 401, error: `APIキーの形式が正しくありません（${KEY_PREFIX}… で始まります）` };
-  }
-
-  const hash = crypto.createHash("sha256").update(token).digest("hex");
-  // 列を名指しせず * で引く。scope 列は後から足したもので、名指しすると
-  // add_api_key_scopes.sql を流す前の環境では全キーが「無効」になってしまう。
-  const { data: key } = await sb
-    .from("api_keys")
-    .select("*")
-    .eq("key_hash", hash)
-    .maybeSingle();
-
-  if (!key) return { ok: false, status: 401, error: "APIキーが無効です" };
-  if (key.revoked_at) return { ok: false, status: 401, error: "このAPIキーは失効しています" };
-  if (key.expires_at && new Date(key.expires_at).getTime() < Date.now()) {
-    return { ok: false, status: 401, error: "このAPIキーは有効期限が切れています" };
-  }
-
-  // レート制限（last_used_at の更新もここで行われる）
-  const { data: allowed, error: rateError } = await sb.rpc("consume_api_key_rate", {
-    p_key_id: key.id,
-    p_limit: RATE_LIMIT,
-    p_window_seconds: RATE_WINDOW_SEC,
-  });
-  if (rateError) {
-    return { ok: false, status: 500, error: `レート制限の判定に失敗しました: ${rateError.message}` };
-  }
-  if (allowed === false) {
-    return { ok: false, status: 429, error: `リクエストが多すぎます（${RATE_WINDOW_SEC}秒あたり${RATE_LIMIT}回まで）。少し待ってから再試行してください` };
-  }
-
-  return {
-    ok: true,
-    key: {
-      id: key.id, name: key.name, project_id: key.project_id,
-      organization_id: key.organization_id ?? null, created_by: key.created_by ?? null,
-      expires_at: key.expires_at ?? null, revoked_at: key.revoked_at ?? null,
-      scope: scopeOf(key.scope),
-    },
-  };
 }
 
 // ── プラン上限 ────────────────────────────────────────────────
@@ -1499,7 +1420,7 @@ export default async function handler(req: any, res: any) {
   let sb: SupabaseClient;
   try { sb = admin(); } catch { return res.status(500).json({ error: "Supabase not configured" }); }
 
-  const auth = await authenticate(sb, req);
+  const auth = await authenticateApiKey(sb, req);
   if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
 
   if (resource === "context") {

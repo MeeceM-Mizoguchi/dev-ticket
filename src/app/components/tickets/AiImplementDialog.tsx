@@ -174,9 +174,10 @@ export function AiImplementPanel({
     if (selection.status && !canUpdateStatus(selectedKey)) {
       return "このキーは「読み取りのみ」のため、ステータスを更新できません。権限が「すべて」のキーを選ぶか、「チケットのステータスの更新」を外してください。";
     }
-    // 作ったPRは AI が POST /api/v1/ticket-pull で紐づける。これも「すべて」のキーだけに許している
+    // PRの作成・マージは AI が POST /api/github/ticket-pull-create・ticket-merge で行う（BRU21-001）。
+    // これも「すべて」のキーだけに許している
     if (selection.pr && !canUpdateStatus(selectedKey)) {
-      return "このキーは「読み取りのみ」のため、PRをチケットに紐づけられません。権限が「すべて」のキーを選ぶか、「PR作成」を外してください。";
+      return "このキーは「読み取りのみ」のため、PRを作成できません。権限が「すべて」のキーを選ぶか、「PR作成」を外してください。";
     }
     return null;
   })();
