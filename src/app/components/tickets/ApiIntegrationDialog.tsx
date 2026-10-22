@@ -128,6 +128,8 @@ export function ApiIntegrationDialog({
 
   const [selectedKeyId, setSelectedKeyId] = useState<string>("");
   const [promptOpen, setPromptOpen] = useState(false);
+  // 「AIで子チケット登録」タブでだけ使う。発行直後の画面のコピーは常にオフ
+  const [promptPrLinkWaived, setPromptPrLinkWaived] = useState(false);
   const [manualCopyText, setManualCopyText] = useState<string | null>(null);
   // 「使用するキー」で選ばれたキーの平文。プロンプトへ埋め込む。
   // 暗号化して保存してあるので、選ぶたびにサーバーへ復号を依頼して取り出す。
@@ -259,10 +261,11 @@ export function ApiIntegrationDialog({
 
   const parentWbs = parentTicket?.wbs;
   const parentTitle = parentTicket?.title ?? "";
-  const buildPrompt = useCallback((plainKey?: string) => buildApiSetupPrompt({
+  const buildPrompt = useCallback((plainKey?: string, prLinkWaived = false) => buildApiSetupPrompt({
     baseUrl, projectName, sprintId, sprintName,
     memberNames, categoryNames, today, plainKey,
     parentTicket: parentWbs ? { wbs: parentWbs, title: parentTitle } : undefined,
+    prLinkWaived,
   }), [baseUrl, projectName, sprintId, sprintName, memberNames, categoryNames, today, parentWbs, parentTitle]);
 
   // ── 発行 ──────────────────────────────────────────────────────
@@ -418,7 +421,7 @@ export function ApiIntegrationDialog({
     }
 
     const selected = activeKeys.find(k => k.id === selectedKeyId) ?? activeKeys[0];
-    const prompt = buildPrompt(revealedKey ?? undefined);
+    const prompt = buildPrompt(revealedKey ?? undefined, promptPrLinkWaived);
     const keyEmbedded = !!revealedKey;
 
     return (
@@ -485,6 +488,19 @@ export function ApiIntegrationDialog({
                   : "キーを読み込めませんでした。"}
           </p>
         </div>
+
+        {/* PR を作らない作業を登録したとき、リリース待ち以降で「プルリクエストが紐付いていません」が出ないようにする */}
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 7, cursor: "pointer", userSelect: "none" }}>
+          <input type="checkbox" checked={promptPrLinkWaived}
+            onChange={e => setPromptPrLinkWaived(e.target.checked)}
+            style={{ width: 14, height: 14, marginTop: 2, accentColor: GREEN, cursor: "pointer", flexShrink: 0 }} />
+          <span>
+            <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714" }}>登録するチケットをすべて「PR不要」にする</span>
+            <span style={{ display: "block", fontSize: 10.5, color: "#9E9690", marginTop: 2, lineHeight: 1.7 }}>
+              仕様の確認・資料作成など、プルリクエストを作らない作業のとき
+            </span>
+          </span>
+        </label>
 
         <div>
           {/* 復号中に押されるとキー無しのプロンプトがコピーされるため、終わるまで押させない */}
@@ -729,6 +745,7 @@ export function ApiIntegrationDialog({
               { k: "description", req: false, v: "本文（Markdown文字列）", def: "空欄" },
               { k: "children", req: false, v: "子チケットの配列（同じ形・1階層まで）", def: "なし" },
               { k: "parentWbs", req: false, v: "既存チケットのWBS（例: T-012）。指定するとその子として登録され、枝番は既存の子の続きから自動で振られる。親は GET /api/v1/tickets で探せる", def: "新しい親として登録" },
+              { k: "prLinkWaived", req: false, v: "true / false。true で「PR不要」として登録し、リリース待ち以降でも「プルリクエストが紐付いていません」の警告を出さない。リクエスト直下に書くと子チケットも含めて全件の既定値になり、1件ずつの指定がそれより優先される", def: "false" },
             ].map((f, i) => (
               <div key={f.k} style={{
                 display: "flex", gap: 9, padding: "7px 11px", alignItems: "flex-start",
