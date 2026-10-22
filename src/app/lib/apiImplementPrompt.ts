@@ -9,9 +9,14 @@
 // 「やらない」と明記する。AI は書かれていない作業を気を利かせて進めがちなので、
 // 載せないだけでなく禁止として書くのが要点。
 //
-// ブランチ・コミット・PR・マージは AI が手元の git / gh で行う（Dev Ticket のAPIは通さない）。
-// Dev Ticket 側のAPIを使うのは「読み取り」「ステータス更新」「PRの紐づけ」の3つだけ。
-// PRの紐づけは、AI が gh pr create で作ったPRが画面・Webhook の自動紐づけを通らないため（BRU20-004）。
+// ブランチ・コミット・push は AI が手元の git で行う。PRの作成とマージは Dev Ticket のAPI
+// （api/github/[resource].ts の ticket-pull-create / ticket-merge）で行わせ、gh pr create / gh pr merge は禁止する（BRU21-001）。
+// gh で作ったPR・マージしたコミットは AI を動かした人の個人アカウント名義になり、そのアカウントが
+// Vercel のプロジェクトに権限を持たないと、本番デプロイが「Deployment was blocked」で止まるため。
+// APIを通せば GitHub App の bot 名義になる。APIがエラーを返したときに gh へ切り替えると同じ状態に戻るので、
+// 「切り替えずに止まって報告する」と明記するのが要点。
+// PRの紐づけは ticket-pull-create が作成と同時に行うので、手順書から /api/v1/ticket-pull は外した
+// （/api/v1/ticket-pull は外部のシステム向けに残っている）。
 //
 // AI が進めてよいステータスは、レビュー前の「進行中」（子チケットは「対応完了」）まで。
 // 「レビュー中」はレビュアーを人が画面で指定して進めるものなので、手順書には載せない（BRU20-005）。
@@ -26,9 +31,9 @@
 // （1チケット＝1PR の運用のまま、レビュー・マージをチケットごとにできるようにするため）。
 // 1件用の buildImplementPrompt の文面は、こちらを足しても変えない。
 //
-// ⚠️ ここに書く仕様は api/v1/[resource].ts の実装と一致していなければならない
+// ⚠️ ここに書く仕様は api/v1/[resource].ts・api/github/[resource].ts の実装と一致していなければならない
 //    （GET /api/v1/ticket の応答の形・POST /api/v1/ticket-status が受けるステータス・
-//      POST /api/v1/ticket-pull が受ける内容とエラー）。
+//      POST /api/github/ticket-pull-create・ticket-merge が受ける内容とエラー）。
 
 /** チェックボックス1つぶん */
 export type ImplementStep = "implement" | "status" | "branch" | "commit" | "pr" | "merge";
@@ -157,6 +162,85 @@ const FENCE = "```";
 /** インラインコード。テンプレートリテラルの中でバッククォートを書かずに済ませる */
 const c = (s: string) => "`" + s + "`";
 
+/** PRの作成・マージを gh で行わせないための一文。手順と仕様の両方に置く（BRU21-001） */
+const NO_GH_FALLBACK = "**APIがエラーを返したら、" + c("gh pr create") + "・" + c("gh pr merge") + " に切り替えて自分でやり直さない。**内容を変えて再送もしない。止まって、エラー文をそのまま利用者に報告する（gh で作ったPR・マージは個人のアカウント名義になり、本番のデプロイが止まることがあるため）。";
+
+/**
+ * 「PRの作成・マージの仕様」の節（BRU21-001）。1件用・まとめて実装用で共用する。
+ * wbs / head / title は例に出す値。
+ */
+function pullApiSpec(
+  ctx: { baseUrl: string; repo?: string | null; defaultBranch?: string | null },
+  sel: ImplementSelection, ex: { wbs: string; title: string; wbsNote: string },
+): string[] {
+  const repo = ctx.repo ?? "<owner>/<repo>";
+  return [
+    "## PRの作成・マージの仕様",
+    "",
+    "PRの作成とマージは、Dev Ticket のAPIで行う。PRとマージコミットは Dev Ticket の bot 名義になる。",
+    "**" + c("gh pr create") + "・" + c("gh pr merge") + " は使わない。**",
+    "",
+    "### PRを作る",
+    "",
+    FENCE,
+    `POST ${ctx.baseUrl}/api/github/ticket-pull-create`,
+    "Authorization: Bearer <APIキー>",
+    "Content-Type: application/json",
+    "",
+    `{ "wbs": "${ex.wbs}", "head": "feature/${ex.wbs}", "title": "${ex.wbs} ${ex.title.replace(/"/g, '\\"')}", "body": "<本文（Markdown）>" }`,
+    FENCE,
+    "",
+    `- ${c("wbs")} … ${ex.wbsNote}`,
+    `- ${c("head")} … push したブランチ名。**チケット番号が入っていないと、PRは作られずに 400 になる。**`,
+    `- ${c("base")} … マージ先。省略すると ${ctx.defaultBranch ? c(ctx.defaultBranch) : "プロジェクトの既定ブランチ"} になる。`,
+    "- 本文の末尾には「Dev Ticket の（キーを発行した人）が作成（APIキー経由）」が自動で付く。",
+    "- 作ったPRは、その場で " + c("wbs") + " のチケットへ紐づく（紐づけのAPIを別に呼ぶ必要はない）。",
+    "",
+    "応答:",
+    "",
+    FENCE + "json",
+    `{ "ok": true, "number": 123, "url": "https://github.com/${repo}/pull/123", "title": "…", "wbs": "${ex.wbs}", "linked": true }`,
+    FENCE,
+    "",
+    "- " + c("linked") + " が " + c("false") + " なら、PRは作れたがチケットへの紐づけに失敗している。" + c("linkError") + " を報告に書き、PRは消さずに次へ進む。",
+    "",
+    ...(sel.merge ? [
+      "### マージする",
+      "",
+      FENCE,
+      `POST ${ctx.baseUrl}/api/github/ticket-merge`,
+      "Authorization: Bearer <APIキー>",
+      "Content-Type: application/json",
+      "",
+      `{ "wbs": "${ex.wbs}", "number": 123 }`,
+      FENCE,
+      "",
+      "- " + c("number") + " … ticket-pull-create で作ったPRの番号。**" + c("wbs") + " のチケットに紐づいていないPRは、マージされずに 400 になる。**",
+      "- マージ方法は Squash で固定。マージの前に、画面からのマージと同じ確認（コンフリクト・CI・必須のレビュー承認）が行われる。",
+      "",
+      "応答:",
+      "",
+      FENCE + "json",
+      `{ "ok": true, "sha": "<マージコミットのSHA>", "wbs": "${ex.wbs}", "number": 123 }`,
+      FENCE,
+      "",
+    ] : []),
+    "### エラー",
+    "",
+    "| status | 意味 |",
+    "|---|---|",
+    "| 400 | 入力の誤り（ブランチ名にチケット番号が無い" + (sel.merge ? "／チケットに紐づいていないPRの番号" : "") + " など） |",
+    "| 401 | APIキーが無効 |",
+    "| 403 | APIキーの権限が「すべて」でない／キーを発行した人に GitHub のPR作成" + (sel.merge ? "・マージ" : "") + "の権限が無い |",
+    "| 404 | チケットが無い |",
+    "| 409 | " + (sel.merge ? "コンフリクトしている／CIが失敗している／必須のチェックやレビュー承認が足りない／理由の入力が必要（人が画面からマージする）／" : "") + "同じブランチのPRが既にある |",
+    "",
+    "- " + NO_GH_FALLBACK,
+    ...(sel.merge ? ["- 例外として、マージで「判定中」「CIが実行中」の 409 が返ったときだけ、1分ほど待ってから1回だけ送り直してよい。それでも 409 なら止まって報告する。"] : []),
+    "",
+  ];
+}
+
 /**
  * AIに渡す手順書を組み立てる。
  * これ1つをAIに貼れば、チケットの内容を貼り直さずに、選んだ範囲までを実行できる状態にする。
@@ -168,7 +252,6 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
   const base = ctx.defaultBranch ? c(ctx.defaultBranch) : "リポジトリの既定ブランチ";
   const detailUrl = `${ctx.baseUrl}/api/v1/ticket?wbs=${encodeURIComponent(ctx.wbs)}`;
   const statusUrl = `${ctx.baseUrl}/api/v1/ticket-status`;
-  const pullUrl = `${ctx.baseUrl}/api/v1/ticket-pull`;
 
   const out: string[] = [];
   const add = (...lines: string[]) => out.push(...lines);
@@ -219,7 +302,7 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
     ctx.plainKey
       ? "- 上の1行が **Dev Ticket のAPIキー**（" + c("dvt_live_") + " で始まる文字列）。**この手順書にキーはもう含まれている。**利用者に聞き直さないこと。"
       : "- 上の行はプレースホルダ。控えてある実際のキー（" + c("dvt_live_") + " で始まる文字列）に置き換えること。環境変数などに登録済みであれば、そちらを使ってよい。"
-        + (sel.pr ? "**PRをチケットに紐づけるため、権限が「すべて」のキーに置き換えること。**" : ""),
+        + (sel.pr ? "**PRの作成" + (sel.merge ? "・マージ" : "") + "に使うため、権限が「すべて」のキーに置き換えること。**" : ""),
     "- すべてのリクエストで " + c("Authorization: Bearer <上のAPIキー>") + " として送る。",
     "- キーはパスワードと同じもの。**ソースコード・コミット・PRの本文・ログに書き出さないこと。**",
     "",
@@ -291,7 +374,7 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
       `- ベースブランチ（${base}）を最新にする: ${c("git fetch origin")} → ベースブランチへ切り替え → ${c("git pull --ff-only")}。`,
       `- そこから新しいブランチを作る。**ブランチ名には必ずチケット番号 ${c(ctx.wbs)} を含める**（例: ${c(`feature/${ctx.wbs}`)}）。`
         + (sel.pr
-          ? "PRとチケットの紐づけは PR を作ったあとに API で行うが、それが届かなかったときは、GitHub からの通知（Webhook）でブランチ名の番号を手がかりに紐づく。"
+          ? "PRを作るAPIは、ブランチ名にチケット番号が無いとPRを作らない。"
           : "あとで PR を作ったとき、GitHub からの通知（Webhook）でブランチ名の番号を手がかりにチケットへ紐づく。"),
       "- 同じ名前のブランチが既にあるときは、上書きも使い回しもせず、止まって利用者に確認する。",
     );
@@ -349,15 +432,14 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
 
     step("プルリクエストを作る",
       "- ブランチを push する: " + c("git push -u origin <ブランチ名>") + "。",
-      `- ${c("gh pr create")} でプルリクエストを作る。マージ先は ${base}。`,
+      `- **プルリクエストは、下の「PRの作成・マージの仕様」の ${c("ticket-pull-create")} で作る。${c("gh pr create")} は使わない。**マージ先は ${base}。`,
       `- **タイトルの先頭にチケット番号を書く**（例: ${c(`${ctx.wbs} ${ctx.title}`)}）。`,
       "- 本文には、概要・変更点・確認した内容（実行した検証コマンドと結果）・Dev Ticket のチケットURL（応答の " + c("ticket.url") + "）を書く。",
       "- 前の手順で衝突するPRがあったときは、本文の冒頭に次を書く（PRごとに1行）。",
       "  - 「#◯◯ と（衝突するファイル名）で衝突します。#◯◯ をマージしたあとに、このブランチへ " + base + " を取り込んで解消してからマージしてください。」",
       "- 衝突するPRが無かったときは、衝突について何も書かない。",
-      "- 同じブランチのプルリクエストが既にあるときは作り直さず、その URL を使う。",
-      `- **作成できたら（既にあった場合も）、すぐに ${c(ctx.wbs)} へプルリクエストを紐づける。**` + c("gh pr view --json number,url,title") + " で番号・URL・タイトルを取り、下の「PRの紐づけの仕様」のとおりに送る。",
-      "- 紐づけに失敗しても、プルリクエストは消さずにそのまま次へ進む。最後の報告に「PRは作成したが紐づけできなかった」こと・PRのURL・エラー文を書く。",
+      `- 作ったPRは、その場で ${c(ctx.wbs)} に紐づく。応答の ${c("number")}（PRの番号）と ${c("url")} を控える。`,
+      "- " + NO_GH_FALLBACK,
     );
   } else {
     add("> **push しない・プルリクエストを作らない。**", "");
@@ -365,15 +447,16 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
 
   if (sel.merge) {
     step("マージする",
-      "- " + c("gh pr checks --watch") + " などで、**CI のチェックがすべて成功するまで待つ。**",
-      "- 次のどれかに当たったら、**マージせずに止まって報告する**: チェックが失敗した／コンフリクトしている／必須のレビュー承認が無い／ブランチ保護で拒否された。",
+      "- " + c("gh pr checks <PRの番号> --watch") + " で、**CI のチェックがすべて終わるまで待つ。**チェックが失敗したら、マージせずに止まって報告する。",
+      `- **マージは、下の「PRの作成・マージの仕様」の ${c("ticket-merge")} で行う。${c("gh pr merge")} は使わない。**マージ方法は Squash で固定。`,
+      "- マージは取り消せない。送る番号が、今回 " + c("ticket-pull-create") + " で作ったプルリクエストの番号であることを確かめてから送る。",
+      "- 409（コンフリクトしている／CIが失敗している／必須のチェックやレビュー承認が足りない／理由の入力が必要）が返ったら、**マージせずに止まって報告する。**",
       "- ブランチ保護を回避する手段（" + c("--admin") + "、保護設定の変更、強制 push など）は使わない。",
-      "- マージ方法はリポジトリで決められたものに従う。決まりが無ければ squash マージにする。",
-      "- マージは取り消せない。対象が今回作ったプルリクエストであることを、番号とブランチ名で確かめてから実行する。",
+      "- " + NO_GH_FALLBACK,
       ...(sel.status ? ["- **マージしたあと、ステータスはそれ以上変更しない**（リリース待ち・クローズなどへ進めるのは人が行う）。"] : []),
     );
   } else if (sel.pr) {
-    add("> **マージしない。**プルリクエストを作ったところで止める。", "");
+    add("> **マージしない。**プルリクエストを作ったところで止める（" + c("gh pr merge") + " も使わない）。", "");
   }
 
   step("報告する",
@@ -395,25 +478,13 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
     "- 判断に迷った点、本文とコメントの食い違い、確認してほしい点",
   );
 
-  // ── PRの紐づけの仕様 ──
+  // ── PRの作成・マージの仕様 ──
   if (sel.pr) {
-    add(
-      "## PRの紐づけの仕様",
-      "",
-      FENCE,
-      `POST ${pullUrl}`,
-      "Authorization: Bearer <APIキー>",
-      "Content-Type: application/json",
-      "",
-      `{ "wbs": "${ctx.wbs}", "number": 123, "url": "https://github.com/${ctx.repo ?? "<owner>/<repo>"}/pull/123", "title": "<プルリクエストのタイトル>" }`,
-      FENCE,
-      "",
-      `- ${c("wbs")} は ${c(ctx.wbs)} のまま送る${hasChildren ? "（子チケットごとではなく、親チケットに1回だけ紐づける）" : ""}。`,
-      "- " + c("number") + "・" + c("url") + "・" + c("title") + " は、作ったプルリクエストの値をそのまま使う。" + c("url") + " は Dev Ticket に登録されたリポジトリのPRで、" + c("number") + " と番号が一致している必要がある。",
-      "- 応答の " + c("changed") + " が " + c("false") + " なら、すでに紐づいているという意味で、正常。",
-      "- " + c("400") + "（リポジトリ・番号の不一致など）・" + c("403") + "（キーの権限不足）・" + c("404") + "（チケットが無い）が返ったら、**内容を変えて再送しない。**エラー文を報告に書く。",
-      "",
-    );
+    add(...pullApiSpec(ctx, sel, {
+      wbs: ctx.wbs,
+      title: ctx.title,
+      wbsNote: `${c(ctx.wbs)} のまま送る${hasChildren ? "（子チケットごとではなく、親チケットで1本のPRにする）" : ""}。`,
+    }));
   }
 
   // ── ステータス更新の仕様 ──
@@ -498,7 +569,7 @@ const kindLabel = (t: BulkImplementTicket) =>
 
 /**
  * 複数のチケットを、1件ずつ順に実装させる手順書を組み立てる。
- * チケットごとの流れ（読み取り → ブランチ → 実装 → コミット → PR → 紐づけ → マージ）は buildImplementPrompt と同じ。
+ * チケットごとの流れ（読み取り → ブランチ → 実装 → コミット → PR作成（紐づけ込み） → マージ）は buildImplementPrompt と同じ。
  */
 export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): string {
   const { selection: sel, tickets } = ctx;
@@ -507,7 +578,6 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
   const first = tickets[0]?.wbs ?? "T-012";
   const detailUrl = `${ctx.baseUrl}/api/v1/ticket?wbs=<WBS>`;
   const statusUrl = `${ctx.baseUrl}/api/v1/ticket-status`;
-  const pullUrl = `${ctx.baseUrl}/api/v1/ticket-pull`;
   const anyChildWork = tickets.some(t => t.isChild || t.childCount > 0);
 
   const out: string[] = [];
@@ -568,7 +638,7 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
     ctx.plainKey
       ? "- 上の1行が **Dev Ticket のAPIキー**（" + c("dvt_live_") + " で始まる文字列）。**この手順書にキーはもう含まれている。**利用者に聞き直さないこと。"
       : "- 上の行はプレースホルダ。控えてある実際のキー（" + c("dvt_live_") + " で始まる文字列）に置き換えること。環境変数などに登録済みであれば、そちらを使ってよい。"
-        + (sel.pr ? "**PRをチケットに紐づけるため、権限が「すべて」のキーに置き換えること。**" : ""),
+        + (sel.pr ? "**PRの作成" + (sel.merge ? "・マージ" : "") + "に使うため、権限が「すべて」のキーに置き換えること。**" : ""),
     "- すべてのリクエストで " + c("Authorization: Bearer <上のAPIキー>") + " として送る。",
     "- キーはパスワードと同じもの。**ソースコード・コミット・PRの本文・ログに書き出さないこと。**",
     "",
@@ -633,7 +703,7 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
       `- ベースブランチ（${base}）を最新にする: ${c("git fetch origin")} → ベースブランチへ切り替え → ${c("git pull --ff-only")}。**前のチケットのブランチから続けて作らない。**`,
       `- そこから新しいブランチを作る。**ブランチ名には必ずそのチケットの番号を含める**（例: ${c(`feature/${first}`)}）。`
         + (sel.pr
-          ? "PRとチケットの紐づけは PR を作ったあとに API で行うが、それが届かなかったときは、GitHub からの通知（Webhook）でブランチ名の番号を手がかりに紐づく。"
+          ? "PRを作るAPIは、ブランチ名にチケット番号が無いとPRを作らない。"
           : "あとで PR を作ったとき、GitHub からの通知（Webhook）でブランチ名の番号を手がかりにチケットへ紐づく。"),
       "- 同じ名前のブランチが既にあるときは、上書きも使い回しもせず、止まって利用者に確認する。",
     );
@@ -688,15 +758,14 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
 
     step("プルリクエストを作る",
       "- ブランチを push する: " + c("git push -u origin <ブランチ名>") + "。",
-      `- ${c("gh pr create")} でプルリクエストを作る（**チケットごとに1本**）。マージ先は ${base}。`,
+      `- **プルリクエストは、下の「PRの作成・マージの仕様」の ${c("ticket-pull-create")} で作る（チケットごとに1本）。${c("gh pr create")} は使わない。**マージ先は ${base}。`,
       `- **タイトルの先頭にチケット番号を書く**（例: ${c(`${first} ${tickets[0]?.title ?? "…"}`)}）。`,
       "- 本文には、概要・変更点・確認した内容（実行した検証コマンドと結果）・Dev Ticket のチケットURL（応答の " + c("ticket.url") + "）を書く。",
       "- 前の手順で衝突するPRがあったときは、本文の冒頭に次を書く（PRごとに1行）。",
       "  - 「#◯◯ と（衝突するファイル名）で衝突します。#◯◯ をマージしたあとに、このブランチへ " + base + " を取り込んで解消してからマージしてください。」",
       "- 衝突するPRが無かったときは、衝突について何も書かない。",
-      "- 同じブランチのプルリクエストが既にあるときは作り直さず、その URL を使う。",
-      "- **作成できたら（既にあった場合も）、すぐにそのチケットへプルリクエストを紐づける。**" + c("gh pr view --json number,url,title") + " で番号・URL・タイトルを取り、下の「PRの紐づけの仕様」のとおりに送る。",
-      "- 紐づけに失敗しても、プルリクエストは消さずにそのまま次へ進む。最後の報告に「PRは作成したが紐づけできなかった」こと・PRのURL・エラー文を書く。",
+      "- 作ったPRは、その場でそのチケットに紐づく。応答の " + c("number") + "（PRの番号）と " + c("url") + " を控える。",
+      "- " + NO_GH_FALLBACK + "残りのチケットにも進まない。",
     );
   } else {
     add("> **push しない・プルリクエストを作らない。**", "");
@@ -704,15 +773,16 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
 
   if (sel.merge) {
     step("マージする",
-      "- " + c("gh pr checks --watch") + " などで、**CI のチェックがすべて成功するまで待つ。**",
-      "- 次のどれかに当たったら、**マージせずに止まって報告する**（残りのチケットにも進まない）: チェックが失敗した／コンフリクトしている／必須のレビュー承認が無い／ブランチ保護で拒否された。",
+      "- " + c("gh pr checks <PRの番号> --watch") + " で、**CI のチェックがすべて終わるまで待つ。**チェックが失敗したら、マージせずに止まって報告する（残りのチケットにも進まない）。",
+      `- **マージは、下の「PRの作成・マージの仕様」の ${c("ticket-merge")} で行う。${c("gh pr merge")} は使わない。**マージ方法は Squash で固定。`,
+      "- マージは取り消せない。送る番号が、いま " + c("ticket-pull-create") + " で作ったプルリクエストの番号であることを確かめてから送る。",
+      "- 409（コンフリクトしている／CIが失敗している／必須のチェックやレビュー承認が足りない／理由の入力が必要）が返ったら、**マージせずに止まって報告する**（残りのチケットにも進まない）。",
       "- ブランチ保護を回避する手段（" + c("--admin") + "、保護設定の変更、強制 push など）は使わない。",
-      "- マージ方法はリポジトリで決められたものに従う。決まりが無ければ squash マージにする。",
-      "- マージは取り消せない。対象がいま作ったプルリクエストであることを、番号とブランチ名で確かめてから実行する。",
+      "- " + NO_GH_FALLBACK,
       ...(sel.status ? ["- **マージしたあと、ステータスはそれ以上変更しない**（リリース待ち・クローズなどへ進めるのは人が行う）。"] : []),
     );
   } else if (sel.pr) {
-    add("> **マージしない。**プルリクエストを作ったところで、次のチケットへ進む。", "");
+    add("> **マージしない。**プルリクエストを作ったところで、次のチケットへ進む（" + c("gh pr merge") + " も使わない）。", "");
   }
 
   add(`ここまで終えたら、上の表の次のチケットへ進み、${c("1.")} から繰り返す。`, "");
@@ -740,25 +810,13 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
     "",
   );
 
-  // ── PRの紐づけの仕様 ──
+  // ── PRの作成・マージの仕様 ──
   if (sel.pr) {
-    add(
-      "## PRの紐づけの仕様",
-      "",
-      FENCE,
-      `POST ${pullUrl}`,
-      "Authorization: Bearer <APIキー>",
-      "Content-Type: application/json",
-      "",
-      `{ "wbs": "${first}", "number": 123, "url": "https://github.com/${ctx.repo ?? "<owner>/<repo>"}/pull/123", "title": "<プルリクエストのタイトル>" }`,
-      FENCE,
-      "",
-      `- ${c("wbs")} は、そのPRで実装した上の表のチケットの WBS を送る（子チケットを持つ親のときは、子チケットごとではなく親に1回だけ紐づける）。`,
-      "- " + c("number") + "・" + c("url") + "・" + c("title") + " は、作ったプルリクエストの値をそのまま使う。" + c("url") + " は Dev Ticket に登録されたリポジトリのPRで、" + c("number") + " と番号が一致している必要がある。",
-      "- 応答の " + c("changed") + " が " + c("false") + " なら、すでに紐づいているという意味で、正常。",
-      "- " + c("400") + "（リポジトリ・番号の不一致など）・" + c("403") + "（キーの権限不足）・" + c("404") + "（チケットが無い）が返ったら、**内容を変えて再送しない。**エラー文を報告に書く。",
-      "",
-    );
+    add(...pullApiSpec(ctx, sel, {
+      wbs: first,
+      title: tickets[0]?.title ?? "…",
+      wbsNote: "そのPRで実装した上の表のチケットの WBS を送る（子チケットを持つ親のときは、子チケットごとではなく親で1本のPRにする）。",
+    }));
   }
 
   // ── ステータス更新の仕様 ──
