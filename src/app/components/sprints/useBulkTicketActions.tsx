@@ -1,12 +1,12 @@
 // BRU6-002 一括操作の共通ロジック
 //
 // チケットの複数選択と、それに対する一括アクション（自動アサイン / スプリント移動 /
-// リンクコピー / AIで実装 / エクスポート / 削除）をまとめたフック。もともと SprintListView にだけ実装されていたが、
+// リンクコピー / PR不要 / AIで実装 / エクスポート / 削除）をまとめたフック。もともと SprintListView にだけ実装されていたが、
 // スプリント詳細のチケット一覧でも同じ機能を使うため共通化した。
 // 選択状態・確認ダイアログ・進捗モーダルはすべてこのフックが持ち、呼び出し側は
 // 返り値の ui を描画してチェックボックスを置くだけでよい。
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { Sprint, SprintTicket, DevScale } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
@@ -25,6 +25,7 @@ import { detectSkillKeywords, ticketSearchText } from "@/app/lib/skills";
 import { fireSlackNotify, slackTicketLink } from "@/app/utils/slackNotify";
 import { AiImplementDialog } from "@/app/components/tickets/AiImplementDialog";
 import type { BulkImplementTicket } from "@/app/lib/apiImplementPrompt";
+import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 
 function estimateScale(hours: number): DevScale | null {
   if (!hours || hours <= 0) return null;
@@ -88,6 +89,14 @@ export function useBulkTicketActions({
   const [pendingMoved, setPendingMoved] = useState<{ wbsList: string[]; targetSprintId: string } | null>(null);
   // 書き出し中はバーを操作できないようにする（Word は生成に少し時間がかかる）
   const [exporting, setExporting] = useState(false);
+  // PR不要の書き換え中もバーを押せなくする。state は表示用、二重実行は ref で止める（BUG-05）
+  const [waiving, setWaiving] = useState(false);
+  const waivingRef = useRef(false);
+
+  // 「PR不要」はチケット詳細のチェックボックスと同じ人だけに出す
+  //（リポジトリが紐づいていて、GitHub 権限のマージが「書き込み」）
+  const githubAccess = useGithubAccess(projectSlug);
+  const canWaivePrLink = githubAccess.linked && githubAccess.perms?.merge === "write";
 
   const selectedTickets = useMemo(() => tickets.filter(t => selectedIds.has(t.id)), [tickets, selectedIds]);
 
@@ -127,6 +136,29 @@ export function useBulkTicketActions({
       setSuccessMessage(`${targets.length}件のチケットのリンクをコピーしました。`);
     } else {
       showAlert("リンクのコピーに失敗しました。", "エラー");
+    }
+  };
+
+  // 選んだチケットだけを書き換える。親を選んでも子は巻き込まない（チケット詳細の setWaived と同じ経路）
+  const runBulkPrWaive = async (waived: boolean) => {
+    if (waivingRef.current) return;
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0 || !isSupabaseEnabled) return;
+    waivingRef.current = true;
+    setWaiving(true);
+    try {
+      const { error } = await supabase!.from("sprint_tickets").update({ pr_link_waived: waived }).in("id", ids);
+      if (error) throw new Error(error.message);
+      await onUpdated?.();
+      clearSelection();
+      setSuccessMessage(waived
+        ? `${ids.length}件のチケットをPR不要にしました。`
+        : `${ids.length}件のチケットのPR不要を外しました。`);
+    } catch (e) {
+      showAlert("PR不要の設定に失敗しました。\n\n" + String(e), "エラー");
+    } finally {
+      waivingRef.current = false;
+      setWaiving(false);
     }
   };
 
@@ -333,10 +365,11 @@ export function useBulkTicketActions({
 
       <BulkActionBar
         count={selectedIds.size}
-        disabled={!!assignState || exporting}
+        disabled={!!assignState || exporting || waiving}
         onAssign={runBulkAssign}
         onMove={async () => { await onBeforeMove?.(); setBulkAction("move"); }}
         onCopyLinks={runBulkCopyLinks}
+        onPrWaive={canWaivePrLink && isSupabaseEnabled ? (waived => void runBulkPrWaive(waived)) : undefined}
         onAiImplement={aiImplement && projectId && isSupabaseEnabled ? openBulkAiImplement : undefined}
         onExport={exportOptions ? runBulkExport : undefined}
         exportEnabled={exportOptions?.enabled ?? true}

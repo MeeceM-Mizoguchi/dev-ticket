@@ -745,8 +745,10 @@ export function TicketPrSection({
         </div>
       )}
 
-      {/* PRが発生しないチケットの逃げ道。未紐付けアラートだけを畳む */}
-      {canEditLinks && pullLinks.length === 0 && !!ticketStatus && isPrLinkAlertStatus(ticketStatus) && (
+      {/* PRが発生しないチケットの逃げ道。未紐付けアラートだけを畳む。
+          PR が要らないと着手前から分かることがあるので、ステータスに関係なく出す（BRU21-003）。
+          取得前は「PRが無い」と断定できないので出さない（出してから引っ込めない） */}
+      {canEditLinks && loaded && pullLinks.length === 0 && (
         <label style={{ display: "inline-flex", alignItems: "center", gap: 7, marginTop: 10, cursor: busy ? "default" : "pointer" }}>
           <input type="checkbox" checked={!!prLinkWaived} disabled={busy}
             onChange={e => void setWaived(e.target.checked)} />

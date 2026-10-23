@@ -4,9 +4,10 @@
 // 「エクスポート」(CSV / Word / Markdown)は選択したチケットを書き出す。バーは画面下端に貼り付いて
 // いるので、メニューは上向きに開く。
 // 「AIで実装」は、選んだチケットをAIに1件ずつ読み取らせて実装させる手順書をコピーする（BRU20-022）。
+// 「PR不要」は、選んだチケットの pr_link_waived をまとめて付け外しする。メニューはエクスポートと同じく上向き（BRU21-003）。
 
 import { useEffect, useRef, useState } from "react";
-import { Trash2, ArrowRightLeft, Sparkles, Link2, Download, X, Bot } from "lucide-react";
+import { Trash2, ArrowRightLeft, Sparkles, Link2, Download, X, Bot, GitPullRequest, Check } from "lucide-react";
 import { TICKET_EXPORT_LABEL, type TicketExportFormat } from "@/app/lib/ticketExport";
 
 const EXPORT_FORMATS: TicketExportFormat[] = ["csv", "docx", "md"];
@@ -19,13 +20,15 @@ const EXPORT_FORMATS: TicketExportFormat[] = ["csv", "docx", "md"];
 export const BULK_ACTION_BAR_CLEARANCE = 96;
 
 export function BulkActionBar({
-  count, onDelete, onMove, onAssign, onCopyLinks, onAiImplement, onExport, exportEnabled = true, onClear, disabled,
+  count, onDelete, onMove, onAssign, onCopyLinks, onPrWaive, onAiImplement, onExport, exportEnabled = true, onClear, disabled,
 }: {
   count: number;
   onDelete: () => void;
   onMove: () => void;
   onAssign: () => void;
   onCopyLinks: () => void;
+  /** 選んだチケットを「PR不要」にする（true）／外す（false）。未指定ならボタンを出さない */
+  onPrWaive?: (waived: boolean) => void;
   /** 選んだチケットを「AIで実装」する手順書の画面を開く。未指定ならボタンを出さない */
   onAiImplement?: () => void;
   /** 選択したチケットを書き出す。未指定ならエクスポートボタンを出さない */
@@ -37,9 +40,11 @@ export function BulkActionBar({
 }) {
   const [exportOpen, setExportOpen] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
+  const [waiveOpen, setWaiveOpen] = useState(false);
+  const waiveRef = useRef<HTMLDivElement>(null);
 
   // 選択が解除されてバーが消えるときにメニューだけ残らないようにする
-  useEffect(() => { if (count === 0) setExportOpen(false); }, [count]);
+  useEffect(() => { if (count === 0) { setExportOpen(false); setWaiveOpen(false); } }, [count]);
 
   useEffect(() => {
     if (!exportOpen) return;
@@ -49,6 +54,15 @@ export function BulkActionBar({
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [exportOpen]);
+
+  useEffect(() => {
+    if (!waiveOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!waiveRef.current?.contains(e.target as Node)) setWaiveOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [waiveOpen]);
 
   if (count === 0) return null;
 
@@ -94,6 +108,35 @@ export function BulkActionBar({
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.10)"; }}>
         <Link2 style={{ width: 14, height: 14 }} />リンクをコピー
       </button>
+
+      {onPrWaive && (
+        <div ref={waiveRef} style={{ position: "relative", flexShrink: 0 }}>
+          <button type="button" disabled={disabled}
+            title="選んだチケットの「プルリクエスト不要」を付け外しする"
+            onClick={() => setWaiveOpen(o => !o)}
+            style={{ ...btnBase, background: "rgba(255,255,255,0.10)", color: "#F3F4F6", border: "1px solid rgba(255,255,255,0.16)" }}
+            onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.18)"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.10)"; }}>
+            <GitPullRequest style={{ width: 14, height: 14 }} />PR不要
+          </button>
+          {waiveOpen && !disabled && (
+            <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)", minWidth: 168, padding: 5, background: "#241F1B", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 10, boxShadow: "0 10px 30px rgba(0,0,0,0.35)", display: "flex", flexDirection: "column", gap: 2 }}>
+              {([
+                { waived: true, label: "PR不要にする", Icon: Check },
+                { waived: false, label: "PR不要を外す", Icon: X },
+              ] as const).map(({ waived, label, Icon }) => (
+                <button key={label} type="button"
+                  onClick={() => { setWaiveOpen(false); onPrWaive(waived); }}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 12, fontWeight: 600, color: "#F3F4F6", background: "transparent", border: "none", borderRadius: 7, cursor: "pointer", whiteSpace: "nowrap", textAlign: "left" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.10)"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                  <Icon style={{ width: 13, height: 13, opacity: 0.75 }} />{label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {onAiImplement && (
         <button type="button" disabled={disabled} onClick={onAiImplement}
