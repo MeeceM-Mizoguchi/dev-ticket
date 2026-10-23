@@ -11,8 +11,10 @@
 //   ・初期値はすべて OFF。「実装」を選ぶまでコピーできない（うっかり全部やらせない）
 //   ・前提が揃っていない項目は選べない（「PR作成」だけ ON、のような矛盾を作らせない）
 //   ・「マージ」は取り消せないので、ON にするときに確認を1回挟む
+//   ・「チケットのステータスの更新」の下で、最後に進めるステータスを選ぶ（BRU21-004）。
+//     作業のチェックを切り替えるたびに、範囲に合わせた値（マージ → クローズ／PR作成 → レビュー中）へ切り替わる
 // 依存関係と手順書の中身は src/app/lib/apiImplementPrompt.ts が持つ。
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Sparkles, Copy, AlertTriangle, Loader2, ChevronRight, ChevronDown, Terminal, KeyRound, Lock } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -27,8 +29,8 @@ import {
 } from "@/app/lib/apiKeys";
 import {
   IMPLEMENT_STEPS, EMPTY_SELECTION, toggleStep, lockedReason, statusPlan, buildImplementPrompt,
-  bulkStatusPlan, buildBulkImplementPrompt,
-  type ImplementSelection, type ImplementStep, type BulkImplementTicket,
+  bulkStatusPlan, buildBulkImplementPrompt, FINAL_STATUSES, finalStatusLockedReason, setFinalStatus,
+  type ImplementSelection, type ImplementStep, type BulkImplementTicket, type FinalStatus,
 } from "@/app/lib/apiImplementPrompt";
 
 const GREEN = "#059669";
@@ -103,6 +105,8 @@ export function AiImplementPanel({
     () => ({ isChild: !!ticket?.parentId, childCount: ticket?.parentId ? 0 : childCount }),
     [ticket?.parentId, childCount],
   );
+  // 子チケットは「対応完了」までなので、最後に進めるステータスは選ばせない
+  const canChooseFinal = bulk ? bulk.some(t => !t.isChild) : !target.isChild;
 
   // ── 読み込み ──────────────────────────────────────────────────
   useEffect(() => {
@@ -358,7 +362,8 @@ export function AiImplementPanel({
               const checked = selection[s.id];
               const locked = !checked ? lockedReason(s.id, selection) : null;
               return (
-                <label key={s.id} style={{
+                <Fragment key={s.id}>
+                <label style={{
                   display: "flex", alignItems: "flex-start", gap: 11, padding: "11px 14px",
                   borderTop: i === 0 ? "none" : "1px solid rgba(26,23,20,0.06)",
                   cursor: locked ? "not-allowed" : "pointer",
@@ -390,6 +395,29 @@ export function AiImplementPanel({
                     )}
                   </div>
                 </label>
+                {/* 最後に進めるステータス。label の中に置くと、選ぶたびにチェックが切り替わりうるので外に出す */}
+                {s.id === "status" && checked && canChooseFinal && (
+                  <div style={{ padding: "0 14px 12px 41px", background: "#F0FDF4" }}>
+                    <p style={{ fontSize: 11, fontWeight: 700, color: "#4B4640", marginBottom: 5 }}>最後に進めるステータス</p>
+                    <select
+                      value={selection.finalStatus}
+                      onChange={e => setSelection(prev => setFinalStatus(prev, e.target.value as FinalStatus))}
+                      style={{
+                        width: "100%", maxWidth: 280, padding: "7px 10px", fontSize: 12, color: "#1A1714",
+                        background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.14)", borderRadius: 8, cursor: "pointer",
+                      }}>
+                      {FINAL_STATUSES.map(st => {
+                        const why = finalStatusLockedReason(st, selection);
+                        return <option key={st} value={st} disabled={!!why}>{why ? `${st}（${why}）` : st}</option>;
+                      })}
+                    </select>
+                    <p style={{ fontSize: 10.5, color: "#9E9690", marginTop: 4, lineHeight: 1.6 }}>
+                      作業のチェックを付け外しすると、範囲に合わせて切り替わります（マージ → クローズ／PR作成 → レビュー中）。
+                      {bulk && bulk.some(t => t.isChild) ? "子チケットは「対応完了」までです。" : ""}
+                    </p>
+                  </div>
+                )}
+                </Fragment>
               );
             })}
           </div>
@@ -403,7 +431,7 @@ export function AiImplementPanel({
               {(bulk ? bulkStatusPlan(selection, bulk) : statusPlan(selection, target)).map(line => <li key={line}>{line}</li>)}
             </ul>
             <p style={{ fontSize: 10.5, color: "#9E9690", marginTop: 6, lineHeight: 1.7 }}>
-              ステータスは前にしか進みません。レビュー中へは進めません。レビューは画面からレビュアーを指定して依頼してください。
+              ステータスは前にしか進みません。「レビュー中」以降にしても、レビュアーの指定・レビュー依頼の通知は行いません。レビューは画面からレビュアーを指定して依頼してください。
             </p>
           </div>
         )}

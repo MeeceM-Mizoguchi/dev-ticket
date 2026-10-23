@@ -18,8 +18,11 @@
 // PRの紐づけは ticket-pull-create が作成と同時に行うので、手順書から /api/v1/ticket-pull は外した
 // （/api/v1/ticket-pull は外部のシステム向けに残っている）。
 //
-// AI が進めてよいステータスは、レビュー前の「進行中」（子チケットは「対応完了」）まで。
-// 「レビュー中」はレビュアーを人が画面で指定して進めるものなので、手順書には載せない（BRU20-005）。
+// AI がステータスを最後にどこまで進めるかは、画面のプルダウン（finalStatus）で利用者が選ぶ（BRU21-004）。
+// 既定は作業の範囲に合わせて切り替わる（マージまで → クローズ、PR作成まで → レビュー中、それ以外 → 進行中）。
+// 子チケットは今までどおり「進行中」→「対応完了」だけで、プルダウンの値は使わない。
+// 「レビュー中」にしても、レビュアーの指定・レビュー依頼の通知は行われない（人が画面で指定する。BRU20-005）。
+// 「クローズ」は、本番反映の確認（層B）が gate のプロジェクトでは API が「リリース待ち」にとどめる。
 //
 // PRを作る前に、まだマージされていない他のPRとの衝突を確かめ、衝突すればPRの本文で知らせる。
 // 並行して作った #501・#502（BRU20-004/005）が同じ行を触っていて「まとめてマージ」が止まったため（BRU20-007）。
@@ -38,12 +41,45 @@
 /** チェックボックス1つぶん */
 export type ImplementStep = "implement" | "status" | "branch" | "commit" | "pr" | "merge";
 
-export type ImplementSelection = Record<ImplementStep, boolean>;
+/**
+ * 最後に進めるステータス（親チケット・子を持たないチケット用）。
+ * 値は POST /api/v1/ticket-status に送る名前そのもの。並びは前から順
+ */
+export type FinalStatus = "進行中" | "レビュー中" | "レビュー完了" | "STG完了" | "UAT完了" | "リリース待ち" | "クローズ";
+
+export const FINAL_STATUSES: FinalStatus[] = ["進行中", "レビュー中", "レビュー完了", "STG完了", "UAT完了", "リリース待ち", "クローズ"];
+
+/** マージまで任せたときだけ選べる値（マージしていないのにリリース待ち・クローズにしない） */
+const MERGE_ONLY_FINAL_STATUSES: FinalStatus[] = ["リリース待ち", "クローズ"];
+
+export type ImplementSelection = Record<ImplementStep, boolean> & {
+  /** 「チケットのステータスの更新」を選んだとき、最後に進めるステータス */
+  finalStatus: FinalStatus;
+};
 
 /** 間違いが起きないよう、初期値はすべて OFF */
 export const EMPTY_SELECTION: ImplementSelection = {
   implement: false, status: false, branch: false, commit: false, pr: false, merge: false,
+  finalStatus: "進行中",
 };
+
+/** 作業の範囲に合わせた「最後に進めるステータス」。一番先の作業で決まる */
+export function autoFinalStatus(selection: ImplementSelection): FinalStatus {
+  if (selection.merge) return "クローズ";
+  if (selection.pr) return "レビュー中";
+  return "進行中";
+}
+
+/** その値を選べない理由。選べるなら null */
+export function finalStatusLockedReason(status: FinalStatus, selection: ImplementSelection): string | null {
+  return MERGE_ONLY_FINAL_STATUSES.includes(status) && !selection.merge ? "「マージ」を選ぶと選べます" : null;
+}
+
+/** プルダウンで選び直す。選べない値は受け付けない */
+export function setFinalStatus(selection: ImplementSelection, status: FinalStatus): ImplementSelection {
+  if (finalStatusLockedReason(status, selection)) return selection;
+  return { ...selection, finalStatus: status };
+}
 
 /**
  * 画面に出す順と、選ぶための前提。
@@ -80,11 +116,13 @@ export function lockedReason(step: ImplementStep, selection: ImplementSelection)
  * チェックの切り替え。
  * ON は前提が揃っているときだけ通す。OFF にしたときは、それを前提にしている項目も
  * 連鎖して OFF にする（「実装」を外したのに「マージ」だけ残る、を起こさない）。
+ * 切り替えるたびに、最後に進めるステータスを作業の範囲に合わせた値へ戻す（BRU21-004）。
  */
 export function toggleStep(selection: ImplementSelection, step: ImplementStep, on: boolean): ImplementSelection {
   if (on) {
     if (missingRequirements(step, selection).length > 0) return selection;
-    return { ...selection, [step]: true };
+    const next = { ...selection, [step]: true };
+    return { ...next, finalStatus: autoFinalStatus(next) };
   }
   const next = { ...selection, [step]: false };
   let changed = true;
@@ -94,7 +132,41 @@ export function toggleStep(selection: ImplementSelection, step: ImplementStep, o
       if (next[s.id] && s.requires.some(r => !next[r])) { next[s.id] = false; changed = true; }
     }
   }
-  return next;
+  return { ...next, finalStatus: autoFinalStatus(next) };
+}
+
+/** 「すべての作業が終わったら」の具体的な時点 */
+function afterAllWork(selection: ImplementSelection): string {
+  if (selection.merge) return "マージの後";
+  if (selection.pr) return "PRを作った後";
+  if (selection.commit) return "コミットした後";
+  return "実装と検証が終わった後";
+}
+
+/** 「クローズ」を選んだときの断り。層Bが gate のプロジェクトでは API がリリース待ちにとどめる */
+const CLOSE_GATE_NOTE = "本番への反映を確認する設定（本番反映の確認が gate）のプロジェクトでは「リリース待ち」になり、本番への反映を確認できたら自動でクローズになります。";
+
+/** 「今回やってよい範囲」の表のセル。ステータスの更新には最後に進める値を添える */
+function scopeCell(step: ImplementStep, sel: ImplementSelection, finalAdvances: boolean): string {
+  if (!sel[step]) return "❌ やらない";
+  return step === "status" && finalAdvances ? `✅ やる（最後に「${sel.finalStatus}」まで進める）` : "✅ やる";
+}
+
+/** 手順書の「最後のステータスにする」手順に添える注意 */
+function finalStatusNotes(final: FinalStatus): string[] {
+  return [
+    ...(final === "クローズ"
+      ? ["- 本番への反映を確認する設定（本番反映の確認が gate）のプロジェクトでは、API が「リリース待ち」にとどめ、応答の `status` が「リリース待ち」、`warnings` に理由が入る。正常なので、そのまま報告に含める（本番への反映を確認できたら自動でクローズになる）。"]
+      : []),
+    "- 「レビュー中」以降にしても、レビュアーの指定・レビュー依頼の通知は行われない。レビュアーは人が Dev Ticket の画面から指定する。",
+  ];
+}
+
+/** ステータス更新の仕様の、これより先へは進めないという一文。final が null なら「進行中」まで */
+function finalStatusLimit(final: FinalStatus | null): string {
+  return final
+    ? `- **「${final}」より先へは変更しない。**途中の段（レビュー完了など）を1段ずつ送る必要はない。「${final}」を1回送れば、そこまで進む。`
+    : "- **「レビュー中」へは変更しない。**プルリクエストを作っても、マージしても変更しない。レビュアーは人が Dev Ticket の画面から指定して進める。";
 }
 
 /** 実装対象の形。これでステータスの進め方が変わる */
@@ -108,14 +180,14 @@ export interface ImplementTarget {
 /**
  * 選んだ範囲で、ステータスがどこまで進むか。画面の説明と手順書の両方で使う。
  *
- *   どの範囲でも … 着手時に「進行中」。PR を作っても、マージしても「進行中」のまま
- *                  （「レビュー中」へはレビュアーを指定して人が画面から進める）
- *
- * 子チケットは「レビュー中」を持たないので、終わったら「対応完了」にする。
+ *   親・子を持たないチケット … 着手時に「進行中」。すべての作業が終わったら finalStatus にする
+ *                              （finalStatus が「進行中」なら、そのまま）
+ *   子チケット               … 着手時に「進行中」、終わったら「対応完了」（finalStatus は使わない）
  */
 export function statusPlan(selection: ImplementSelection, target: ImplementTarget): string[] {
   if (!selection.status) return ["ステータスは変更しません。"];
   const done = selection.commit ? "実装してコミットしたら" : "実装が終わったら";
+  const final = selection.finalStatus;
 
   if (target.isChild) {
     return [
@@ -124,21 +196,25 @@ export function statusPlan(selection: ImplementSelection, target: ImplementTarge
       "親チケットのステータスは、それ以上は変更しません。",
     ];
   }
+
+  const keep = selection.pr
+    ? `PRを作成しても${selection.merge ? "、マージしても" : ""}${target.childCount > 0 ? "、親チケットは" : ""}「進行中」のままです（レビュー中へは画面から人が進めます）。`
+    : target.childCount > 0 ? "親チケットは「進行中」のままです。" : "そこから先へは進めません（「進行中」のままです）。";
+  const advance = final === "進行中"
+    ? [keep]
+    : [
+      `すべての作業が終わったら（${afterAllWork(selection)}）、${target.childCount > 0 ? "親チケットを" : ""}「${final}」にします。`,
+      ...(final === "クローズ" ? [CLOSE_GATE_NOTE] : []),
+    ];
+
   if (target.childCount > 0) {
     return [
       "子チケットごとに、着手するときに「進行中」にします（親チケットが未着手なら、親も自動で「進行中」になります）。",
       `子チケットごとに、${done}「対応完了」にします。`,
-      selection.pr
-        ? `PRを作成しても${selection.merge ? "、マージしても" : ""}、親チケットは「進行中」のままです（レビュー中へは画面から人が進めます）。`
-        : "親チケットは「進行中」のままです。",
+      ...advance,
     ];
   }
-  return [
-    "着手するときに「進行中」にします。",
-    selection.pr
-      ? `PRを作成しても${selection.merge ? "、マージしても" : ""}「進行中」のままです（レビュー中へは画面から人が進めます）。`
-      : "そこから先へは進めません（「進行中」のままです）。",
-  ];
+  return ["着手するときに「進行中」にします。", ...advance];
 }
 
 export interface ImplementPromptContext {
@@ -249,6 +325,9 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
   const { selection: sel, target } = ctx;
   const key = ctx.plainKey ?? KEY_PLACEHOLDER;
   const hasChildren = !target.isChild && target.childCount > 0;
+  // 最後に「進行中」より先へ進めるか。子チケットは対応完了までなので使わない
+  const final = sel.finalStatus;
+  const finalAdvances = sel.status && !target.isChild && final !== "進行中";
   const base = ctx.defaultBranch ? c(ctx.defaultBranch) : "リポジトリの既定ブランチ";
   const detailUrl = `${ctx.baseUrl}/api/v1/ticket?wbs=${encodeURIComponent(ctx.wbs)}`;
   const statusUrl = `${ctx.baseUrl}/api/v1/ticket-status`;
@@ -283,7 +362,7 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
     "",
     "| 作業 | 今回 |",
     "|---|---|",
-    ...IMPLEMENT_STEPS.map(s => `| ${s.label} | ${sel[s.id] ? "✅ やる" : "❌ やらない"} |`),
+    ...IMPLEMENT_STEPS.map(s => `| ${s.label} | ${scopeCell(s.id, sel, finalAdvances)} |`),
     "",
     "- **❌ の作業は、必要に見えても行わない。**最後の報告で「ここから先は行っていません」と伝える。",
     "- ✅ の作業は、利用者が選択済みなので、1つずつ確認を求めずに進めてよい。ただし各手順に書いた「止まる条件」に当たったら、進めずに利用者へ報告する。",
@@ -453,10 +532,24 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
       "- 409（コンフリクトしている／CIが失敗している／必須のチェックやレビュー承認が足りない／理由の入力が必要）が返ったら、**マージせずに止まって報告する。**",
       "- ブランチ保護を回避する手段（" + c("--admin") + "、保護設定の変更、強制 push など）は使わない。",
       "- " + NO_GH_FALLBACK,
-      ...(sel.status ? ["- **マージしたあと、ステータスはそれ以上変更しない**（リリース待ち・クローズなどへ進めるのは人が行う）。"] : []),
+      ...(sel.status
+        ? [finalAdvances
+          ? `- マージしたあと、次の手順でチケットを「${final}」にする。`
+          : "- **マージしたあと、ステータスはそれ以上変更しない**（リリース待ち・クローズなどへ進めるのは人が行う）。"]
+        : []),
     );
   } else if (sel.pr) {
     add("> **マージしない。**プルリクエストを作ったところで止める（" + c("gh pr merge") + " も使わない）。", "");
+  }
+
+  if (finalAdvances) {
+    step(`ステータスを「${final}」にする`,
+      `- すべての作業が終わったら（${afterAllWork(sel)}）、${c(ctx.wbs)} を「${final}」にする。`,
+      ...(hasChildren ? ["- 子チケットがすべて「対応完了」になってから行う（終わっていない子チケットがあると 409 になる）。"] : []),
+      "- 途中の手順で止まったとき（検証が通らない・PRの作成やマージがエラーになった など）は、進めない。",
+      ...finalStatusNotes(final),
+      "- 呼び方は下の「ステータス更新の仕様」を参照。",
+    );
   }
 
   step("報告する",
@@ -504,8 +597,9 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
       "|---|---|---|",
       "| 進行中 | すべて | 着手するとき |",
       "| 対応完了 | 子チケットのみ | その子チケットの実装が終わったとき |",
+      ...(finalAdvances ? [`| ${final} | 親チケットのみ | すべての作業が終わったとき（${afterAllWork(sel)}） |`] : []),
       "",
-      "- **「レビュー中」へは変更しない。**プルリクエストを作っても、マージしても変更しない。レビュアーは人が Dev Ticket の画面から指定して進める。",
+      finalStatusLimit(finalAdvances ? final : null),
       "",
       "今回の進め方:",
       "",
@@ -548,14 +642,20 @@ export function bulkStatusPlan(selection: ImplementSelection, tickets: BulkImple
   const done = selection.commit ? "実装してコミットしたら" : "実装が終わったら";
   const hasChildWork = tickets.some(t => t.isChild || t.childCount > 0);
   const hasParent = tickets.some(t => !t.isChild);
+  const final = selection.finalStatus;
   return [
     "チケットごとに、着手するときに「進行中」にします（子チケットを含む親は、子チケットごとに着手するときに「進行中」にします。親チケットが未着手なら、親も自動で「進行中」になります）。",
     ...(hasChildWork ? [`子チケットは、${done}「対応完了」にします。`] : []),
-    ...(hasParent
-      ? [selection.pr
-        ? `PRを作成しても${selection.merge ? "、マージしても" : ""}、親チケットは「進行中」のままです（レビュー中へは画面から人が進めます）。`
-        : "親チケットは「進行中」のままです。"]
-      : ["親チケットのステータスは、それ以上は変更しません。"]),
+    ...(!hasParent
+      ? ["親チケットのステータスは、それ以上は変更しません。"]
+      : final === "進行中"
+        ? [selection.pr
+          ? `PRを作成しても${selection.merge ? "、マージしても" : ""}、親チケットは「進行中」のままです（レビュー中へは画面から人が進めます）。`
+          : "親チケットは「進行中」のままです。"]
+        : [
+          `親チケット（子チケットの無いものを含む）は、そのチケットのすべての作業が終わったら（${afterAllWork(selection)}）「${final}」にします。`,
+          ...(final === "クローズ" ? [CLOSE_GATE_NOTE] : []),
+        ]),
   ];
 }
 
@@ -579,6 +679,9 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
   const detailUrl = `${ctx.baseUrl}/api/v1/ticket?wbs=<WBS>`;
   const statusUrl = `${ctx.baseUrl}/api/v1/ticket-status`;
   const anyChildWork = tickets.some(t => t.isChild || t.childCount > 0);
+  // 最後に「進行中」より先へ進めるか。対象は親チケット（子チケットの無いものを含む）だけ
+  const final = sel.finalStatus;
+  const finalAdvances = sel.status && tickets.some(t => !t.isChild) && final !== "進行中";
 
   const out: string[] = [];
   const add = (...lines: string[]) => out.push(...lines);
@@ -619,7 +722,7 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
     "",
     "| 作業 | 今回 |",
     "|---|---|",
-    ...IMPLEMENT_STEPS.map(s => `| ${s.label} | ${sel[s.id] ? "✅ やる" : "❌ やらない"} |`),
+    ...IMPLEMENT_STEPS.map(s => `| ${s.label} | ${scopeCell(s.id, sel, finalAdvances)} |`),
     "",
     "- **❌ の作業は、必要に見えても行わない。**最後の報告で「ここから先は行っていません」と伝える。",
     "- ✅ の作業は、利用者が選択済みなので、1つずつ確認を求めずに進めてよい。ただし各手順に書いた「止まる条件」に当たったら、**そこで止まり、残りのチケットにも進まずに**利用者へ報告する。",
@@ -779,10 +882,25 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
       "- 409（コンフリクトしている／CIが失敗している／必須のチェックやレビュー承認が足りない／理由の入力が必要）が返ったら、**マージせずに止まって報告する**（残りのチケットにも進まない）。",
       "- ブランチ保護を回避する手段（" + c("--admin") + "、保護設定の変更、強制 push など）は使わない。",
       "- " + NO_GH_FALLBACK,
-      ...(sel.status ? ["- **マージしたあと、ステータスはそれ以上変更しない**（リリース待ち・クローズなどへ進めるのは人が行う）。"] : []),
+      ...(sel.status
+        ? [finalAdvances
+          ? `- マージしたあと、次の手順でチケットを「${final}」にする。`
+          : "- **マージしたあと、ステータスはそれ以上変更しない**（リリース待ち・クローズなどへ進めるのは人が行う）。"]
+        : []),
     );
   } else if (sel.pr) {
     add("> **マージしない。**プルリクエストを作ったところで、次のチケットへ進む（" + c("gh pr merge") + " も使わない）。", "");
+  }
+
+  if (finalAdvances) {
+    step(`ステータスを「${final}」にする`,
+      `- 親チケット（子チケットの無いものを含む）は、そのチケットのすべての作業が終わったら（${afterAllWork(sel)}）、その WBS を指定して「${final}」にする。`,
+      "- 子チケットのときは行わない（子チケットは「対応完了」までにする）。",
+      "- 子チケットを持つ親は、子チケットがすべて「対応完了」になってから行う（終わっていない子チケットがあると 409 になる）。",
+      "- 途中の手順で止まったとき（検証が通らない・PRの作成やマージがエラーになった など）は、進めない。",
+      ...finalStatusNotes(final),
+      "- 呼び方は下の「ステータス更新の仕様」を参照。",
+    );
   }
 
   add(`ここまで終えたら、上の表の次のチケットへ進み、${c("1.")} から繰り返す。`, "");
@@ -836,8 +954,9 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
       "|---|---|---|",
       "| 進行中 | すべて | 着手するとき |",
       "| 対応完了 | 子チケットのみ | その子チケットの実装が終わったとき |",
+      ...(finalAdvances ? [`| ${final} | 親チケットのみ（子チケットの無いものを含む） | そのチケットのすべての作業が終わったとき（${afterAllWork(sel)}） |`] : []),
       "",
-      "- **「レビュー中」へは変更しない。**プルリクエストを作っても、マージしても変更しない。レビュアーは人が Dev Ticket の画面から指定して進める。",
+      finalStatusLimit(finalAdvances ? final : null),
       "",
       "今回の進め方:",
       "",
