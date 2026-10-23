@@ -5,7 +5,7 @@
 //   GET  /api/v1/tickets        … 既存チケットの一覧（子チケットを足す親を探すため）
 //   POST /api/v1/tickets        … チケットの登録（親子1階層まで／既存チケットへの子の追加も可）
 //   GET  /api/v1/ticket         … チケット1件の中身（本文・画像・添付・コメント・子チケット）
-//   POST /api/v1/ticket-status  … ステータスを前へ進める（進行中／レビュー中／対応完了）
+//   POST /api/v1/ticket-status  … ステータスを前へ進める（進行中〜クローズ／子は進行中・対応完了）
 //   POST /api/v1/ticket-pull    … 外部で作ったプルリクエストをチケットへ紐づける
 //
 // PRの作成とマージを bot 名義で行うAPI（ticket-pull-create / ticket-merge）は、GitHub App の
@@ -860,22 +860,64 @@ async function handleTicketDetail(sb: SupabaseClient, key: ApiKeyRow, query: any
 // 画面（TicketDetailPanel）のボタンを押したときと同じ結果になるよう、ステータスのほかに
 // 進捗率・マイルストーン時刻・コメント欄の履歴も書く。
 //
-// 意図的に狭くしてある:
-//   ・行き先は 進行中／レビュー中（親のみ）／対応完了（子のみ）の3つだけ。
-//     それより先（レビュー完了・STG・リリース）は人の判断なので API からは動かさない。
+// 決まりごと:
+//   ・行き先は、親が 進行中／レビュー中／レビュー完了／STG完了／UAT完了／リリース待ち／クローズ、
+//     子が 進行中／対応完了。「AIで実装」で利用者が選んだ「最後に進めるステータス」まで進める（BRU21-004）。
+//   ・親の「クローズ」は released、子の「対応完了」は closed（同じ「完了」でも値が違う。statusLabelFor）。
+//   ・「クローズ」は、本番反映の確認（層B）が gate のプロジェクトでは「リリース待ち」にとどめる。
+//     本番へ届いたことを syncProjectReleases（api/github）が確かめてからクローズにする。
+//     API から直接 released にすると、層Cの「本番へ届いていないものをリリース済みにしない」をすり抜けるため。
 //   ・前へ進めるだけ。すでに同じか先のステータスなら何もしない（changed: false）。
 //     AI が同じ呼び出しを2回送っても、履歴が2行になったり後戻りしたりしない。
 //   ・保留中・取下のチケットには触らない。
 //   ・レビュー中にするとき、レビュアーの指定・レビュー回数の加算・レビュー依頼の通知は行わない
 //     （画面の「レビュー依頼」とは別物。AI は誰に依頼するかを決められないため）。
-const STATUS_TARGET_BY_LABEL: Record<string, "in-progress" | "in-review" | "closed"> = {
+type StatusTarget =
+  | "in-progress" | "in-review" | "review-done" | "stg-test" | "uat" | "waiting-release" | "released" | "closed";
+
+const STATUS_TARGET_BY_LABEL: Record<string, StatusTarget> = {
   "進行中": "in-progress", "対応中": "in-progress", inprogress: "in-progress",
   "レビュー中": "in-review", inreview: "in-review",
+  "レビュー完了": "review-done", reviewdone: "review-done",
+  "stg完了": "stg-test", stg: "stg-test", stgtest: "stg-test",
+  "uat完了": "uat", uat: "uat",
+  "リリース待ち": "waiting-release", waitingrelease: "waiting-release",
+  "クローズ": "released", released: "released",
   "対応完了": "closed", "完了": "closed", closed: "closed", done: "closed",
 };
 
-/** 親をこのステータスにするとき、子に求める最低ランク（helpers.ts の PARENT_STATUS_MIN_CHILD_RANK と同じ） */
-const IN_REVIEW_MIN_CHILD_RANK = 3;
+/** 子チケットに指定できる行き先 */
+const CHILD_STATUS_TARGETS: StatusTarget[] = ["in-progress", "closed"];
+
+const STATUS_TARGET_LIST_TEXT =
+  "進行中 / レビュー中 / レビュー完了 / STG完了 / UAT完了 / リリース待ち / クローズ（親チケット）、進行中 / 対応完了（子チケット）";
+
+/** 親をこのステータスにするとき、子に求める最低ランク（helpers.ts の PARENT_STATUS_MIN_CHILD_RANK と同じ値） */
+const PARENT_STATUS_MIN_CHILD_RANK: Record<string, number> = {
+  "in-review": 3, "stg-test": 4, uat: 5, done: 6, closed: 6,
+};
+
+/**
+ * 親を target にするとき、子に求める最低ランク。
+ * 画面は1段ずつ進めるので、途中の段（レビュー中など）の判定を必ず通る。
+ * API は段を飛ばして進められるため、target までの段で一番厳しい値を使う（レビュー完了なら レビュー中 の 3）。
+ */
+function requiredChildRank(target: string): number {
+  let rank = 0;
+  for (const [s, r] of Object.entries(PARENT_STATUS_MIN_CHILD_RANK)) {
+    if ((STATUS_RANK[s] ?? 0) <= (STATUS_RANK[target] ?? 0)) rank = Math.max(rank, r);
+  }
+  return rank;
+}
+
+/** 親のマイルストーンの列。ステータスと順番は useProject.ts の STATUS_TO_MILESTONE / MILESTONE_ORDER と同じ */
+const MILESTONE_COLUMNS = [
+  "started_at", "review_requested_at", "review_approved_at", "stg_completed_at", "uat_completed_at", "released_at",
+] as const;
+const MILESTONE_BY_STATUS: Record<string, (typeof MILESTONE_COLUMNS)[number]> = {
+  "in-progress": "started_at", "in-review": "review_requested_at", "review-done": "review_approved_at",
+  "stg-test": "stg_completed_at", uat: "uat_completed_at", "waiting-release": "released_at", released: "released_at",
+};
 
 function newCommentId(): string {
   // 画面は CMT-<ミリ秒> だが、こちらは子と親へ続けて書くので同じミリ秒に重なりうる
@@ -887,30 +929,47 @@ async function handleUpdateStatus(sb: SupabaseClient, key: ApiKeyRow, body: any,
   const id = typeof body?.id === "string" ? body.id.trim() : "";
   const rawStatus = typeof body?.status === "string" ? body.status.trim() : "";
 
-  const target = STATUS_TARGET_BY_LABEL[normalizeValue(rawStatus)];
-  if (!target) {
+  const requested = STATUS_TARGET_BY_LABEL[normalizeValue(rawStatus)];
+  if (!requested) {
     return res.status(400).json({
-      error: `status「${rawStatus}」は指定できません。APIから変更できるのは 進行中 / レビュー中 / 対応完了（子チケットのみ）です`,
+      error: `status「${rawStatus}」は指定できません。APIから変更できるのは ${STATUS_TARGET_LIST_TEXT} です`,
     });
   }
 
   const found = await lookupTicket(sb, key, { wbs, id },
-    "id, wbs, title, status, sprint_id, parent_id, started_at, review_requested_at");
+    `id, wbs, title, status, sprint_id, parent_id, ${MILESTONE_COLUMNS.join(", ")}`);
   if (!found.ok) return res.status(found.status).json({ error: found.error });
   const row = found.row;
   const isChild = !!row.parent_id;
   const current = String(row.status ?? "todo");
 
-  if (target === "in-review" && isChild) {
-    return res.status(400).json({ error: `「${row.wbs}」は子チケットです。子チケットに「レビュー中」はありません（終わったら「対応完了」にします）` });
+  if (isChild && !CHILD_STATUS_TARGETS.includes(requested)) {
+    return res.status(400).json({
+      error: `「${row.wbs}」は子チケットです。子チケットに指定できるのは 進行中 / 対応完了 だけです（親チケットの「${statusLabelFor(requested, false)}」は子にはありません）`,
+    });
   }
-  if (target === "closed" && !isChild) {
-    return res.status(400).json({ error: `「${row.wbs}」は親チケットです。「対応完了」にできるのは子チケットだけです` });
+  if (requested === "closed" && !isChild) {
+    return res.status(400).json({ error: `「${row.wbs}」は親チケットです。「対応完了」にできるのは子チケットだけです（親は「クローズ」を指定します）` });
   }
   if (current === "on-hold" || current === "withdrawn") {
     return res.status(409).json({
       error: `「${row.wbs}」は${statusLabelFor(current, isChild)}のため、ステータスを変更しません`,
     });
+  }
+
+  const warnings: string[] = [];
+
+  // 層Bが gate のプロジェクトでは、クローズの代わりにリリース待ちにする。
+  // クローズへは syncProjectReleases が本番への反映を確かめてから進める
+  let target: StatusTarget = requested;
+  if (requested === "released") {
+    const { data: project, error: projectError } = await sb
+      .from("projects").select("deploy_check_mode").eq("id", key.project_id).maybeSingle();
+    if (projectError) return res.status(500).json({ error: projectError.message });
+    if (project?.deploy_check_mode === "gate") {
+      target = "waiting-release";
+      warnings.push("このプロジェクトは本番への反映を確認してからクローズにする設定のため、「リリース待ち」にしました。本番への反映を確認できたら自動でクローズになります");
+    }
   }
 
   const fromLabel = statusLabelFor(current, isChild);
@@ -921,20 +980,23 @@ async function handleUpdateStatus(sb: SupabaseClient, key: ApiKeyRow, body: any,
     return res.status(200).json({
       ok: true, changed: false, wbs: row.wbs, status: fromLabel, parentStarted: null,
       message: `すでに「${fromLabel}」のため変更していません`,
+      ...(warnings.length > 0 ? { warnings } : {}),
     });
   }
 
-  // 親をレビュー中にできるのは、子がすべて終わっているときだけ（画面の validateParentStatusChange と同じ。取下の子は数えない）
-  if (target === "in-review") {
+  // 親を進められるのは、子がその段階に必要なところまで終わっているときだけ
+  //（画面の validateParentStatusChange と同じ。取下の子は数えない）
+  const minChildRank = isChild ? 0 : requiredChildRank(target);
+  if (minChildRank > 0) {
     const { data: childRows, error: childError } = await sb
       .from("sprint_tickets").select("wbs, status").eq("parent_id", row.id);
     if (childError) return res.status(500).json({ error: childError.message });
     const blocking = ((childRows ?? []) as any[])
-      .filter(c => c.status !== "withdrawn" && (STATUS_RANK[c.status] ?? 0) < IN_REVIEW_MIN_CHILD_RANK)
+      .filter(c => c.status !== "withdrawn" && (STATUS_RANK[c.status] ?? 0) < minChildRank)
       .sort((a, b) => compareWbs(a.wbs, b.wbs));
     if (blocking.length > 0) {
       return res.status(409).json({
-        error: `子チケット ${blocking.length}件（${blocking.map(c => c.wbs).join(" / ")}）が対応完了していないため「レビュー中」にできません`,
+        error: `子チケット ${blocking.length}件（${blocking.map(c => c.wbs).join(" / ")}）が対応完了していないため「${toLabel}」にできません`,
       });
     }
   }
@@ -947,9 +1009,12 @@ async function handleUpdateStatus(sb: SupabaseClient, key: ApiKeyRow, body: any,
     if (target === "in-progress") patch.started_at = now;
     if (target === "closed") patch.released_at = now;
   } else {
-    // 親はマイルストーンを順に埋める（recordMilestoneFromTicketStatus の「前進」と同じ）
-    if (!row.started_at) patch.started_at = now;
-    if (target === "in-review" && !row.review_requested_at) patch.review_requested_at = now;
+    // 親はマイルストーンを行き先の段まで順に埋める（recordMilestoneFromTicketStatus の「前進」と同じ）。
+    // 段を飛ばしたときは、飛ばした段も同じ時刻で埋まる
+    const last = MILESTONE_COLUMNS.indexOf(MILESTONE_BY_STATUS[target]);
+    for (let i = 0; i <= last; i++) {
+      if (!row[MILESTONE_COLUMNS[i]]) patch[MILESTONE_COLUMNS[i]] = now;
+    }
   }
 
   // 条件に元のステータスを入れておく。読んでから書くまでの間に人が画面で動かしていたら上書きしない
@@ -963,7 +1028,6 @@ async function handleUpdateStatus(sb: SupabaseClient, key: ApiKeyRow, body: any,
   // コメント欄の履歴。誰の操作かは「キーを発行した人」で残し、API経由であることを本文に書く
   const actor = key.created_by || "API連携";
   const via = `API連携（${esc(key.name)}）`;
-  const warnings: string[] = [];
   const comments: Record<string, unknown>[] = [{
     id: newCommentId(), ticket_id: row.id, user_name: actor,
     content: isChild
