@@ -500,7 +500,16 @@ export interface MeetingMinute {
   attendees: string[]; content: string;
   images: string[];
   createdBy: string; createdAt: string; updatedAt: string;
+  /** 公開範囲（BRU22-006）。列が無い環境（SQL 未適用）では "project" */
+  visibility: DocVisibility;
+  /** 作成者の profiles.id。公開範囲を変えられるのはこの人とオーナーだけ。決められなかった既存の行は null */
+  ownerId: string | null;
 }
+/**
+ * 議事録・クライアントメモの公開範囲（BRU22-006）。WBS の公開設定と同じ2択。
+ * "project" = 全員（今と同じ） / "members" = 作成者・指定したメンバー・オーナーだけ
+ */
+export type DocVisibility = "project" | "members";
 /**
  * クライアント（取引先企業）単位の打ち合わせメモ。
  * 議事録(MeetingMinute)はプロジェクト単位なので、どのプロジェクトにも属さない
@@ -519,6 +528,10 @@ export interface ClientNote {
   images: string[];
   organizationId?: string | null;
   createdBy: string; createdAt: string; updatedAt: string;
+  /** 公開範囲（BRU22-006）。列が無い環境（SQL 未適用）では "project" */
+  visibility: DocVisibility;
+  /** 作成者の profiles.id。公開範囲を変えられるのはこの人とオーナーだけ。決められなかった既存の行は null */
+  ownerId: string | null;
 }
 /** プライベートボードの共有相手（whiteboard_shares の1行） */
 export interface WhiteboardShareMember {
