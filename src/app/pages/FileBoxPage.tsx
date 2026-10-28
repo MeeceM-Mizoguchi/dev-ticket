@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   FolderKanban, ChevronRight, Search, X, Trash2, Upload, Download, Link2,
   File as FileIcon, FileText, FileSpreadsheet, FileImage, Presentation, Loader2,
-  Folder, FolderPlus, FolderUp, Plus, Pencil, Globe, Workflow, Lock, HardDrive, ExternalLink,
+  Folder, FolderPlus, FolderUp, FolderInput, Plus, Pencil, Globe, Workflow, Lock, HardDrive, ExternalLink,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -22,6 +22,7 @@ import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { projectAccessView } from "@/app/components/shared/NotFoundView";
 import { DialogShell } from "@/app/components/shared/DialogShell";
+import { FolderMoveModal, type DocTreeItem } from "@/app/components/shared/DocTree";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { FileViewerModal } from "@/app/components/files/FileViewerModal";
 import { FileShareDialog } from "@/app/components/files/FileShareDialog";
@@ -246,6 +247,8 @@ export function FileBoxPage() {
   const [draggingFile, setDraggingFile] = useState<ProjectFile | null>(null);
   // パンくずのどれにドラッグ中か。ルート（ファイルボックス）は ROOT_CRUMB で表す
   const [dragOverCrumb, setDragOverCrumb] = useState<string | null>(null);
+  // 「移動」ボタンから開く移動先選択の対象（BRU22-001。ドラッグできない・届かないとき用）
+  const [moveTarget, setMoveTarget] = useState<ProjectFile | null>(null);
 
   // Googleドライブ連携の設定。null なら「Googleアプリ」ボタンを出さない。
   // 一覧と同じ read で取るので、ボタンだけ遅れて出ることがない（load() 参照）。
@@ -586,17 +589,18 @@ export function FileBoxPage() {
 
   const movingRef = useRef(false);
   const [moving, setMoving] = useState(false);
-  const handleMoveFile = useCallback(async (file: ProjectFile, targetFolderId: string | null) => {
-    if (!project) return;
-    if (movingRef.current) return; // BUG-05 移動中に重ねて落とされても1回だけ動かす
-    if (file.isFolder && file.id === targetFolderId) return;
+  /** @returns 移動できたら true（移動先選択のダイアログを閉じるかの判断に使う） */
+  const handleMoveFile = useCallback(async (file: ProjectFile, targetFolderId: string | null): Promise<boolean> => {
+    if (!project) return false;
+    if (movingRef.current) return false; // BUG-05 移動中に重ねて落とされても1回だけ動かす
+    if (file.isFolder && file.id === targetFolderId) return false;
     const fromFolderId = file.parentId ?? null;
-    if (fromFolderId === targetFolderId) return;
+    if (fromFolderId === targetFolderId) return false;
     // 同じフォルダの同名＝同じファイルの版という作りなので、移動先に同名があると
     // 2つのファイルが1つに合体してしまう。改名してから移してもらう。
     if (files.some(o => o.id !== file.id && o.fileName === file.fileName && (o.parentId ?? null) === targetFolderId)) {
       toast(`移動先に同じ名前の${file.isFolder ? "フォルダ" : "ファイル"}「${file.fileName}」があるため移動できません。名前を変更してから移動してください`, "error");
-      return;
+      return false;
     }
     // BRU20-019 移動は数秒かかることがあり、その間なにも出ないと「移動できていない」と思われて
     // 何度も落とし直される。一覧を引き直して元の場所から消えるまで、ぐるぐるを出しておく。
@@ -609,8 +613,10 @@ export function FileBoxPage() {
       await load();
       const targetFolder = files.find(f => f.id === targetFolderId);
       toast(`「${file.fileName}」を「${targetFolder?.fileName ?? "ファイルボックス（ルート）"}」へ移動しました`);
+      return true;
     } catch (e) {
       toast(e instanceof Error ? e.message : "ファイルの移動に失敗しました", "error");
+      return false;
     } finally {
       movingRef.current = false;
       setMoving(false);
@@ -1015,6 +1021,12 @@ export function FileBoxPage() {
 
   const visible = currentLevelItems;
 
+  // 「移動」ボタンの移動先の候補（フォルダだけ）。自分自身と自分の中のフォルダは FolderMoveModal 側で除く
+  const moveFolderItems = useMemo<DocTreeItem[]>(() => files
+    .filter(f => f.isFolder)
+    .map(f => ({ id: f.id, parentId: f.parentId ?? null, title: f.fileName, isFolder: true })), [files]);
+  const closeMove = useCallback(() => setMoveTarget(null), []);
+
   // パンくずをドロップ先にする。上の階層へ戻すのにフォルダ行は使えないので、
   // 一覧の行を掴んでパンくずで離せば、その階層へ移動できるようにする。
   // 外から来たファイル/フォルダはフォルダ行と同じく、その階層へアップロードする。
@@ -1274,6 +1286,11 @@ export function FileBoxPage() {
                       style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                       <Link2 style={{ width: 13, height: 13 }} />
                     </button>
+                    {/* ドラッグせずに、移動先のフォルダを選んで移す（BRU22-001） */}
+                    <button onClick={e => { e.stopPropagation(); setMoveTarget(f); }} title="移動" aria-label="移動"
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                      <FolderInput style={{ width: 13, height: 13 }} />
+                    </button>
                     <button onClick={e => { e.stopPropagation(); openRename(f); }} title="名前を変更"
                       style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                       <Pencil style={{ width: 13, height: 13 }} />
@@ -1418,6 +1435,11 @@ export function FileBoxPage() {
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Download style={{ width: 13, height: 13 }} />
                   </button>
+                  {/* ドラッグせずに、移動先のフォルダを選んで移す（BRU22-001） */}
+                  <button onClick={e => { e.stopPropagation(); setMoveTarget(f); }} title="移動" aria-label="移動"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                    <FolderInput style={{ width: 13, height: 13 }} />
+                  </button>
                   {/* 元ファイルのまま追加したものの名前は Googleドライブ側で変える（変更は一覧に取り込まれる） */}
                   {!f.externalLinked && (
                     <button onClick={e => { e.stopPropagation(); openRename(f); }} title="名前を変更"
@@ -1479,6 +1501,22 @@ export function FileBoxPage() {
           />
         );
       })()}
+      {moveTarget && (
+        <FolderMoveModal
+          node={{ id: moveTarget.id, parentId: moveTarget.parentId ?? null, title: moveTarget.fileName, isFolder: !!moveTarget.isFolder }}
+          items={moveFolderItems}
+          onClose={closeMove}
+          onConfirm={async targetFolderId => {
+            // 今と同じ場所では何も変わらないので、閉じずに選び直してもらう
+            if ((moveTarget.parentId ?? null) === targetFolderId) {
+              toast("今と同じ場所です。別の移動先を選んでください", "info");
+              return;
+            }
+            // 失敗したとき（同名がある等）は開いたままにして、別の移動先を選べるようにする
+            if (await handleMoveFile(moveTarget, targetFolderId)) setMoveTarget(null);
+          }}
+        />
+      )}
       {deleteTarget && (() => {
         // Googleドライブ上のファイルの実体は Drive 側にある。どちらにするかは毎回選んでもらう。
         // フォルダは配下（入れ子のフォルダの中まで）をまとめて数え、
