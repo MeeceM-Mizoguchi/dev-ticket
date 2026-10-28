@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type RefObject } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   FolderKanban, ChevronRight, Search, X, Trash2, Upload, Download, Link2,
@@ -69,6 +69,123 @@ const DRIVE_SYNC_MIN_INTERVAL_MS = 10_000;
 // パンくずのドロップ先を表すキー。ルートは folderId が null なので代わりにこれを使う
 const ROOT_CRUMB = "__root__";
 const TOO_MANY_MSG =`一度に扱えるのは ${MAX_UPLOAD_ENTRIES} 件までです。先頭の ${MAX_UPLOAD_ENTRIES} 件だけ取り込みます`;
+
+// ── ドラッグ中の上方向の自動スクロール（BRU22-004） ─────────────
+// 一覧をスクロールしているのはシェルの <main> で、その上端は固定ヘッダーの裏にある。
+// ブラウザ標準の自動スクロールはスクロール領域の端でしか動かないので、上へは実質動かない。
+// そこで、掴んだままアップロード欄（上の端〜固定ヘッダーの下の端）に入ったら、こちらで上へ送る。
+// 速さは秒速（px）。欄の下の端で最小、上の端で最大。目当てのフォルダで離せるよう中〜遅めにしている
+const DRAG_SCROLL_MIN_SPEED = 240;
+const DRAG_SCROLL_MAX_SPEED = 720;
+// 窓の外へ出たかの判定の猶予。dragover は止まっていても数百ms おきに出るので、それより長くとる
+const DRAG_LEAVE_GRACE_MS = 400;
+// これより長く dragover が来なければ、ドラッグは終わったものとして扱う
+const DRAG_STALE_MS = 1000;
+
+function hasFiles(e: globalThis.DragEvent): boolean {
+  return !!e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files");
+}
+
+/**
+ * パソコンからファイル・フォルダを持ち込んでいる最中か。
+ * dragenter / dragleave は子要素を出入りするたびに出るので、dragleave だけで下ろすと途中で外れる。
+ * 窓の外へ出たとき（relatedTarget が null）だけ、少し待ってから下ろす（その間に dragover が来れば取り消す）。
+ */
+function useExternalFileDrag(): boolean {
+  const [active, setActive] = useState(false);
+  useEffect(() => {
+    let lastSeen = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const clearTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    const onEnterOrOver = (e: globalThis.DragEvent) => {
+      if (!hasFiles(e)) return;
+      lastSeen = performance.now();
+      clearTimer();
+      setActive(true);
+    };
+    const onLeave = (e: globalThis.DragEvent) => {
+      if (e.relatedTarget !== null) return;
+      const leftAt = performance.now();
+      clearTimer();
+      timer = setTimeout(() => { timer = null; if (lastSeen < leftAt) setActive(false); }, DRAG_LEAVE_GRACE_MS);
+    };
+    const onEnd = () => { clearTimer(); setActive(false); };
+    window.addEventListener("dragenter", onEnterOrOver, true);
+    window.addEventListener("dragover", onEnterOrOver, true);
+    window.addEventListener("dragleave", onLeave, true);
+    window.addEventListener("drop", onEnd, true);
+    window.addEventListener("dragend", onEnd, true);
+    return () => {
+      clearTimer();
+      window.removeEventListener("dragenter", onEnterOrOver, true);
+      window.removeEventListener("dragover", onEnterOrOver, true);
+      window.removeEventListener("dragleave", onLeave, true);
+      window.removeEventListener("drop", onEnd, true);
+      window.removeEventListener("dragend", onEnd, true);
+    };
+  }, []);
+  return active;
+}
+
+/**
+ * ドラッグ中、カーソルがアップロード欄の範囲（上の端〜固定ヘッダーの下の端）にある間だけ、<main> を上へスクロールする。
+ * 位置は毎回測る（容量バーの有無などでヘッダーの高さが変わるため、数字で決め打ちしない）。
+ * ドラッグ中にホイール・トラックパッドの操作が届くブラウザでは、その分 <main> をスクロールする。
+ */
+function useDragAutoScrollUp(
+  active: boolean,
+  headerRef: RefObject<HTMLDivElement | null>,
+  uploadRef: RefObject<HTMLDivElement | null>,
+) {
+  useEffect(() => {
+    if (!active) return;
+    const main = headerRef.current?.closest("main") as HTMLElement | null;
+    if (!main) return;
+    let cursorY: number | null = null;
+    let lastOverAt = 0;
+    let raf = 0;
+    let lastTime = 0;
+    let carry = 0; // 1px 未満の端数（scrollTop は整数に丸められることがあるため貯めて送る）
+    // 直近に dragover が来ているか。掴んだ行が消えて dragend が来ないまま目印が残っても、
+    // ふだんのスクロールやホイールを横取りしないため
+    const dragging = (now: number) => cursorY !== null && now - lastOverAt < DRAG_STALE_MS;
+
+    const onOver = (e: globalThis.DragEvent) => { cursorY = e.clientY; lastOverAt = performance.now(); };
+    const onWheel = (e: WheelEvent) => {
+      if (!dragging(performance.now())) return;
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? main.clientHeight : 1;
+      e.preventDefault();
+      main.scrollBy(0, e.deltaY * unit);
+    };
+    const tick = (now: number) => {
+      // タブが裏に回った等で間が空いても、一度に大きく飛ばない
+      const dt = lastTime ? Math.min(now - lastTime, 50) : 0;
+      lastTime = now;
+      const header = headerRef.current;
+      const upload = uploadRef.current;
+      if (cursorY !== null && dragging(now) && header && upload && main.scrollTop > 0) {
+        const top = upload.getBoundingClientRect().top;
+        const bottom = header.getBoundingClientRect().bottom;
+        if (cursorY >= top && cursorY <= bottom) {
+          const depth = (bottom - cursorY) / Math.max(1, bottom - top);
+          carry += (DRAG_SCROLL_MIN_SPEED + (DRAG_SCROLL_MAX_SPEED - DRAG_SCROLL_MIN_SPEED) * depth) * dt / 1000;
+          const step = Math.floor(carry);
+          if (step > 0) { carry -= step; main.scrollBy(0, -step); }
+        } else carry = 0;
+      } else carry = 0;
+      raf = requestAnimationFrame(tick);
+    };
+
+    window.addEventListener("dragover", onOver, true);
+    window.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("dragover", onOver, true);
+      window.removeEventListener("wheel", onWheel, true);
+    };
+  }, [active, headerRef, uploadRef]);
+}
 
 // 何十件も並べるとトーストが画面を埋めるので、先頭数件だけ出して残りは件数で伝える
 function summarize(items: string[], head = 3): string {
@@ -249,6 +366,13 @@ export function FileBoxPage() {
   const [dragOverCrumb, setDragOverCrumb] = useState<string | null>(null);
   // 「移動」ボタンから開く移動先選択の対象（BRU22-001。ドラッグできない・届かないとき用）
   const [moveTarget, setMoveTarget] = useState<ProjectFile | null>(null);
+
+  // BRU22-004 掴んだまま上へ持っていったら一覧を上へスクロールする。
+  // 一覧の行を掴んだとき（draggingFile）と、パソコンから持ち込んだときの両方が対象
+  const stickyHeaderRef = useRef<HTMLDivElement>(null);
+  const uploadAreaRef = useRef<HTMLDivElement>(null);
+  const externalDragging = useExternalFileDrag();
+  useDragAutoScrollUp(!!draggingFile || externalDragging, stickyHeaderRef, uploadAreaRef);
 
   // Googleドライブ連携の設定。null なら「Googleアプリ」ボタンを出さない。
   // 一覧と同じ read で取るので、ボタンだけ遅れて出ることがない（load() 参照）。
@@ -1097,7 +1221,7 @@ export function FileBoxPage() {
           カードは「固定する上半分」と「スクロールする一覧」に分けて、
           角丸と枠線をつなぎ合わせて1枚のカードに見せている。
           margin の -24px は外側の padding を打ち消すため（背景を左右いっぱいに敷く） */}
-      <div style={{ position: "sticky", top: 0, zIndex: 200, background: "#F5F6F8", margin: "-24px -24px 0", padding: "24px 24px 0" }}>
+      <div ref={stickyHeaderRef} style={{ position: "sticky", top: 0, zIndex: 200, background: "#F5F6F8", margin: "-24px -24px 0", padding: "24px 24px 0" }}>
         {/* パンくず・見出し・サブナビの並びは他のプロジェクト配下の画面（議事録／ナレッジノート等）と揃える。
             ここだけパンくずが無く、見出しから始まっていたので全体が上にずれていた */}
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
@@ -1197,7 +1321,7 @@ export function FileBoxPage() {
         {usage !== null && <StorageUsageBar usage={usage} />}
 
         {/* アップロード */}
-        <div
+        <div ref={uploadAreaRef}
           onDragOver={e => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
           onDrop={e => { e.preventDefault(); setDragOver(false); handleDropUpload(e); }}
