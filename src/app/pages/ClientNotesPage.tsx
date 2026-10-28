@@ -20,6 +20,12 @@ import { PageLoader } from "@/app/components/shared/PageLoader";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { ArticleExportButton } from "@/app/components/shared/ArticleExportButton";
 import { DocTree, FolderMoveModal, buildDocTree, isCyclicMove, type DocTreeNode } from "@/app/components/shared/DocTree";
+import { DocVisibilityDialog } from "@/app/components/shared/DocVisibilityDialog";
+import { DocVisibilityBadges } from "@/app/components/shared/DocVisibilityBadges";
+import {
+  hasVisibilityColumn, canManageDocVisibility, restrictedAncestors, restrictionsLostByMove,
+  moveOutConfirmMessage, docDeleteErrorMessage, loadClientNoteMemberCandidates,
+} from "@/app/lib/docVisibility";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/app/components/ui/dropdown-menu";
 import { exportClientNoteArticle } from "@/app/lib/articleExport";
 
@@ -44,7 +50,7 @@ export function ClientNotesPage() {
   const { clientId, noteId: noteIdParam, folderId: folderIdParam } =
     useParams<{ clientId: string; noteId?: string; folderId?: string }>();
   const navigate = useNavigate();
-  const { userRole, userName, userOrgId } = useAuth();
+  const { userRole, userName, userOrgId, userId } = useAuth();
   const { plan } = usePlan();
   const { toast } = useToast();
 
@@ -61,6 +67,13 @@ export function ClientNotesPage() {
   const [images, setImages] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<ClientNote | null>(null);
   const [movingNodeTarget, setMovingNodeTarget] = useState<ClientNote | null>(null);
+  // BRU22-006 公開範囲。列が無い環境（SQL 未適用）では false のままにして、メニューも鍵の印も出さない
+  const [visibilitySupported, setVisibilitySupported] = useState(false);
+  const [visibilityTarget, setVisibilityTarget] = useState<ClientNote | null>(null);
+  // 公開範囲を保存した回数（本文の上のバッジの人数を読み直す）
+  const [visibilityVersion, setVisibilityVersion] = useState(0);
+  // 「指定したメンバーのみ」のフォルダの外へ移すときの確認待ち
+  const [pendingMove, setPendingMove] = useState<{ draggedId: string; targetParentId: string | null; message: string } | null>(null);
   const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
   // 作成直後のフォルダ/メモを一時的にハイライトし、そこまでスクロールする（議事録と同仕様）
   const [highlightIds, setHighlightIds] = useState<string[]>([]);
@@ -110,6 +123,7 @@ export function ClientNotesPage() {
     setClient(clientRow ? mapClient(clientRow) : null);
     setClientMissing(!clientRow);
     setNotes((noteRows ?? []).map(mapClientNote));
+    setVisibilitySupported(hasVisibilityColumn(noteRows));
 
     // 参加者チップ・@メンション・MD取り込みの参加者照合の候補。
     // 組織の全員を出すと、この会社と無関係なプロジェクトの人の名前まで見えてしまうため、
@@ -321,13 +335,25 @@ export function ClientNotesPage() {
     }
   }, [selectedId, load, toast]);
 
-  const handleMoveNode = useCallback(async (draggedId: string, targetParentId: string | null) => {
+  /** @param confirmed 公開範囲が広がる移動の確認を済ませたか */
+  const handleMoveNode = useCallback(async (draggedId: string, targetParentId: string | null, confirmed = false) => {
     if (draggedId === targetParentId) return;
     const dragged = notes.find(n => n.id === draggedId);
     if (!dragged || dragged.parentId === targetParentId) return;
     if (isCyclicMove(notes, draggedId, targetParentId)) {
       toast("フォルダを自身の子孫フォルダ配下に移動することはできません", "error");
       return;
+    }
+    // BRU22-006 「指定したメンバーのみ」のフォルダの外へ移すと、今より多くの人に見えるようになるので確認する
+    if (!confirmed) {
+      const lost = restrictionsLostByMove(noteById, dragged, targetParentId);
+      if (lost.length > 0) {
+        const message = await moveOutConfirmMessage("client-note",
+          dragged.title || (dragged.isFolder ? "無題のフォルダ" : "新規メモ"), lost,
+          f => canManageDocVisibility(f, userId, userRole));
+        setPendingMove({ draggedId, targetParentId, message });
+        return;
+      }
     }
     const sortOrder = notes.filter(n => n.parentId === targetParentId).length;
     setNotes(prev => prev.map(n => n.id === draggedId ? { ...n, parentId: targetParentId, sortOrder } : n));
@@ -341,7 +367,7 @@ export function ClientNotesPage() {
       toast("配置を変更しました");
     }
     void load();
-  }, [notes, load, toast]);
+  }, [notes, noteById, userId, userRole, load, toast]);
 
   // プロジェクト配下ではないので shareLink(プロジェクトslug前提)は使わず、ここで組み立てる。
   // オリジンは必ず appOrigin() を通す（ネイティブの capacitor:// を渡さないため）。
@@ -419,7 +445,8 @@ export function ClientNotesPage() {
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("client_notes").delete().eq("id", note.id);
-      if (error) { toast("削除に失敗しました", "error"); throw error; }
+      // BRU22-006 見られないメモ・消せないメモを含むフォルダは、DB が止める（何も消えない）
+      if (error) { toast(docDeleteErrorMessage(error.message, note.isFolder, "メモ"), "error"); throw error; }
     }
     // フォルダを消すと配下も消える(cascade)ので、選択中が子孫なら選択を外す
     const isSelectionGone = selectedId === note.id
@@ -458,6 +485,12 @@ export function ClientNotesPage() {
       || plainText(n.content).toLowerCase().includes(q)
       || n.attendees.some(a => a.toLowerCase().includes(q))));
   }, [orderedNotes, sidebarSearch]);
+
+  // ── 公開範囲（BRU22-006） ─────────────────────────────────────
+  // 変えられるのは作成者とオーナーだけ。公開先の人には、削除と公開範囲の変更の操作を出さない
+  const canManageVisibility = (n: ClientNote) => visibilitySupported && canManageDocVisibility(n, userId, userRole);
+  const canDeleteNote = (n: ClientNote) => n.visibility !== "members" || canManageDocVisibility(n, userId, userRole);
+  const openVisibility = (n: ClientNote | undefined | null) => { if (n) setVisibilityTarget(n); };
 
   if (loading && !initializedRef.current) return <PageLoader />;
 
@@ -610,6 +643,12 @@ export function ClientNotesPage() {
               onImportMd={canEdit ? handleOpenMdPicker : undefined}
               highlightIds={highlightIds}
               scrollToId={scrollToId}
+              visibility={visibilitySupported ? {
+                isRestricted: node => noteById.get(node.id)?.visibility === "members",
+                canManage: node => { const n = noteById.get(node.id); return !!n && canManageVisibility(n); },
+                onOpen: node => openVisibility(noteById.get(node.id)),
+              } : undefined}
+              canDeleteNode={node => { const n = noteById.get(node.id); return !n || canDeleteNote(n); }}
               renderItemRow={(node, isSelected) => {
                 const n = noteById.get(node.id);
                 return (
@@ -645,6 +684,17 @@ export function ClientNotesPage() {
               <p style={{ fontSize: 12, color: "#B0A9A4", margin: "0 0 16px" }}>
                 {notes.filter(n => n.parentId === selected.id).length} 件のアイテム
               </p>
+              {visibilitySupported && (() => {
+                const inherited = restrictedAncestors(noteById, selected)[0] ?? null;
+                if (selected.visibility !== "members" && !inherited && !canManageVisibility(selected)) return null;
+                return (
+                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+                    <DocVisibilityBadges kind="client-note" item={selected} inheritedFolder={inherited}
+                      canManage={canManageVisibility(selected)} reloadKey={visibilityVersion}
+                      onOpenOwn={() => openVisibility(selected)} onOpenFolder={() => openVisibility(inherited)} />
+                  </div>
+                );
+              })()}
               <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
                 <button onClick={() => handleCopyLink(selected)}
                   style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#ECFDF5", color: "#059669", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
@@ -704,6 +754,17 @@ export function ClientNotesPage() {
                     ))}
                   </div>
                 )}
+                {visibilitySupported && (() => {
+                  const inherited = restrictedAncestors(noteById, selected)[0] ?? null;
+                  if (selected.visibility !== "members" && !inherited && !canManageVisibility(selected)) return null;
+                  return (
+                    <div style={{ marginBottom: 8 }}>
+                      <DocVisibilityBadges kind="client-note" item={selected} inheritedFolder={inherited}
+                        canManage={canManageVisibility(selected)} reloadKey={visibilityVersion}
+                        onOpenOwn={() => openVisibility(selected)} onOpenFolder={() => openVisibility(inherited)} />
+                    </div>
+                  );
+                })()}
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
                   <input value={title} disabled={!canEdit}
                     onChange={e => { setTitle(e.target.value); scheduleSave({ title: e.target.value, noteDate, attendees, content }); }}
@@ -715,7 +776,7 @@ export function ClientNotesPage() {
                   </button>
                   <ArticleExportButton formats={["xlsx", "docx", "pdf", "md"]}
                     onExport={f => exportClientNoteArticle(selected, client?.name ?? "", f)} />
-                  {canEdit && (
+                  {canEdit && canDeleteNote(selected) && (
                     <button onClick={() => setDeleteTarget(selected)} title="このメモを削除"
                       style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, flexShrink: 0 }}>
                       <Trash2 style={{ width: 14, height: 14 }} />
@@ -833,6 +894,40 @@ export function ClientNotesPage() {
             await handleMoveNode(movingNodeTarget.id, targetParentId);
             setMovingNodeTarget(null);
           }}
+        />
+      )}
+
+      {/* BRU22-006 公開範囲の設定（作成者・オーナー以外は読み取りだけ） */}
+      {visibilityTarget && client && (
+        <DocVisibilityDialog
+          kind="client-note"
+          doc={visibilityTarget}
+          itemLabel="メモ"
+          canManage={canManageVisibility(visibilityTarget)}
+          loadCandidates={() => loadClientNoteMemberCandidates(client.organizationId ?? userOrgId ?? null)}
+          allDescription="この組織でクライアントメモを見られる人は、全員見られます（今までと同じ）。"
+          emptyCandidatesText="選べるメンバーがいません（同じ組織の管理者・プロジェクトマネージャー・オーナーが対象です）。"
+          inheritedFolderTitle={restrictedAncestors(noteById, visibilityTarget)[0]?.title ?? null}
+          onSaved={async () => {
+            toast("公開範囲を変更しました");
+            // 選択中のメモは id が変わらないので、編集欄は流し込み直さない（本文を空で保存しない。BUG-07）
+            await load();
+            setVisibilityVersion(v => v + 1);
+          }}
+          onClose={() => setVisibilityTarget(null)}
+        />
+      )}
+
+      {/* BRU22-006 「指定したメンバーのみ」のフォルダの外へ移すときの確認 */}
+      {pendingMove && (
+        <ConfirmDialog
+          title="公開範囲が広がります"
+          message={pendingMove.message}
+          confirmLabel="移動する"
+          confirmColor="#059669"
+          hasWarningText={false}
+          onConfirm={() => handleMoveNode(pendingMove.draggedId, pendingMove.targetParentId, true)}
+          onClose={() => setPendingMove(null)}
         />
       )}
     </div>
