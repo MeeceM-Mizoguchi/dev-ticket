@@ -3,7 +3,7 @@
 // WbsPage がWBSの切り替えと枠を受け持ち、ここは選ばれた1つのWBSの中身を受け持つ。
 // WBSを切り替えたら key で作り直すので、前のWBSの行や選択を持ち越さない。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Trash2, Tags, CalendarOff, Download, Upload, FilterX, Maximize2, Minimize2 } from "lucide-react";
+import { Trash2, Tags, CalendarOff, Download, Upload, FilterX, Maximize2, Minimize2, FolderInput } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -27,6 +27,7 @@ import { FOCUS_PULSE_MS, WbsTable, type WbsColKey, type WbsDropMode, type WbsEdi
 import { filterWbsRows, wbsFilterOptions, type WbsFilterCol, type WbsFilterCtx, type WbsFilters } from "./wbsFilter";
 import { WbsAttentionDialog, collectWbsAttention, isWbsAttentionDismissed } from "./WbsAttentionDialog";
 import { wbsToolBtn, wbsToolBtnDisabled } from "./wbsStyles";
+import { WbsMoveDialog, wbsMoveTops, type WbsMovePosition } from "./WbsMoveDialog";
 
 /** 列固定の位置は、WBSごと・利用者ごとにブラウザへ保存する */
 function freezeStorageKey(userId: string, sheetId: string) { return `devticket:wbs:freeze:${userId}:${sheetId}`; }
@@ -84,6 +85,8 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   const [editing, setEditing] = useState<WbsEditing | null>(null);
   const [scrollTo, setScrollTo] = useState<{ id: string; nonce: number } | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  // BRU22-007 チェックを付けた行の一括移動
+  const [moveOpen, setMoveOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [holidayOpen, setHolidayOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -525,6 +528,40 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     setCheckedIds(new Set());
   };
 
+  // ── 一括移動（BRU22-007） ──────────────────────────────────
+  /**
+   * チェックを付けた行を、targetParentId の下の先頭か末尾へまとめて移す。段は変えない。
+   * 上の行にもチェックがある行は、上の行と一緒に動くので送らない。移す行どうしの並びは今の順のまま。
+   */
+  const handleBulkMove = async (targetParentId: string | null, position: WbsMovePosition): Promise<boolean> => {
+    const tops = wbsMoveTops(rows, checkedIds);
+    if (tops.length === 0) return false;
+    const topIds = new Set(tops.map(t => t.id));
+    const rest = siblingsOf(items, targetParentId).filter(s => !topIds.has(s.id));
+    // 先頭なら今の先頭の手前に、末尾なら今の末尾の後ろに、間隔を空けて並べる
+    const orderOf = (i: number) => position === "head"
+      ? (rest.length ? rest[0].sortOrder : 0) - (tops.length - i) * WBS_SORT_GAP
+      : (rest.length ? rest[rest.length - 1].sortOrder + WBS_SORT_GAP : 0) + i * WBS_SORT_GAP;
+    const patches = tops.map((t, i) => ({ id: t.id, parentId: targetParentId, sortOrder: orderOf(i) }));
+
+    setItems(prev => prev.map(p => {
+      const patch = patches.find(x => x.id === p.id);
+      return patch ? { ...p, parentId: patch.parentId, sortOrder: patch.sortOrder } : p;
+    }));
+    const results = await Promise.all(patches.map(p => updateWbsItem(p.id, { parentId: p.parentId, sortOrder: p.sortOrder })));
+    if (results.some(ok => !ok)) {
+      // 一部だけ通った場合もあるので、DB の状態を読み直して合わせる
+      toast("移動を保存できませんでした", "error");
+      load().catch(() => { });
+      return false;
+    }
+    toast(`${checkedIds.size} 行を移動しました`);
+    setCheckedIds(new Set());
+    setMoveOpen(false);
+    setScrollTo({ id: tops[0].id, nonce: Date.now() });
+    return true;
+  };
+
   if (loading && !initializedRef.current) return <PageLoader label="WBSを読み込み中..." />;
 
   return (
@@ -541,6 +578,11 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
               style={checkedIds.size > 0 ? { ...wbsToolBtn, color: "#DC2626" } : wbsToolBtnDisabled}>
               {/* 何行が消えるのかを、押す前にボタンの上で分かるようにする */}
               <Trash2 style={{ width: 12, height: 12 }} />{checkedIds.size > 0 ? `選択した ${checkedIds.size} 行を削除` : "行を削除"}
+            </button>
+            <button type="button" onClick={() => setMoveOpen(true)} disabled={checkedIds.size === 0}
+              title={checkedIds.size > 0 ? "チェックを付けた行を、移動先を選んでまとめて移します" : "移動したい行の左のチェックボックスにチェックを付けると使えます"}
+              style={checkedIds.size > 0 ? wbsToolBtn : wbsToolBtnDisabled}>
+              <FolderInput style={{ width: 12, height: 12 }} />{checkedIds.size > 0 ? `選択した ${checkedIds.size} 行を移動` : "行を移動"}
             </button>
             <span style={{ fontSize: 11, color: "#A09790" }}>行と行の間にマウスを乗せると、その位置に行を追加できます。大項目・中項目の行は、左の三角で開閉できます</span>
           </>
@@ -632,6 +674,11 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
       {attentionOpen && (
         <WbsAttentionDialog attention={attention} userId={userId} sheetId={sheet.id} today={today}
           onJump={handleJump} onClose={() => setAttentionOpen(false)} />
+      )}
+
+      {moveOpen && checkedIds.size > 0 && (
+        <WbsMoveDialog rows={rows} items={items} checkedIds={checkedIds}
+          onSubmit={handleBulkMove} onClose={() => setMoveOpen(false)} />
       )}
 
       {deleteOpen && checkedIds.size > 0 && (
