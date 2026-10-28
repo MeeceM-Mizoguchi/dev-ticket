@@ -13,8 +13,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   ChevronRight, ChevronDown, Plus, FolderPlus, Folder, FolderOpen,
-  FolderTree, Pencil, Trash2, MoreVertical, Link2, X, FileUp, Upload,
+  FolderTree, Pencil, Trash2, MoreVertical, Link2, X, FileUp, Upload, Lock,
 } from "lucide-react";
+import { PRIVATE_COLOR } from "@/app/components/whiteboard/PrivateBadge";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
@@ -99,6 +100,19 @@ export interface DocTreeProps {
   highlightIds?: string[];
   /** 作成直後にここまでスクロールするノード */
   scrollToId?: string | null;
+  /**
+   * 公開範囲（BRU22-006。議事録・クライアントメモ）。渡さない画面（Wiki・バックログ）は今のまま。
+   *   isRestricted … 鍵の印を出す行（公開範囲が「指定したメンバーのみ」の行）
+   *   canManage    … メニューに「公開範囲」を出す行（作成者とオーナー）
+   *   onOpen       … 「公開範囲」を押したとき
+   */
+  visibility?: {
+    isRestricted: (node: DocTreeNode) => boolean;
+    canManage: (node: DocTreeNode) => boolean;
+    onOpen: (node: DocTreeNode) => void;
+  };
+  /** メニューに「削除」を出すか。未指定なら canEdit のとおり（公開先の人に、限定公開の行の削除を出さないため） */
+  canDeleteNode?: (node: DocTreeNode) => boolean;
 }
 
 export function DocTree(props: DocTreeProps) {
@@ -114,7 +128,7 @@ export function DocTree(props: DocTreeProps) {
 function DocTreeRow({
   node, depth, selectedId, canEdit, onSelect, onAddChild, addItemLabel, addFolderLabel,
   onRename, onDelete, onMove, onReorder, onOpenMoveModal, onCopyLink, renderItemRow,
-  onImportMd, importMdLabel, highlightIds, scrollToId, tree,
+  onImportMd, importMdLabel, highlightIds, scrollToId, tree, visibility, canDeleteNode,
 }: DocTreeProps & { node: DocTreeNode; depth: number }) {
   const [expanded, setExpanded] = useState(true);
   const [hovered, setHovered] = useState(false);
@@ -184,6 +198,9 @@ function DocTreeRow({
   const FolderIcon = expanded ? FolderOpen : Folder;
   const menuIconStyle = { width: 14, height: 14 };
   const canDropHere = canEdit && (isFolder || !!onReorder);
+  const canDelete = canEdit && (canDeleteNode?.(node) ?? true);
+  const canManageVisibility = !!visibility?.canManage(node);
+  const isRestricted = !!visibility?.isRestricted(node);
 
   // 3点リーダー(Dropdown)と右クリック(ContextMenu)で同じ項目を描く。
   // Radix の Dropdown/Context は別プリミティブなので、同名APIのコンポーネントを差し替えて再利用する。
@@ -214,9 +231,12 @@ function DocTreeRow({
           <P.Item onSelect={() => setIsEditing(true)}><Pencil style={menuIconStyle} />名前を変更</P.Item>
         </>
       )}
+      {canManageVisibility && (
+        <P.Item onSelect={() => visibility?.onOpen(node)}><Lock style={menuIconStyle} />公開範囲</P.Item>
+      )}
       <P.Item onSelect={() => onCopyLink(node)}><Link2 style={menuIconStyle} />リンクをコピー</P.Item>
-      {canEdit && <P.Separator />}
-      {canEdit && (
+      {canDelete && <P.Separator />}
+      {canDelete && (
         <P.Item onSelect={() => onDelete(node)} className="text-red-600 focus:text-red-600">
           <Trash2 style={menuIconStyle} />削除
         </P.Item>
@@ -311,6 +331,12 @@ function DocTreeRow({
               renderItemRow(node, isSelected)
             )}
 
+            {!isEditing && isRestricted && (
+              <span title="指定したメンバーのみが見られます" style={{ display: "flex", flexShrink: 0 }}>
+                <Lock aria-label="指定したメンバーのみ" style={{ width: 11, height: 11, color: PRIVATE_COLOR }} />
+              </span>
+            )}
+
             {!isEditing && (
               <DropdownMenu onOpenChange={setMenuOpen}>
                 <DropdownMenuTrigger asChild>
@@ -351,6 +377,7 @@ function DocTreeRow({
           onOpenMoveModal={onOpenMoveModal} onCopyLink={onCopyLink} renderItemRow={renderItemRow}
           onImportMd={onImportMd} importMdLabel={importMdLabel}
           highlightIds={highlightIds} scrollToId={scrollToId}
+          visibility={visibility} canDeleteNode={canDeleteNode}
         />
       ))}
     </div>
