@@ -113,6 +113,21 @@ function parseDate(raw: string): string | null {
   return `${yy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
 }
 
+/**
+ * "2026-10-20" → その日の日本時間 0:00。started_at / released_at は時刻の列で、
+ * 日付だけを送ると UTC の 0:00（日本時間 9:00）になるため、日本の日付として揃える。
+ */
+function jstStartOfDay(date: string): string {
+  return `${date}T00:00:00+09:00`;
+}
+
+/** parseDate の結果が実在する日か（"2026-02-31" のような日は DB が受け付けず、登録全体が失敗するため） */
+function isRealDate(date: string): boolean {
+  const [y, m, d] = date.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
 /** "4" "4h" "4時間" "4.5" → 数値。読めなければ null */
 function parseHours(raw: unknown): number | null {
   if (typeof raw === "number") return isFinite(raw) ? raw : null;
@@ -283,6 +298,9 @@ interface TicketInput {
   parentWbs?: unknown;
   parentId?: unknown;
   prLinkWaived?: unknown;
+  actualHours?: unknown;
+  startedAt?: unknown;
+  completedAt?: unknown;
 }
 
 interface NormalizedTicket {
@@ -308,6 +326,14 @@ interface NormalizedTicket {
    * 指定なしのものは、リクエスト直下の prLinkWaived（それも無ければ false）で登録する。
    */
   prLinkWaived: boolean | null;
+  /**
+   * 完了済みの作業を後から登録するときの実績（BRU22-005）。null は指定なし。
+   * 指定なしの項目は insert に列ごと含めない（本番DBに無い列を全件に足して登録が全滅した BRU21-002 の再発防止）。
+   * actualHours → actual_work_hours、startedAt → started_at、completedAt → released_at（クローズのときだけ）
+   */
+  actualHours: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
 }
 
 /** 既存チケットの子を足すときに引いてくる親チケットの行 */
@@ -419,6 +445,41 @@ function normalizeTicket(input: TicketInput, ctx: NormalizeCtx, isChild: boolean
     warn(`prLinkWaived「${String(input.prLinkWaived)}」は true / false ではないため無視しました`);
   }
 
+  // ── 実績（BRU22-005）。読めない・負・順番が逆の値は、その項目だけ無視して warnings に出す（登録は止めない）
+  const given = (v: unknown) => v !== undefined && v !== null && v !== "";
+
+  // actual_work_hours は小数を持てる列（画面の手入力も小数第1位まで書いている）。小数第1位に丸める
+  let actualHours: number | null = null;
+  if (given(input.actualHours)) {
+    const h = parseHours(input.actualHours);
+    if (h === null) warn(`実績工数「${String(input.actualHours)}」を数値として読めないため無視しました`);
+    else if (h < 0) warn(`実績工数「${String(input.actualHours)}」が負の値のため無視しました`);
+    else {
+      actualHours = Math.round(h * 10) / 10;
+      if (actualHours !== h) warn(`実績工数「${String(input.actualHours)}」を ${actualHours} 時間に丸めました`);
+    }
+  }
+
+  const readDate = (v: unknown, label: string): string | null => {
+    if (!given(v)) return null;
+    const d = typeof v === "string" ? parseDate(v) : null;
+    if (!d || !isRealDate(d)) {
+      warn(`${label}「${String(v)}」を日付として読めないため無視しました`);
+      return null;
+    }
+    return d;
+  };
+  const startedAt = readDate(input.startedAt, "着手日");
+  let completedAt = readDate(input.completedAt, "完了日");
+  if (completedAt && status !== "closed") {
+    warn(`完了日「${String(input.completedAt)}」は、ステータスがクローズのときだけ登録します。無視しました`);
+    completedAt = null;
+  }
+  if (completedAt && startedAt && completedAt < startedAt) {
+    warn(`完了日「${String(input.completedAt)}」が着手日より前のため無視しました`);
+    completedAt = null;
+  }
+
   const children: NormalizedTicket[] = [];
   if (!isChild && (parentWbs || parentId)) {
     // 既存チケットの子として作るものに、さらに子は付けられない（階層は1段まで）
@@ -441,6 +502,7 @@ function normalizeTicket(input: TicketInput, ctx: NormalizeCtx, isChild: boolean
   return {
     title, status, priority, categoryId, assignee, startDate, dueDate,
     estimatedHours, descriptionHtml, children, parentWbs, parentId, prLinkWaived,
+    actualHours, startedAt, completedAt,
   };
 }
 
@@ -1422,6 +1484,11 @@ async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any
     images: [], parent_id: parentId,
     // 列は not null default false。指定なしは既定値と同じ false を書く（行ごとに列をそろえるため省略しない）
     pr_link_waived: t.prLinkWaived ?? defaultPrLinkWaived,
+    // 実績（BRU22-005）は指定があるときだけ列を含める。どの行にも指定が無ければ、送る列は改修前と同じになる。
+    // 行ごとに列が違うときは、supabase-js が全行の列の和で送り、指定の無い行は null（＝未設定。既定値と同じ）になる
+    ...(t.actualHours !== null ? { actual_work_hours: t.actualHours } : {}),
+    ...(t.startedAt ? { started_at: jstStartOfDay(t.startedAt) } : {}),
+    ...(t.completedAt ? { released_at: jstStartOfDay(t.completedAt) } : {}),
   });
 
   // created は入力順（tickets の並び）で返す

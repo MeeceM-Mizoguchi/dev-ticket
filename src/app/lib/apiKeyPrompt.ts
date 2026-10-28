@@ -146,6 +146,20 @@ function prLinkWaivedNote(ctx: ApiSetupContext): string {
     : "";
 }
 
+/**
+ * 実績（BRU22-005）の項目表の行。親向け・子向けの2つの表で同じものを使う。
+ * 完了済みの作業を後から登録したとき、実績が 0h のままにならないようにするためのもの
+ */
+const ACTUAL_TABLE_ROWS = `
+| actualHours | | 実績工数（時間数・小数第1位まで。例: \`3.5\`） | 空欄（画面は着手〜完了の時刻から計算） |
+| startedAt | | 着手日 \`YYYY/MM/DD\` | 空欄 |
+| completedAt | | 完了日 \`YYYY/MM/DD\`。**status がクローズのときだけ**登録される | 空欄 |`;
+
+/** 実績の書き方の指示。親向け・子向けの2つの手順書で同じものを使う */
+const ACTUAL_NOTE = `
+- **完了済みの作業を後から登録するときは、\`status\` を「クローズ」にし、分かる範囲で \`actualHours\`・\`startedAt\`・\`completedAt\` を入れる。**根拠が無ければ省略する（推測で埋めない）。
+- \`completedAt\` は \`startedAt\` より前にしない。クローズ以外のステータスで \`completedAt\` を送っても登録されない（\`warnings\` に出る）。`;
+
 function memberCandidates(ctx: ApiSetupContext): string {
   return ctx.memberNames.length > 0
     ? ctx.memberNames.join(" / ")
@@ -226,14 +240,14 @@ ${buildKeySection(ctx.plainKey)}
 | assignee | | ${members} | 空欄 |
 | startDate | | \`YYYY/MM/DD\` | 空欄 |
 | dueDate | | \`YYYY/MM/DD\` | 空欄 |
-| estimatedHours | | 時間数（整数） | 0 |
+| estimatedHours | | 時間数（整数） | 0 |${ACTUAL_TABLE_ROWS}
 | description | | 本文（Markdown 文字列） | 空欄 |
 | children | | 子チケットの配列（同じ形・1階層まで） | なし |
 | parentWbs | | **既に登録されているチケット**のWBS（例: \`T-012\`）。指定するとその子として登録される | 新しい親チケットとして登録 |${prLinkWaivedTableRow(ctx)}
 
 - 上の項目は**できる限りすべて埋める**。ただし**根拠なく推測しない**。判断材料が無い項目は**キーごと省略**する（空文字や「未定」とは書かない）。
 - 表に無いキーは送らない（送っても無視される）。
-- assignee / category は上に挙げた名前のいずれかを書く。該当が無ければキーごと省略する。
+- assignee / category は上に挙げた名前のいずれかを書く。該当が無ければキーごと省略する。${ACTUAL_NOTE}
 - 1回のリクエストで送れる \`tickets\` は 200 件まで、親1件あたりの子は 50 件まで。${prLinkWaivedNote(ctx)}
 
 ## 既に登録されているチケットに子チケットを足す
@@ -390,12 +404,12 @@ ${buildKeySection(ctx.plainKey)}
 | assignee | | ${members} | 空欄 |
 | startDate | | \`YYYY/MM/DD\` | 空欄 |
 | dueDate | | \`YYYY/MM/DD\` | 空欄 |
-| estimatedHours | | 時間数（整数） | 0 |
+| estimatedHours | | 時間数（整数） | 0 |${ACTUAL_TABLE_ROWS}
 | description | | 本文（Markdown 文字列） | 空欄 |${prLinkWaivedTableRow(ctx)}
 
 - 上の項目は**できる限りすべて埋める**。ただし**根拠なく推測しない**。判断材料が無い項目は**キーごと省略**する（空文字や「未定」とは書かない）。
 - 表に無いキーは送らない（送っても無視される）。
-- assignee / category は上に挙げた名前のいずれかを書く。該当が無ければキーごと省略する。
+- assignee / category は上に挙げた名前のいずれかを書く。該当が無ければキーごと省略する。${ACTUAL_NOTE}
 - 1回のリクエストで足せる子チケットは 50 件まで。超えるときはリクエストを分ける。${prLinkWaivedNote(ctx)}
 
 ${DESCRIPTION_SPEC}
