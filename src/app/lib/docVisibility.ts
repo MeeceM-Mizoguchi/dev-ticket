@@ -72,6 +72,30 @@ export function restrictionsLostByMove<T extends DocVisibilityItem>(byId: Map<st
 }
 
 /**
+ * 「指定したメンバーのみ」のフォルダの外へ移すときの確認の文言。
+ * 外れるフォルダが1つで、その公開先を読める（作成者・オーナー）ときは「○○さん以外にも見えるようになります」と名前を出す。
+ * 読めないときは、フォルダの名前だけで伝える（公開先の一覧は作成者とオーナーしか読めないため）。
+ */
+export async function moveOutConfirmMessage(
+  kind: DocVisibilityKind,
+  itemTitle: string,
+  lost: (DocVisibilityItem & { createdBy: string })[],
+  canRead: (folder: DocVisibilityItem) => boolean,
+): Promise<string> {
+  const folders = lost.map(f => `「${f.title || "無題のフォルダ"}」`).join("");
+  if (lost.length === 1 && canRead(lost[0])) {
+    const members = await loadDocMembers(kind, lost[0].id);
+    if (members) {
+      const names = [...new Set([lost[0].createdBy, ...members.map(m => m.name)].filter(Boolean))];
+      if (names.length > 0) {
+        return `「${itemTitle}」をフォルダ${folders}の外へ移します。移すと${names.map(n => `${n}さん`).join("・")}以外にも見えるようになります。移動しますか？`;
+      }
+    }
+  }
+  return `「${itemTitle}」をフォルダ${folders}の外へ移します。このフォルダは公開範囲が「指定したメンバーのみ」のため、移すと今より多くの人に見えるようになります。移動しますか？`;
+}
+
+/**
  * 削除のエラーを、画面に出す案内へ読み替える（DB のトリガーが付けた目印を見る）。
  * @param label 「議事録」「メモ」
  */

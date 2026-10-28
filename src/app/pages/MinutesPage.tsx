@@ -29,6 +29,12 @@ import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/app/components/ui/dropdown-menu";
 import { readMinutesMarkdownFiles, MINUTES_MD_ACCEPT } from "@/app/lib/minutesMdImport";
 import { DocTree, FolderMoveModal, buildDocTree, isCyclicMove, type DocTreeNode } from "@/app/components/shared/DocTree";
+import { DocVisibilityDialog } from "@/app/components/shared/DocVisibilityDialog";
+import { DocVisibilityBadges } from "@/app/components/shared/DocVisibilityBadges";
+import {
+  hasVisibilityColumn, canManageDocVisibility, restrictedAncestors, restrictionsLostByMove,
+  moveOutConfirmMessage, docDeleteErrorMessage, loadMinuteMemberCandidates,
+} from "@/app/lib/docVisibility";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
@@ -145,6 +151,13 @@ export function MinutesPage() {
   const [images, setImages] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<MeetingMinute | null>(null);
   const [movingNodeTarget, setMovingNodeTarget] = useState<MeetingMinute | null>(null);
+  // BRU22-006 公開範囲。列が無い環境（SQL 未適用）では false のままにして、メニューも鍵の印も出さない
+  const [visibilitySupported, setVisibilitySupported] = useState(false);
+  const [visibilityTarget, setVisibilityTarget] = useState<MeetingMinute | null>(null);
+  // 公開範囲を保存した回数（本文の上のバッジの人数を読み直す）
+  const [visibilityVersion, setVisibilityVersion] = useState(0);
+  // 「指定したメンバーのみ」のフォルダの外へ移すときの確認待ち
+  const [pendingMove, setPendingMove] = useState<{ draggedId: string; targetParentId: string | null; message: string } | null>(null);
   const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
   // 作成直後のフォルダ/議事録を一時的にハイライトし、そこまでスクロールする（Wikiと同仕様）
   const [highlightIds, setHighlightIds] = useState<string[]>([]);
@@ -244,6 +257,7 @@ export function MinutesPage() {
       supabase!.from("action_memos").select("meeting_minute_id, is_done").eq("project_id", p.id),
     ]);
     setMinutes((data ?? []).map(mapMeetingMinute));
+    setVisibilitySupported(hasVisibilityColumn(data));
     const pendingMap: Record<string, number> = {};
     for (const a of actionData ?? []) {
       if (!a.is_done && a.meeting_minute_id) {
@@ -446,13 +460,25 @@ export function MinutesPage() {
     emitLinkItemsChanged(project?.id, "minute"); // 他タブのサジェスト表示名を更新
   }, [selectedId, project?.id, load, toast]);
 
-  const handleMoveNode = useCallback(async (draggedId: string, targetParentId: string | null) => {
+  /** @param confirmed 公開範囲が広がる移動の確認を済ませたか */
+  const handleMoveNode = useCallback(async (draggedId: string, targetParentId: string | null, confirmed = false) => {
     if (draggedId === targetParentId) return;
     const dragged = minutes.find(m => m.id === draggedId);
     if (!dragged || dragged.parentId === targetParentId) return;
     if (isCyclicMove(minutes, draggedId, targetParentId)) {
       toast("フォルダを自身の子孫フォルダ配下に移動することはできません", "error");
       return;
+    }
+    // BRU22-006 「指定したメンバーのみ」のフォルダの外へ移すと、今より多くの人に見えるようになるので確認する
+    if (!confirmed) {
+      const lost = restrictionsLostByMove(minuteById, dragged, targetParentId);
+      if (lost.length > 0) {
+        const message = await moveOutConfirmMessage("minute",
+          dragged.title || (dragged.isFolder ? "無題のフォルダ" : "新規議事録"), lost,
+          f => canManageDocVisibility(f, userId, userRole));
+        setPendingMove({ draggedId, targetParentId, message });
+        return;
+      }
     }
     const sortOrder = minutes.filter(m => m.parentId === targetParentId).length;
     setMinutes(prev => prev.map(m => m.id === draggedId ? { ...m, parentId: targetParentId, sortOrder } : m));
@@ -466,7 +492,7 @@ export function MinutesPage() {
       toast("配置を変更しました");
     }
     load();
-  }, [minutes, load, toast]);
+  }, [minutes, minuteById, userId, userRole, load, toast]);
 
   const copyShareLink = useCopyShareLink(projectSlug ?? project?.slug);
 
@@ -537,7 +563,13 @@ export function MinutesPage() {
   };
 
   const handleDelete = async (m: MeetingMinute) => {
-    await supabase!.from("meeting_minutes").delete().eq("id", m.id);
+    const { error } = await supabase!.from("meeting_minutes").delete().eq("id", m.id);
+    if (error) {
+      // BRU22-006 見られない議事録・消せない議事録を含むフォルダは、DB が止める（何も消えない）
+      console.error("[MinutesPage] delete error:", error);
+      toast(docDeleteErrorMessage(error.message, m.isFolder, "議事録"), "error");
+      return;
+    }
     emitLinkItemsChanged(project?.id, "minute");
     // フォルダを消すと配下も消える(cascade)ので、選択中が子孫なら選択を外す
     const isSelectionGone = selectedId === m.id
@@ -548,6 +580,22 @@ export function MinutesPage() {
     }
     toast(`「${m.title || (m.isFolder ? "無題のフォルダ" : "新規議事録")}」を削除しました`);
     load();
+  };
+
+  // ── 公開範囲（BRU22-006） ─────────────────────────────────────
+  // 変えられるのは作成者とオーナーだけ。公開先の人には、削除と公開範囲の変更の操作を出さない
+  const canManageVisibility = (m: MeetingMinute) => visibilitySupported && canManageDocVisibility(m, userId, userRole);
+  const canDeleteMinute = (m: MeetingMinute) => m.visibility !== "members" || canManageDocVisibility(m, userId, userRole);
+  const openVisibility = (m: MeetingMinute | undefined | null) => { if (m) setVisibilityTarget(m); };
+
+  // 範囲の外にいるアクションの担当者を警告するため、その議事録（フォルダなら中の議事録すべて）のアクションの担当者を引く
+  const loadActionAssignees = async (m: MeetingMinute): Promise<string[]> => {
+    const ids = m.isFolder
+      ? minutes.filter(x => !x.isFolder && isCyclicMove(minutes, m.id, x.id)).map(x => x.id)
+      : [m.id];
+    if (ids.length === 0 || !isSupabaseEnabled) return [];
+    const { data } = await supabase!.from("action_memos").select("user_name").in("meeting_minute_id", ids);
+    return (data ?? []).map(r => r.user_name as string);
   };
 
   // 黙ってリダイレクトせず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
@@ -716,6 +764,12 @@ export function MinutesPage() {
               onImportMd={handleOpenMdPicker}
               highlightIds={highlightIds}
               scrollToId={scrollToId}
+              visibility={visibilitySupported ? {
+                isRestricted: node => minuteById.get(node.id)?.visibility === "members",
+                canManage: node => { const m = minuteById.get(node.id); return !!m && canManageVisibility(m); },
+                onOpen: node => openVisibility(minuteById.get(node.id)),
+              } : undefined}
+              canDeleteNode={node => { const m = minuteById.get(node.id); return !m || canDeleteMinute(m); }}
               renderItemRow={(node, isSelected) => {
                 const m = minuteById.get(node.id);
                 const pending = pendingActionsByMinute[node.id] ?? 0;
@@ -751,6 +805,17 @@ export function MinutesPage() {
               <p style={{ fontSize: 12, color: "#B0A9A4", margin: "0 0 16px" }}>
                 {minutes.filter(m => m.parentId === selected.id).length} 件のアイテム
               </p>
+              {visibilitySupported && (() => {
+                const inherited = restrictedAncestors(minuteById, selected)[0] ?? null;
+                if (selected.visibility !== "members" && !inherited && !canManageVisibility(selected)) return null;
+                return (
+                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+                    <DocVisibilityBadges kind="minute" item={selected} inheritedFolder={inherited}
+                      canManage={canManageVisibility(selected)} reloadKey={visibilityVersion}
+                      onOpenOwn={() => openVisibility(selected)} onOpenFolder={() => openVisibility(inherited)} />
+                  </div>
+                );
+              })()}
               <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
                 <button onClick={() => handleCopyLink(selected)}
                   style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#ECFDF5", color: "#059669", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
@@ -810,6 +875,17 @@ export function MinutesPage() {
                     ))}
                   </div>
                 )}
+                {visibilitySupported && (() => {
+                  const inherited = restrictedAncestors(minuteById, selected)[0] ?? null;
+                  if (selected.visibility !== "members" && !inherited && !canManageVisibility(selected)) return null;
+                  return (
+                    <div style={{ marginBottom: 8 }}>
+                      <DocVisibilityBadges kind="minute" item={selected} inheritedFolder={inherited}
+                        canManage={canManageVisibility(selected)} reloadKey={visibilityVersion}
+                        onOpenOwn={() => openVisibility(selected)} onOpenFolder={() => openVisibility(inherited)} />
+                    </div>
+                  );
+                })()}
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
                   <input
                     value={title} disabled={!canEdit}
@@ -821,7 +897,7 @@ export function MinutesPage() {
                     <Link2 style={{ width: 14, height: 14 }} />
                   </button>
                   <ArticleExportButton formats={["xlsx", "docx", "pdf", "md"]} onExport={f => exportMinuteArticle(selected, f)} />
-                  {canEdit && (
+                  {canEdit && canDeleteMinute(selected) && (
                     <button onClick={() => setDeleteTarget(selected)} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, flexShrink: 0 }}>
                       <Trash2 style={{ width: 14, height: 14 }} />
                     </button>
@@ -972,6 +1048,42 @@ export function MinutesPage() {
             await handleMoveNode(movingNodeTarget.id, targetParentId);
             setMovingNodeTarget(null);
           }}
+        />
+      )}
+
+      {/* BRU22-006 公開範囲の設定（作成者・オーナー以外は読み取りだけ） */}
+      {visibilityTarget && project && (
+        <DocVisibilityDialog
+          kind="minute"
+          doc={visibilityTarget}
+          itemLabel="議事録"
+          canManage={canManageVisibility(visibilityTarget)}
+          loadCandidates={() => loadMinuteMemberCandidates(project.id, project.organizationId ?? userOrgId ?? null)}
+          allDescription="このプロジェクトで議事録を見られる人は、全員見られます（今までと同じ）。"
+          emptyCandidatesText="選べるメンバーがいません（このプロジェクトにアサインされている人が対象です）。"
+          inheritedFolderTitle={restrictedAncestors(minuteById, visibilityTarget)[0]?.title ?? null}
+          loadActionAssignees={() => loadActionAssignees(visibilityTarget)}
+          onSaved={async () => {
+            toast("公開範囲を変更しました");
+            // 選択中の議事録は id が変わらないので、編集欄は流し込み直さない（本文を空で保存しない。BUG-07）
+            await load();
+            setVisibilityVersion(v => v + 1);
+            emitLinkItemsChanged(project.id, "minute");
+          }}
+          onClose={() => setVisibilityTarget(null)}
+        />
+      )}
+
+      {/* BRU22-006 「指定したメンバーのみ」のフォルダの外へ移すときの確認 */}
+      {pendingMove && (
+        <ConfirmDialog
+          title="公開範囲が広がります"
+          message={pendingMove.message}
+          confirmLabel="移動する"
+          confirmColor="#059669"
+          hasWarningText={false}
+          onConfirm={() => handleMoveNode(pendingMove.draggedId, pendingMove.targetParentId, true)}
+          onClose={() => setPendingMove(null)}
         />
       )}
 
