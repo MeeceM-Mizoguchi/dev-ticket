@@ -234,6 +234,8 @@ export function mapWbsSheet(r: any): WbsSheet {
     levels, visibility: r.visibility === "members" ? "members" : "project",
     createdBy: r.created_by ?? null, createdByName: r.created_by_name || "",
     sortOrder: r.sort_order ?? 0,
+    // 列が無い（SQL 未適用）ときは null。select("*") の行に is_locked のキーがあるかで見分ける
+    isLocked: "is_locked" in r ? r.is_locked === true : null,
   };
 }
 

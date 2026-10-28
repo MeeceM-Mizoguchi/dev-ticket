@@ -1234,6 +1234,11 @@ export interface WbsSheet {
   createdBy: string | null;
   createdByName: string;
   sortOrder: number;
+  /**
+   * ロック中か（BRU22-008）。ロック中は削除できない（画面とDBの両方で止める）。
+   * null は列が無い環境（supabase/add_wbs_lock.sql 未適用）。ロックの操作を出さない
+   */
+  isLocked: boolean | null;
 }
 
 /** WBSごとのステータス。チケットのステータス（未着手・進行中・レビュー中など）とは別物 */
