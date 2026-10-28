@@ -1,13 +1,16 @@
 // ENHA2-053 WBS画面の上部の操作列。
 // WBSの切り替え・新規作成・名前変更・削除・段数・公開設定を並べる。
 import type { ReactNode } from "react";
-import { Plus, Pencil, Trash2, Globe, Lock, BookOpen, Link2, CalendarRange } from "lucide-react";
+import { Plus, Pencil, Trash2, Globe, Lock, BookOpen, Link2, CalendarRange, LockKeyhole, LockKeyholeOpen } from "lucide-react";
 import { WBS_LEVEL_OPTIONS } from "@/app/lib/wbsService";
 import type { WbsLevels, WbsSheet } from "@/app/types";
 import { PickerCell } from "@/app/components/tasks/TaskPickerCell";
-import { wbsToolBtn, wbsToolLabel } from "./wbsStyles";
+import { wbsToolBtn, wbsToolBtnDisabled, wbsToolLabel } from "./wbsStyles";
 
-export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onCreate, onRename, onDelete, onChangeLevels, onOpenVisibility, onOpenManual, onCopyUrl, onOpenMaster, children }: {
+/** ロック中に削除ボタンへ出す説明 */
+const LOCKED_DELETE_HINT = "このWBSはロックされているため削除できません。削除する場合はロックを解除してください";
+
+export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onCreate, onRename, onDelete, onLock, onUnlock, onChangeLevels, onOpenVisibility, onOpenManual, onCopyUrl, onOpenMaster, children }: {
   sheets: WbsSheet[];
   current: WbsSheet | null;
   /** WBSの権限が「編集可」か */
@@ -18,6 +21,10 @@ export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onC
   onCreate: () => void;
   onRename: () => void;
   onDelete: () => void;
+  /** BRU22-008 ロックする（誤削除の防止） */
+  onLock: () => void;
+  /** BRU22-008 ロックを解除する（確認は呼び出し側で挟む） */
+  onUnlock: () => void;
   onChangeLevels: (levels: WbsLevels) => void;
   onOpenVisibility: () => void;
   /** 使い方（マニュアル）を開く。閲覧のみの人にも出す */
@@ -42,11 +49,36 @@ export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onC
           <Pencil style={{ width: 12, height: 12 }} />名前変更
         </button>
       )}
-      {canManage && current && (
+      {canManage && current && (current.isLocked ? (
+        // ロック中は押せない。押せないボタンにはマウスを乗せても説明が出ないブラウザがあるので、外側の span に持たせる
+        <span title={LOCKED_DELETE_HINT} style={{ display: "inline-flex", flexShrink: 0 }}>
+          <button type="button" disabled aria-label={`削除（${LOCKED_DELETE_HINT}）`} style={{ ...wbsToolBtnDisabled, pointerEvents: "none" }}>
+            <Trash2 style={{ width: 12, height: 12 }} />削除
+          </button>
+        </span>
+      ) : (
         <button type="button" onClick={onDelete} title="このWBSを削除" style={{ ...wbsToolBtn, color: "#DC2626" }}>
           <Trash2 style={{ width: 12, height: 12 }} />削除
         </button>
-      )}
+      ))}
+      {/* BRU22-008 ロック。列が無い環境（isLocked が null）では出さない */}
+      {current && current.isLocked !== null && (current.isLocked ? (
+        <>
+          <span title="このWBSはロック中です。ロックを解除するまで削除できません"
+            style={{ display: "inline-flex", alignItems: "center", gap: 4, height: 24, padding: "0 9px", fontSize: 11, fontWeight: 700, color: "#B45309", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 20, whiteSpace: "nowrap", flexShrink: 0 }}>
+            <LockKeyhole style={{ width: 11, height: 11 }} />ロック中
+          </span>
+          {canEdit && (
+            <button type="button" onClick={onUnlock} title="ロックを解除します（解除すると削除できるようになります）" style={wbsToolBtn}>
+              <LockKeyholeOpen style={{ width: 12, height: 12 }} />ロック解除
+            </button>
+          )}
+        </>
+      ) : canEdit && (
+        <button type="button" onClick={onLock} title="このWBSをロックして、誤って削除されないようにします" style={wbsToolBtn}>
+          <LockKeyhole style={{ width: 12, height: 12 }} />ロックする
+        </button>
+      ))}
 
       {current && (
         <>

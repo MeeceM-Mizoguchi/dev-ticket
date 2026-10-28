@@ -107,22 +107,30 @@ export async function createWbsSheet(input: {
   return mapWbsSheet(data);
 }
 
-export async function updateWbsSheet(id: string, patch: { name?: string; levels?: WbsLevels }): Promise<boolean> {
+export async function updateWbsSheet(id: string, patch: { name?: string; levels?: WbsLevels; isLocked?: boolean }): Promise<boolean> {
   if (!isSupabaseEnabled) return true;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const row: Record<string, any> = { updated_at: new Date().toISOString() };
   if (patch.name !== undefined) row.name = patch.name;
   if (patch.levels !== undefined) row.levels = patch.levels;
+  // BRU22-008 ロック。指定したときだけ送る（列が無い環境で、名前変更などまで失敗しないように）
+  if (patch.isLocked !== undefined) row.is_locked = patch.isLocked;
   const { error } = await supabase!.from("wbs_sheets").update(row).eq("id", id);
   if (error) { console.error("[wbs] update sheet failed:", error.message); return false; }
   return true;
 }
 
-/** WBSを消す。行・ステータス・紐づけ・公開先は on delete cascade で一緒に消える */
-export async function deleteWbsSheet(id: string): Promise<boolean> {
+/**
+ * WBSを消す。行・ステータス・紐づけ・公開先は on delete cascade で一緒に消える。
+ * ロック中のWBSは DB が削除を拒否する（BRU22-008）。そのときは "locked" を返す
+ */
+export async function deleteWbsSheet(id: string): Promise<true | false | "locked"> {
   if (!isSupabaseEnabled) return true;
   const { error } = await supabase!.from("wbs_sheets").delete().eq("id", id);
-  if (error) { console.error("[wbs] delete sheet failed:", error.message); return false; }
+  if (error) {
+    console.error("[wbs] delete sheet failed:", error.message);
+    return error.message?.includes("DT_WBS_LOCKED") ? "locked" : false;
+  }
   return true;
 }
 

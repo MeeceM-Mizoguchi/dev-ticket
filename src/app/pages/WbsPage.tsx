@@ -66,6 +66,10 @@ export function WbsPage() {
 
   const [nameDialog, setNameDialog] = useState<"create" | "rename" | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  // BRU22-008 ロック解除の確認
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  // BUG-05 ロックの付け外しは await を含むので ref で二重起動を止める
+  const lockingRef = useRef(false);
   const [visibilityOpen, setVisibilityOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [levelBlock, setLevelBlock] = useState<LevelBlock | null>(null);
@@ -181,12 +185,36 @@ export function WbsPage() {
 
   const handleDelete = async () => {
     if (!current) return;
+    // ロック中は削除させない（ボタンも押せないが、念のためここでも止める。DB も拒否する）
+    if (current.isLocked) { toast("このWBSはロックされているため削除できません。削除する場合はロックを解除してください", "error"); return; }
     const ok = await deleteWbsSheet(current.id);
+    if (ok === "locked") {
+      // 別の人が直前にロックした。画面の状態を読み直して合わせる
+      toast("このWBSはロックされているため削除できません。削除する場合はロックを解除してください", "error");
+      load().catch(() => { });
+      return;
+    }
     if (!ok) { toast("WBSを削除できませんでした", "error"); return; }
     const rest = sheets.filter(s => s.id !== current.id);
     setSheets(rest);
     navigate(rest.length ? `/${projectSlug}/wbs/${rest[0].id}` : `/${projectSlug}/wbs`, { replace: true });
     toast(`「${current.name}」を削除しました`);
+  };
+
+  /** BRU22-008 ロックする／解除する。ロックの状態はDBに持つので、再読み込みや別の人が開いても残る */
+  const handleSetLock = async (isLocked: boolean) => {
+    if (!current || lockingRef.current) return;
+    lockingRef.current = true;
+    try {
+      const ok = await updateWbsSheet(current.id, { isLocked });
+      if (!ok) { toast(isLocked ? "ロックできませんでした" : "ロックを解除できませんでした", "error"); return; }
+      setSheets(prev => prev.map(s => (s.id === current.id ? { ...s, isLocked } : s)));
+      toast(isLocked
+        ? `「${current.name}」をロックしました。ロックを解除するまで削除できません`
+        : `「${current.name}」のロックを解除しました`);
+    } finally {
+      lockingRef.current = false;
+    }
   };
 
   const handleChangeLevels = async (levels: WbsLevels) => {
@@ -275,7 +303,9 @@ export function WbsPage() {
               onSelect={selectSheet}
               onCreate={() => setNameDialog("create")}
               onRename={() => setNameDialog("rename")}
-              onDelete={() => setDeleteOpen(true)}
+              onDelete={() => { if (!current?.isLocked) setDeleteOpen(true); }}
+              onLock={() => { void handleSetLock(true); }}
+              onUnlock={() => setUnlockOpen(true)}
               onChangeLevels={handleChangeLevels}
               onOpenVisibility={() => setVisibilityOpen(true)}
               onOpenManual={() => setManualOpen(true)}
@@ -332,7 +362,19 @@ export function WbsPage() {
         />
       )}
 
-      {deleteOpen && current && (
+      {unlockOpen && current && (
+        <ConfirmDialog
+          title="ロックの解除"
+          message={`「${current.name}」のロックを解除しますか？\n解除すると、このWBSを削除できるようになります。`}
+          confirmLabel="ロックを解除する"
+          confirmColor="#D97706"
+          hasWarningText={false}
+          onConfirm={() => handleSetLock(false)}
+          onClose={() => setUnlockOpen(false)}
+        />
+      )}
+
+      {deleteOpen && current && !current.isLocked && (
         <ConfirmDialog
           title="WBSの削除"
           message={`「${current.name}」を削除しますか？\nこのWBSの行・ステータス・チケットの紐づけもすべて削除されます（チケット自体は消えません）。`}
