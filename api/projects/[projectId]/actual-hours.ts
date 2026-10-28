@@ -7,7 +7,10 @@ function calcTicketActualHours(t: {
   stg_completed_at: string | null;
   uat_completed_at: string | null;
   released_at: string | null;
+  actual_work_hours?: number | string | null;
 }): number {
+  // 画面（helpers.ts の calcTicketActualHours）と同じく、手入力・APIで登録した実績があればそれを使う
+  if (t.actual_work_hours != null) return Number(t.actual_work_hours) || 0;
   const ts = [t.started_at, t.review_requested_at, t.review_approved_at, t.stg_completed_at, t.uat_completed_at, t.released_at];
   let total = 0;
   for (let i = 1; i < ts.length; i++) {
@@ -36,7 +39,7 @@ export default async function handler(req: any, res: any) {
   // N+1を避けるため、スプリントとチケットを1回のJOINクエリで取得
   const { data: sprints, error } = await sb
     .from("sprints")
-    .select("id, sprint_tickets(started_at, review_requested_at, review_approved_at, stg_completed_at, uat_completed_at, released_at)")
+    .select("id, sprint_tickets(started_at, review_requested_at, review_approved_at, stg_completed_at, uat_completed_at, released_at, actual_work_hours)")
     .eq("project_id", projectId);
 
   if (error) return res.status(500).json({ error: error.message });
