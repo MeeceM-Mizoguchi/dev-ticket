@@ -31,13 +31,15 @@ import { DatePicker } from "@/app/components/shared/DatePicker";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { WbsCellSelect } from "./WbsCellSelect";
 import { submitOnEnter } from "@/app/lib/submitKey";
-import { businessDays, textColorOn, type WbsGanttModel, type WbsRow } from "@/app/lib/wbsCalc";
+import { businessDays, ganttIndexOf, textColorOn, todayStr, type WbsGanttModel, type WbsRow } from "@/app/lib/wbsCalc";
 import type { WbsItem, WbsStatus } from "@/app/types";
 import { WBS_COLORS } from "./wbsStyles";
-import { WBS_GANTT_HEAD_H, WbsGanttHeader, WbsGanttOverlay, WbsGanttStrip, ganttWidth } from "./WbsGantt";
+import { WBS_DAY_W, WBS_GANTT_HEAD_H, WbsGanttHeader, WbsGanttOverlay, WbsGanttStrip, ganttWidth } from "./WbsGantt";
 import { WBS_FILTER_COLS, type WbsFilterCol, type WbsFilterOptions, type WbsFilters } from "./wbsFilter";
 
 export const WBS_ROW_H = 30;
+/** 開いたときに今日の列まで横に送るとき、今日の左に残す日数 */
+const TODAY_LEAD_DAYS = 7;
 /** マスタースケジュールから移動した大項目のまとまりを光らせる時間。WbsWorkspace はこのあとに focusGroupId を外す */
 export const FOCUS_PULSE_MS = 3000;
 /** 光らせるときの色（黄色系）。枠線と外側のにじみ（中は塗らない） */
@@ -813,6 +815,17 @@ export function WbsTable({
       writePane("right", el.scrollTop);
     }
   }, [display, scrollTo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── 開いたとき、今日の列まで横に送る ──
+  // 表は最初の読み込みが終わってから作られ、WBSを切り替えると作り直されるので、ここで1回だけ動かす。
+  // 編集後の読み直しでは動かさない（作業中に勝手に横へ動かないように）。
+  // 今日の左に1週間ぶんを残す（前日までの遅れも見えるように）。今日がガントの期間の外なら左端のまま
+  useLayoutEffect(() => {
+    const r = rightRef.current;
+    const idx = ganttIndexOf(gantt, todayStr());
+    if (!r || idx === null) return;
+    r.scrollLeft = Math.max(0, colsWidth + (idx - TODAY_LEAD_DAYS) * WBS_DAY_W);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 並びや大きさが変わったあとの、左右のそろえ直し ──
   // 行数が減って下端を越えると、ブラウザは左右それぞれを自分の上限まで戻す。戻し方が左右で違うと
