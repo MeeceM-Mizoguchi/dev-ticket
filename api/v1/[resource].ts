@@ -7,13 +7,15 @@
 //   GET  /api/v1/ticket         … チケット1件の中身（本文・画像・添付・コメント・子チケット）
 //   POST /api/v1/ticket-status  … ステータスを前へ進める（進行中〜クローズ／子は進行中・対応完了）
 //   POST /api/v1/ticket-pull    … 外部で作ったプルリクエストをチケットへ紐づける
+//   GET  /api/v1/backlog        … バックログ項目の一覧（重複登録の防止用。BRU24-002）
+//   POST /api/v1/backlog        … バックログ項目の登録（親子1段まで／フォルダ指定可。BRU24-002）
 //
 // PRの作成とマージを bot 名義で行うAPI（ticket-pull-create / ticket-merge）は、GitHub App の
 // ヘルパーがある api/github/[resource].ts 側に置いている（BRU21-001）。「AIで実装」の手順書はそちらを使う。
 //
 // 下の3つは「AIがチケットを読み取って実装する」ためのもの。キーの権限（scope）で使える範囲が変わる:
-//   write … 登録のみ（context / tickets）    ← これまでに発行されたキーはすべてこれ
-//   read  … 読み取りのみ（context / tickets の GET / ticket）
+//   write … 登録のみ（context / tickets / backlog の POST）    ← これまでに発行されたキーはすべてこれ
+//   read  … 読み取りのみ（context / tickets の GET / ticket / backlog の GET）
 //   full  … すべて（ticket-status / ticket-pull はこの権限のみ）
 //
 // 認証は Dev Ticket が発行する APIキー:
@@ -34,6 +36,8 @@
 //     ・src/app/components/tickets/TicketDetailPanel.tsx（ステータス変更時の副作用。handleUpdateStatus と揃える）
 //     ・supabase/add_api_keys.sql             （reserve_ticket_wbs / consume_api_key_rate）
 //     ・supabase/add_api_key_scopes.sql       （api_keys.scope）
+//     ・supabase/add_backlog_parent_attachments_BRU24-001.sql（reserve_backlog_ids / parent_item_id）
+//     ・src/app/lib/apiKeyPrompt.ts / apiSamples.ts のバックログ登録用（BRU24-002。ここと食い違うとAIが失敗する）
 // ============================================================
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { authenticateApiKey, SCOPE_LABEL, type ApiKeyRow } from "../_lib/apiKeyAuth.js";
@@ -512,10 +516,13 @@ function newTicketId(): string {
 
 // ── GET /api/v1/context ──────────────────────────────────────
 async function handleContext(sb: SupabaseClient, key: ApiKeyRow, res: any) {
-  const [{ data: project }, { data: sprints }, { data: categories }] = await Promise.all([
+  const [{ data: project }, { data: sprints }, { data: categories }, { data: folders }] = await Promise.all([
     sb.from("projects").select("id, name, slug, members").eq("id", key.project_id).maybeSingle(),
     sb.from("sprints").select("id, name, identifier, start_date, end_date").eq("project_id", key.project_id).order("start_date"),
     sb.from("ticket_categories").select("id, name").eq("project_id", key.project_id).order("created_at"),
+    // バックログのフォルダ（POST /api/v1/backlog の folderId に使う。BRU24-002）
+    sb.from("backlog_items").select("id, title, parent_id").eq("project_id", key.project_id).eq("is_folder", true)
+      .order("rank", { ascending: true }).order("id", { ascending: true }),
   ]);
 
   if (!project) return res.status(404).json({ error: "プロジェクトが見つかりません" });
@@ -530,6 +537,7 @@ async function handleContext(sb: SupabaseClient, key: ApiKeyRow, res: any) {
     categories: (categories ?? []).map((c: any) => c.name),
     statuses: STATUS_LABELS,
     priorities: PRIORITY_LABELS,
+    backlogFolders: (folders ?? []).map((f: any) => ({ id: f.id, name: f.title || "無題のフォルダ", parentId: f.parent_id ?? null })),
   });
 }
 
@@ -1552,6 +1560,235 @@ async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any
   });
 }
 
+// ── バックログ（BRU24-002） ───────────────────────────────────
+//
+// 外部システム・AIからバックログへ項目を登録する。チケット登録と同じキー・同じ件数上限。
+// 本文の Markdown 変換・担当者・分類の照合は normalizeTicket をそのまま使う
+// （ステータス・日付・実績などチケット固有の項目は渡さない）。
+// 番号は reserve_backlog_ids() で採るので、画面や別のリクエストと同時でも重ならない。
+
+const BACKLOG_STATUS_LABEL_BY_VALUE: Record<string, string> = {
+  open: "未対応", "in-progress": "対応中", converted: "チケット化済", archived: "アーカイブ",
+};
+const BACKLOG_STATUS_BY_LABEL: Record<string, string> = {
+  "未対応": "open", "対応中": "in-progress", "チケット化済": "converted", "アーカイブ": "archived",
+  open: "open", inprogress: "in-progress", converted: "converted", archived: "archived",
+};
+
+/** バックログに使う項目だけを取り出す（チケット固有の項目は捨てる） */
+function pickBacklogInput(raw: any): TicketInput {
+  const v = (raw ?? {}) as Record<string, unknown>;
+  return {
+    title: v.title, description: v.description, priority: v.priority,
+    assignee: v.assignee, estimatedHours: v.estimatedHours, category: v.category,
+  };
+}
+
+function backlogItemUrl(slug: string | null | undefined, id: string): string | null {
+  const origin = appPublicOrigin();
+  return origin && slug ? `${origin}/${encodeURIComponent(slug)}/backlog/${encodeURIComponent(id)}` : null;
+}
+
+// ── GET /api/v1/backlog ──────────────────────────────────────
+async function handleListBacklog(sb: SupabaseClient, key: ApiKeyRow, query: any, res: any) {
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : Array.isArray(v) ? String(v[0] ?? "").trim() : "");
+  const keywordQ = str(query?.q);
+  const statusQ = str(query?.status);
+  const folderIdQ = str(query?.folderId);
+
+  const rawLimit = Number(str(query?.limit));
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0
+    ? Math.min(Math.floor(rawLimit), LIST_MAX_LIMIT)
+    : LIST_DEFAULT_LIMIT;
+
+  let status: string | null = null;
+  if (statusQ) {
+    status = BACKLOG_STATUS_BY_LABEL[statusQ] ?? BACKLOG_STATUS_BY_LABEL[normalizeValue(statusQ)] ?? null;
+    if (!status) {
+      return res.status(400).json({ error: `status「${statusQ}」は使えません（未対応 / 対応中 / チケット化済 / アーカイブ）` });
+    }
+  }
+
+  // BUG-01: rank + id で安定ソート。必ずキーのプロジェクトで絞る（テナント境界）
+  let q = sb
+    .from("backlog_items")
+    .select("id, title, status, priority, assignee, parent_id, parent_item_id, converted_ticket_wbs")
+    .eq("project_id", key.project_id)
+    .eq("is_folder", false)
+    .order("rank", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(limit + 1);
+  if (status) q = q.eq("status", status);
+  if (folderIdQ) q = q.eq("parent_id", folderIdQ);
+  if (keywordQ) {
+    // or(...) は文字列のまま PostgREST へ渡るので、区切り記号は落としてから使う
+    const k = keywordQ.replace(/[,()%*\\]/g, " ").trim();
+    if (k) q = q.or(`title.ilike.%${k}%,description.ilike.%${k}%`);
+  }
+
+  const [{ data: rows, error }, { data: project }, { data: folders }] = await Promise.all([
+    q,
+    sb.from("projects").select("slug").eq("id", key.project_id).maybeSingle(),
+    sb.from("backlog_items").select("id, title").eq("project_id", key.project_id).eq("is_folder", true),
+  ]);
+  if (error) return res.status(500).json({ error: error.message });
+
+  const all = rows ?? [];
+  const hasMore = all.length > limit;
+  const page = hasMore ? all.slice(0, limit) : all;
+  const folderName = new Map((folders ?? []).map((f: any) => [f.id as string, (f.title as string) || "無題のフォルダ"]));
+
+  return res.status(200).json({
+    count: page.length,
+    hasMore,
+    items: page.map((b: any) => ({
+      id: b.id,
+      title: b.title,
+      status: BACKLOG_STATUS_LABEL_BY_VALUE[b.status] ?? b.status,
+      priority: PRIORITY_LABEL_BY_VALUE[b.priority] ?? b.priority,
+      assignee: b.assignee || null,
+      parentId: b.parent_item_id ?? null,
+      folderId: b.parent_id ?? null,
+      folderName: b.parent_id ? (folderName.get(b.parent_id) ?? null) : null,
+      ticketWbs: b.converted_ticket_wbs ?? null,
+      url: backlogItemUrl(project?.slug as string | undefined, b.id),
+    })),
+  });
+}
+
+// ── POST /api/v1/backlog ─────────────────────────────────────
+async function handleCreateBacklog(sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) {
+  const rawItems = body?.items;
+  if (!Array.isArray(rawItems) || rawItems.length === 0) {
+    return res.status(400).json({ error: "items は1件以上の配列で指定してください" });
+  }
+  if (rawItems.length > MAX_PARENTS_PER_REQUEST) {
+    return res.status(400).json({ error: `1回のリクエストで登録できるのは${MAX_PARENTS_PER_REQUEST}件までです` });
+  }
+  const folderId = typeof body?.folderId === "string" ? body.folderId.trim() : "";
+
+  const [{ data: project }, { data: categoryRows }] = await Promise.all([
+    sb.from("projects").select("slug, members, organization_id").eq("id", key.project_id).maybeSingle(),
+    sb.from("ticket_categories").select("id, name").eq("project_id", key.project_id),
+  ]);
+  if (!project) return res.status(404).json({ error: "プロジェクトが見つかりません" });
+
+  // 登録先フォルダ。キーのプロジェクトのフォルダに限る（他プロジェクトのフォルダIDは見つからない扱い）
+  let folder: { id: string; name: string } | null = null;
+  if (folderId) {
+    const { data: folderRow, error: folderError } = await sb
+      .from("backlog_items").select("id, title")
+      .eq("project_id", key.project_id).eq("id", folderId).eq("is_folder", true).maybeSingle();
+    if (folderError) return res.status(500).json({ error: folderError.message });
+    if (!folderRow) {
+      const { data: folders } = await sb.from("backlog_items").select("id, title")
+        .eq("project_id", key.project_id).eq("is_folder", true)
+        .order("rank", { ascending: true }).order("id", { ascending: true });
+      return res.status(404).json({
+        error: `フォルダ「${folderId}」がこのAPIキーのプロジェクトに見つかりません。GET /api/v1/context の backlogFolders で確認できます`,
+        availableFolders: (folders ?? []).map((f: any) => ({ id: f.id, name: f.title || "無題のフォルダ" })),
+      });
+    }
+    folder = { id: folderRow.id as string, name: (folderRow.title as string) || "無題のフォルダ" };
+  }
+
+  const ctx: NormalizeCtx = {
+    members: Array.isArray(project.members) ? (project.members as string[]) : [],
+    categories: (categoryRows ?? []) as { id: string; name: string }[],
+    warnings: [],
+  };
+
+  const items: { item: NormalizedTicket; children: NormalizedTicket[] }[] = [];
+  for (const raw of rawItems) {
+    const normalized = normalizeTicket(pickBacklogInput(raw), ctx, false);
+    if ("error" in normalized) return res.status(400).json({ error: normalized.error });
+    const rawChildren = (raw as any)?.children;
+    const children: NormalizedTicket[] = [];
+    if (rawChildren !== undefined && rawChildren !== null && !Array.isArray(rawChildren)) {
+      return res.status(400).json({ error: `「${normalized.title}」: children は配列で指定してください` });
+    }
+    if (Array.isArray(rawChildren)) {
+      if (rawChildren.length > MAX_CHILDREN_PER_PARENT) {
+        return res.status(400).json({ error: `「${normalized.title}」: 子の項目が多すぎます（1件あたり${MAX_CHILDREN_PER_PARENT}件まで）` });
+      }
+      for (const c of rawChildren) {
+        const child = normalizeTicket(pickBacklogInput(c), ctx, true);
+        if ("error" in child) return res.status(400).json({ error: child.error });
+        if (Array.isArray((c as any)?.children) && (c as any).children.length > 0) {
+          ctx.warnings.push(`「${child.title}」: 子の項目の階層は1段までのため、その下の children は無視しました`);
+        }
+        children.push(child);
+      }
+    }
+    items.push({ item: normalized, children });
+  }
+
+  const limits = await fetchPlanLimits(sb, key.organization_id ?? (project.organization_id as string | null) ?? null);
+  if (!limits.featureBulkCreate) {
+    return res.status(403).json({ error: "現在のプランではAPIからのバックログ登録をご利用いただけません" });
+  }
+
+  // ── 番号の予約（DB側で直列化。並列に叩かれても重複しない） ──
+  const total = items.reduce((n, i) => n + 1 + i.children.length, 0);
+  const { data: startNo, error: seqError } = await sb.rpc("reserve_backlog_ids", {
+    p_project_id: key.project_id,
+    p_count: total,
+  });
+  if (seqError || typeof startNo !== "number") {
+    return res.status(500).json({
+      error: `バックログ番号の採番に失敗しました: ${seqError?.message ?? "unknown"}。supabase/add_backlog_parent_attachments_BRU24-001.sql が適用されているか確認してください`,
+    });
+  }
+  let n = startNo;
+  const nextId = () => `B-${String(n++).padStart(3, "0")}`;
+
+  // ── 行の組み立て（親子を1回の insert にまとめる。子のフォルダは親と同じ） ──
+  const rankBase = Date.now();
+  const rows: Record<string, unknown>[] = [];
+  const created: { id: string; title: string; parentId: string | null }[] = [];
+  const toRow = (t: NormalizedTicket, id: string, parentItemId: string | null) => ({
+    id, project_id: key.project_id,
+    parent_id: folder?.id ?? null,
+    parent_item_id: parentItemId,
+    is_folder: false,
+    title: t.title,
+    // backlog_items.description は not null default ''
+    description: t.descriptionHtml ?? "",
+    status: "open",
+    priority: t.priority,
+    assignee: t.assignee,
+    estimated_hours: t.estimatedHours,
+    category_id: t.categoryId,
+    images: [],
+    rank: rankBase + rows.length,
+    created_by: key.created_by || "",
+  });
+
+  for (const { item, children } of items) {
+    const parentId = nextId();
+    rows.push(toRow(item, parentId, null));
+    created.push({ id: parentId, title: item.title, parentId: null });
+    for (const child of children) {
+      const childId = nextId();
+      rows.push(toRow(child, childId, parentId));
+      created.push({ id: childId, title: child.title, parentId });
+    }
+  }
+
+  const { error: insertError } = await sb.from("backlog_items").insert(rows);
+  if (insertError) {
+    return res.status(500).json({ error: `バックログ項目の登録に失敗しました: ${insertError.message}` });
+  }
+
+  return res.status(201).json({
+    ok: true,
+    count: created.length,
+    folder,
+    created: created.map(c => ({ ...c, url: backlogItemUrl(project.slug as string | undefined, c.id) })),
+    warnings: ctx.warnings,
+  });
+}
+
 // ── エントリポイント ──────────────────────────────────────────
 export default async function handler(req: any, res: any) {
   // サーバー間通信が主だが、ブラウザから直接叩く連携もありうるので CORS を開けておく。
@@ -1564,9 +1801,9 @@ export default async function handler(req: any, res: any) {
 
   const resource = String(req.query?.resource ?? "");
   if (resource !== "tickets" && resource !== "context" && resource !== "ticket" && resource !== "ticket-status"
-    && resource !== "ticket-pull") {
+    && resource !== "ticket-pull" && resource !== "backlog") {
     return res.status(404).json({
-      error: `不明なエンドポイントです: /api/v1/${resource}（tickets / context / ticket / ticket-status / ticket-pull のいずれか）`,
+      error: `不明なエンドポイントです: /api/v1/${resource}（tickets / context / ticket / ticket-status / ticket-pull / backlog のいずれか）`,
     });
   }
 
@@ -1624,6 +1861,30 @@ export default async function handler(req: any, res: any) {
     }
     try {
       return await handleLinkPull(sb, auth.key, pullBody, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+
+  if (resource === "backlog") {
+    if (req.method === "GET") {
+      if (scope === "write") return denied("バックログの一覧を読み取り", "権限が「読み取りのみ」または「すべて」");
+      try {
+        return await handleListBacklog(sb, auth.key, req.query ?? {}, res);
+      } catch (e: any) {
+        return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+      }
+    }
+    if (req.method !== "POST") return res.status(405).json({ error: "一覧は GET、登録は POST を使ってください" });
+    if (scope === "read") return denied("バックログへ登録", "権限が「登録のみ」または「すべて」");
+    let backlogBody: any;
+    try {
+      backlogBody = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body ?? {});
+    } catch {
+      return res.status(400).json({ error: "リクエストボディが JSON として読めません" });
+    }
+    try {
+      return await handleCreateBacklog(sb, auth.key, backlogBody, res);
     } catch (e: any) {
       return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
     }
