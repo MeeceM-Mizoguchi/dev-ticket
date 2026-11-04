@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { FolderKanban, ChevronRight, Plus, GitBranch, ClipboardList, Trash2, Ticket, Search, X, FolderPlus, FolderOpen, Link2 } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, GitBranch, ClipboardList, Trash2, Ticket, Search, X, FolderPlus, FolderOpen, Link2, CornerDownRight } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
@@ -8,7 +8,7 @@ import { usePlan } from "@/app/contexts/PlanContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { mapProject, mapBacklogItem, mapTicketCategory, mapSprintTicket } from "@/app/lib/mappers";
 import { getDefaultProgressForStatus } from "@/app/lib/helpers";
-import type { Project, BacklogItem, BacklogStatus, Priority, Sprint, TicketCategory, AccessLevel, UserPermissions, SprintTicket } from "@/app/types";
+import type { Project, BacklogItem, BacklogAttachment, BacklogStatus, Priority, Sprint, TicketCategory, AccessLevel, UserPermissions, SprintTicket } from "@/app/types";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { DialogShell } from "@/app/components/shared/DialogShell";
@@ -19,6 +19,11 @@ import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
+import { FileAttachments } from "@/app/components/shared/FileAttachments";
+import {
+  reserveBacklogIds, fetchBacklogAttachments, uploadBacklogAttachment, deleteBacklogAttachment, purgeBacklogAttachments,
+} from "@/app/lib/backlogItems";
+import { downloadTicketAttachment } from "@/app/lib/ticketAttachments";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
@@ -41,16 +46,6 @@ const STATUS_META: Record<BacklogStatus, { label: string; color: string; bg: str
   archived: { label: "アーカイブ", color: "#9CA3AF", bg: "#F4F5F6" },
 };
 
-async function nextBacklogId(projectId: string): Promise<string> {
-  const { data } = await supabase!
-    .from("backlog_items").select("id")
-    .eq("project_id", projectId)
-    .like("id", "B-%")
-    .order("id", { ascending: false }).limit(1).maybeSingle();
-  const next = (parseInt(data?.id?.slice(2) ?? "0", 10) || 0) + 1;
-  return `B-${String(next).padStart(3, "0")}`;
-}
-
 // フォルダ行のIDは "BF-001" 形式。項目の採番(like 'B-%')とは前方一致しないので衝突しない。
 async function nextBacklogFolderId(projectId: string): Promise<string> {
   const { data } = await supabase!
@@ -63,10 +58,23 @@ async function nextBacklogFolderId(projectId: string): Promise<string> {
 }
 
 // ─── チケット化モーダル ─────────────────────────────────────
+// BRU24-001-4 親子・添付ファイル対応:
+//   ・親の項目 … まだチケット化していない子の項目も、子チケット（親WBS-1, -2 …）としてまとめて作る
+//   ・子の項目 … 親がチケット化済みなら、そのチケットの子チケットとして足す（スプリントは親と同じ）
+//               親がまだバックログにあれば「親と一緒にチケット化してください」と出して何も作らない
+//   ・添付ファイルは backlog_attachments → ticket_attachments へ行を付け替える（実体は動かさない）
+function newTicketId(): string {
+  return `TKT-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
 function ConvertToTicketModal({
-  item, project, sprints: initialSprints, onClose, onConverted,
+  item, parentItem, childItems, project, sprints: initialSprints, onClose, onConverted,
 }: {
   item: BacklogItem;
+  /** item が子の項目のときの親の項目 */
+  parentItem: BacklogItem | null;
+  /** item が親の項目のときの、まだチケット化していない子の項目 */
+  childItems: BacklogItem[];
   project: Project;
   sprints: Sprint[];
   onClose: () => void;
@@ -75,9 +83,14 @@ function ConvertToTicketModal({
   const [sprints, setSprints] = useState<Sprint[]>(initialSprints);
   const [sprintId, setSprintId] = useState(initialSprints[0]?.id ?? "");
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [showNewSprint, setShowNewSprint] = useState(false);
   const { userName } = useAuth();
   const { toast } = useToast();
+
+  // 子の項目のとき: 親がチケット化済みなら子チケットとして足す。まだなら止める
+  const parentTicketed = !!parentItem && parentItem.status === "converted" && !!parentItem.convertedTicketId;
+  const blockedByParent = !!parentItem && !parentTicketed;
 
   const reloadSprints = useCallback(async () => {
     if (!isSupabaseEnabled) return;
@@ -95,10 +108,70 @@ function ConvertToTicketModal({
     if (mapped.length > 0) setSprintId(mapped[0].id);
   }, [project.id]);
 
+  const toTicketRow = (src: BacklogItem, id: string, wbs: string, sprint: string, parentId: string | null) => ({
+    id, sprint_id: sprint, wbs, title: src.title, status: "todo",
+    priority: src.priority, assignee: src.assignee || "", estimated_hours: src.estimatedHours || 0,
+    progress: getDefaultProgressForStatus("todo"), description: src.description || "", created_by: userName || null,
+    images: src.images?.length ? src.images : [], category_id: src.categoryId ?? null, parent_id: parentId,
+  });
+
+  // 添付ファイルをチケットへ付け替える。失敗してもチケットは作れているので、止めずに知らせる
+  const moveAttachments = async (pairs: { itemId: string; ticketId: string }[]) => {
+    const itemIds = pairs.map(p => p.itemId);
+    const { data: rows, error } = await supabase!.from("backlog_attachments").select("*")
+      .eq("project_id", project.id).in("item_id", itemIds)
+      .order("created_at", { ascending: true }).order("id", { ascending: true });
+    if (error) { console.warn("[BacklogPage] 添付の取得に失敗:", error.message); return; }
+    if (!rows || rows.length === 0) return;
+    const ticketByItem = new Map(pairs.map(p => [p.itemId, p.ticketId]));
+    const { error: insErr } = await supabase!.from("ticket_attachments").insert(rows.map(a => ({
+      ticket_id: ticketByItem.get(a.item_id),
+      file_name: a.file_name, file_size: a.file_size, file_type: a.file_type,
+      file_path: a.file_path, file_url: a.file_url, uploaded_by: a.uploaded_by, created_at: a.created_at,
+    })));
+    if (insErr) { toast("添付ファイルをチケットへ移せませんでした（バックログに残っています）", "error"); return; }
+    await supabase!.from("backlog_attachments").delete().eq("project_id", project.id).in("item_id", itemIds);
+  };
+
+  const markConverted = (pairs: { itemId: string; ticketId: string; wbs: string }[]) => Promise.all(pairs.map(p =>
+    supabase!.from("backlog_items").update({
+      status: "converted", converted_ticket_id: p.ticketId, converted_ticket_wbs: p.wbs,
+      updated_at: new Date().toISOString(),
+    }).eq("id", p.itemId).eq("project_id", project.id)));
+
   const handleConvert = async () => {
-    if (!sprintId) { toast("スプリントを選択してください", "error"); return; }
+    if (blockedByParent) return;
+    if (savingRef.current) return;
+    if (!parentTicketed && !sprintId) { toast("スプリントを選択してください", "error"); return; }
+    savingRef.current = true;
     setSaving(true);
     try {
+      if (parentTicketed && parentItem?.convertedTicketId) {
+        // ── 親チケットの子として足す。枝番は既存の子の続きから（bulkTicketInsert と同じ数え方） ──
+        const { data: parentRow } = await supabase!.from("sprint_tickets")
+          .select("id, wbs, sprint_id, parent_id").eq("id", parentItem.convertedTicketId).maybeSingle();
+        if (!parentRow) { toast("親のチケットが見つかりません", "error"); return; }
+        if (parentRow.parent_id) { toast("子チケットの下にさらに子チケットは作れません", "error"); return; }
+        const { data: childRows } = await supabase!.from("sprint_tickets").select("wbs")
+          .eq("parent_id", parentRow.id).like("wbs", `${parentRow.wbs}-%`);
+        const nextChildNum = (childRows ?? []).reduce((max, row) => {
+          const n = parseInt(String(row.wbs).slice(String(parentRow.wbs).length + 1), 10);
+          return Number.isNaN(n) ? max : Math.max(max, n);
+        }, 0) + 1;
+        const wbs = `${parentRow.wbs}-${nextChildNum}`;
+        const ticketId = newTicketId();
+        const { error: insErr } = await supabase!.from("sprint_tickets")
+          .insert(toTicketRow(item, ticketId, wbs, parentRow.sprint_id, parentRow.id));
+        if (insErr) { toast("チケット作成に失敗しました", "error"); return; }
+        await moveAttachments([{ itemId: item.id, ticketId }]);
+        await markConverted([{ itemId: item.id, ticketId, wbs }]);
+        emitLinkItemsChanged(project.id, "ticket");
+        emitLinkItemsChanged(project.id, "backlog");
+        toast(`${wbs} として ${parentRow.wbs} の子チケットを作成しました`);
+        onConverted();
+        return;
+      }
+
       const sprint = sprints.find(s => s.id === sprintId);
       const prefix = sprint?.identifier || project.wbsPrefix || "T";
       const { data: maxRow } = await supabase!
@@ -106,26 +179,32 @@ function ConvertToTicketModal({
         .like("wbs", `${prefix}-%`).order("wbs", { ascending: false }).limit(1).maybeSingle();
       const nextNum = (parseInt(maxRow?.wbs?.slice(prefix.length + 1) ?? "0", 10) || 0) + 1;
       const wbs = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-      const ticketId = `T-${Date.now()}`;
+      const ticketId = newTicketId();
 
-      const { error: insErr } = await supabase!.from("sprint_tickets").insert({
-        id: ticketId, sprint_id: sprintId, wbs, title: item.title, status: "todo",
-        priority: item.priority, assignee: item.assignee || "", estimated_hours: item.estimatedHours || 0,
-        progress: getDefaultProgressForStatus("todo"), description: item.description || "", created_by: userName || null,
-        images: item.images?.length ? item.images : [],
+      // 親と子は1回の insert にまとめる（親だけ先に見えて子が遅れて出るのを防ぐ。BUG-04）
+      const pairs = [{ itemId: item.id, ticketId, wbs }];
+      const rows = [toTicketRow(item, ticketId, wbs, sprintId, null)];
+      childItems.forEach((child, i) => {
+        const childWbs = `${wbs}-${i + 1}`;
+        const childTicketId = newTicketId();
+        rows.push(toTicketRow(child, childTicketId, childWbs, sprintId, ticketId));
+        pairs.push({ itemId: child.id, ticketId: childTicketId, wbs: childWbs });
       });
-      if (insErr) { toast("チケット作成に失敗しました", "error"); setSaving(false); return; }
+      const { error: insErr } = await supabase!.from("sprint_tickets").insert(rows);
+      if (insErr) { toast("チケット作成に失敗しました", "error"); return; }
 
-      await supabase!.from("backlog_items").update({
-        status: "converted", converted_ticket_id: ticketId, converted_ticket_wbs: wbs,
-        updated_at: new Date().toISOString(),
-      }).eq("id", item.id).eq("project_id", project.id);
+      await moveAttachments(pairs);
+      await markConverted(pairs);
 
       emitLinkItemsChanged(project.id, "ticket"); // 他タブの # サジェストへ即時反映
+      emitLinkItemsChanged(project.id, "backlog");
 
-      toast(`${wbs} としてチケットを作成しました`);
+      toast(childItems.length > 0
+        ? `${wbs} としてチケットを作成しました（子チケット ${childItems.length}件）`
+        : `${wbs} としてチケットを作成しました`);
       onConverted();
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -134,13 +213,27 @@ function ConvertToTicketModal({
     <>
       <DialogShell title={`${item.id} をチケット化`} onClose={onClose} size="sm"
         footer={<>
-          <BtnSecondary onClick={onClose} disabled={saving}>キャンセル</BtnSecondary>
-          <button type="button" onClick={handleConvert} disabled={saving}
+          <BtnSecondary onClick={onClose} disabled={saving}>{blockedByParent ? "閉じる" : "キャンセル"}</BtnSecondary>
+          {!blockedByParent && <button type="button" onClick={handleConvert} disabled={saving}
             style={{ padding: "9px 20px", background: saving ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: saving ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }}>
             {saving && <BtnSpinner />}{saving ? "作成中..." : "チケットを作成"}
-          </button>
+          </button>}
         </>}>
         <p style={{ fontSize: 13, color: "#1A1714", margin: 0 }}>{item.title}</p>
+        {blockedByParent ? (
+          <p style={{ fontSize: 12, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 9, padding: "10px 12px", margin: 0, lineHeight: 1.6 }}>
+            親の項目（{parentItem?.id}）がまだバックログにあります。親と一緒にチケット化してください。
+          </p>
+        ) : parentTicketed ? (
+          <p style={{ fontSize: 12, color: "#1A1714", margin: 0, lineHeight: 1.6 }}>
+            親の項目（{parentItem?.id}）のチケット <strong>{parentItem?.convertedTicketWbs ?? ""}</strong> の子チケットとして追加します（スプリントは親と同じになります）。
+          </p>
+        ) : (<>
+        {childItems.length > 0 && (
+          <p style={{ fontSize: 12, color: "#1A1714", background: "#F5F3FF", borderRadius: 9, padding: "8px 12px", margin: 0, lineHeight: 1.6 }}>
+            子の項目 {childItems.length}件（{childItems.map(c => c.id).join("、")}）も子チケットとして一緒に作成します。
+          </p>
+        )}
         <div>
           <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 5 }}>追加先スプリント</label>
           {sprints.length === 0 ? (
@@ -156,6 +249,7 @@ function ConvertToTicketModal({
             <Plus style={{ width: 11, height: 11 }} />新規スプリントを作成
           </button>
         </div>
+        </>)}
       </DialogShell>
 
       {showNewSprint && (
@@ -336,7 +430,7 @@ export function BacklogPage() {
     setProject(mapProject(p));
 
     const [{ data: itemRows }, { data: sprintRows }, { data: catRows }, { data: permData }] = await Promise.all([
-      supabase!.from("backlog_items").select("*").eq("project_id", p.id).order("rank"),
+      supabase!.from("backlog_items").select("*").eq("project_id", p.id).order("rank").order("id", { ascending: true }),
       supabase!.from("sprints").select("id, project_id, name, goal, status, start_date, end_date, identifier").eq("project_id", p.id),
       supabase!.from("ticket_categories").select("*").eq("project_id", p.id).order("name"),
       isAdminRole ? Promise.resolve({ data: null }) :
@@ -393,6 +487,7 @@ export function BacklogPage() {
     && selectedItem.status !== "converted" && selectedItem.status !== "archived";
 
   const itemById = useMemo(() => new Map(items.map(i => [i.id, i])), [items]);
+  const selectedParentItem = selectedItem?.parentItemId ? itemById.get(selectedItem.parentItemId) ?? null : null;
   const itemCount = useMemo(() => items.filter(i => !i.isFolder).length, [items]);
 
   // ツリー用の並び。各階層で「フォルダ → 未完了 → 完了/アーカイブ」の順、同種内は rank 昇順。
@@ -405,7 +500,21 @@ export function BacklogPage() {
       return doneRank(a) - doneRank(b) || a.rank - b.rank;
     });
   }, [items]);
-  const tree = useMemo(() => buildDocTree(orderedItems), [orderedItems]);
+  // 子の項目（parentItemId）は親の項目の下に1段下げて並べる（BRU24-001）。
+  // 親が見つからない／親がフォルダ・子の項目になっている壊れたデータは、フォルダ直下の単独項目として出す。
+  const treeItems = useMemo(() => orderedItems.map(i => {
+    if (!i.parentItemId || i.isFolder) return i;
+    const parent = itemById.get(i.parentItemId);
+    return parent && !parent.isFolder && !parent.parentItemId ? { ...i, parentId: parent.id } : i;
+  }), [orderedItems, itemById]);
+  const tree = useMemo(() => buildDocTree(treeItems), [treeItems]);
+  const selectedChildItems = useMemo(
+    () => selectedItem && !selectedItem.isFolder ? orderedItems.filter(i => !i.isFolder && i.parentItemId === selectedItem.id) : [],
+    [selectedItem, orderedItems]);
+
+  // 親の項目ごとの子の項目（rank 昇順）
+  const childItemsOf = useCallback((parentItemId: string) =>
+    orderedItems.filter(i => !i.isFolder && i.parentItemId === parentItemId), [orderedItems]);
 
   // パンくず用：選択中の祖先フォルダ一覧
   const ancestors = useMemo(() => {
@@ -517,6 +626,60 @@ export function BacklogPage() {
     return ""; // インライン挿入を抑制
   }, [selectedId, handleImagesChange]);
 
+  // ── 添付ファイル（BRU24-001。backlog_attachments） ─────────────────────
+  const [attachments, setAttachments] = useState<BacklogAttachment[]>([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const uploadingAttachmentRef = useRef(false);
+  // 読み込み中に別の項目へ切り替わったら、前の項目の結果で上書きしない
+  const attachmentsForRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const itemId = selectedItem && !selectedItem.isFolder ? selectedItem.id : null;
+    attachmentsForRef.current = itemId;
+    setAttachments([]);
+    if (!itemId || !project) return;
+    void fetchBacklogAttachments(project.id, itemId).then(list => {
+      if (attachmentsForRef.current === itemId) setAttachments(list);
+    });
+  }, [selectedItem?.id, selectedItem?.isFolder, project?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const addBacklogFiles = useCallback(async (files: File[]) => {
+    if (!project || !selectedId || files.length === 0) return;
+    if (uploadingAttachmentRef.current) return;
+    uploadingAttachmentRef.current = true;
+    setUploadingAttachment(true);
+    const itemId = selectedId;
+    try {
+      for (const f of files) {
+        try {
+          const created = await uploadBacklogAttachment(project.id, itemId, f, userName);
+          if (attachmentsForRef.current === itemId) {
+            setAttachments(prev => prev.some(a => a.id === created.id) ? prev : [...prev, created]);
+          }
+        } catch (e) {
+          console.error("[BacklogPage] 添付のアップロードに失敗:", e);
+          toast(e instanceof Error ? e.message : "アップロードに失敗しました", "error");
+        }
+      }
+    } finally {
+      uploadingAttachmentRef.current = false;
+      setUploadingAttachment(false);
+    }
+  }, [project, selectedId, userName, toast]);
+
+  const removeBacklogFile = useCallback(async (id: string) => {
+    const target = attachments.find(a => a.id === id);
+    if (!target) return;
+    setAttachments(prev => prev.filter(a => a.id !== id));
+    try {
+      await deleteBacklogAttachment(target);
+    } catch (e) {
+      console.error("[BacklogPage] 添付の削除に失敗:", e);
+      toast("添付ファイルの削除に失敗しました", "error");
+      setAttachments(prev => [...prev, target].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+    }
+  }, [attachments, toast]);
+
   // 検索中はフォルダ階層をたたんで、一致した項目だけを平らに並べる（Wikiと同仕様）
   const searchMatched = useMemo(() => {
     const q = sidebarSearch.trim().toLowerCase();
@@ -525,12 +688,15 @@ export function BacklogPage() {
       && (i.title.toLowerCase().includes(q) || (i.description ?? "").toLowerCase().includes(q)));
   }, [orderedItems, sidebarSearch]);
 
-  const handleAddItem = async (parentId: string | null = null) => {
+  // parentItem を渡すと、その項目の子の項目として作る（フォルダは親と同じにする）
+  const handleAddItem = async (parentId: string | null = null, parentItem: BacklogItem | null = null) => {
     if (!project) return;
-    const id = await nextBacklogId(project.id);
+    const [id] = await reserveBacklogIds(project.id, 1);
     const { error } = await supabase!.from("backlog_items").insert({
-      id, project_id: project.id, parent_id: parentId,
-      title: "新規バックログ項目", description: "", priority: "medium",
+      id, project_id: project.id,
+      parent_id: parentItem ? parentItem.parentId : parentId,
+      parent_item_id: parentItem?.id ?? null,
+      title: parentItem ? "新規子項目" : "新規バックログ項目", description: "", priority: "medium",
       assignee: "", estimated_hours: 0, status: "open", rank: Date.now(), created_by: userName || null,
     });
     if (error) { toast("作成に失敗しました", "error"); return; }
@@ -581,14 +747,23 @@ export function BacklogPage() {
     if (!project || draggedId === targetParentId) return;
     const dragged = items.find(i => i.id === draggedId);
     if (!dragged || (dragged.parentId ?? null) === targetParentId) return;
+    // 移動先は必ずフォルダ（またはルート）。項目の上へのドロップは並べ替え側で受ける
+    if (targetParentId && !items.find(i => i.id === targetParentId)?.isFolder) return;
+    // 子の項目は親と同じフォルダに置く。単独では動かさない（BRU24-001）
+    if (dragged.parentItemId && items.some(i => i.id === dragged.parentItemId)) {
+      toast("子の項目は親の項目と一緒に移動します。親の項目を移動してください", "error");
+      return;
+    }
     if (isCyclicMove(items, draggedId, targetParentId)) {
       toast("フォルダを自身の子孫フォルダ配下に移動することはできません", "error");
       return;
     }
-    setItems(prev => prev.map(i => i.id === draggedId ? { ...i, parentId: targetParentId } : i));
+    // 親の項目を動かすときは子の項目も同じフォルダへ
+    const movingIds = [draggedId, ...(dragged.isFolder ? [] : items.filter(i => i.parentItemId === draggedId).map(i => i.id))];
+    setItems(prev => prev.map(i => movingIds.includes(i.id) ? { ...i, parentId: targetParentId } : i));
     const { error } = await supabase!.from("backlog_items")
       .update({ parent_id: targetParentId, updated_at: new Date().toISOString() })
-      .eq("id", draggedId).eq("project_id", project.id);
+      .in("id", movingIds).eq("project_id", project.id);
     if (error) {
       console.error("[BacklogPage] move error:", error);
       toast("移動に失敗しました", "error");
@@ -604,9 +779,15 @@ export function BacklogPage() {
     const from = items.find(i => i.id === fromId);
     const to = items.find(i => i.id === toId);
     if (!from || !to || from.isFolder) return;
+    // 親子の段をまたぐ並べ替えはしない（子は同じ親の子どうし、親は親どうしでだけ並べ替える）
+    if ((from.parentItemId ?? null) !== (to.parentItemId ?? null)) return;
     const targetParentId = to.parentId ?? null;
+    // 親の項目をフォルダをまたいで動かすときは、子の項目も同じフォルダへ付いていく
+    const followerIds = from.parentItemId || (from.parentId ?? null) === targetParentId
+      ? [] : items.filter(i => i.parentItemId === fromId).map(i => i.id);
     const siblings = items
-      .filter(i => !i.isFolder && (i.parentId ?? null) === targetParentId && i.id !== fromId)
+      .filter(i => !i.isFolder && (i.parentId ?? null) === targetParentId && i.id !== fromId
+        && (i.parentItemId ?? null) === (from.parentItemId ?? null))
       .sort((a, b) => a.rank - b.rank);
     const toIdx = siblings.findIndex(i => i.id === toId);
     if (toIdx === -1) return;
@@ -614,15 +795,20 @@ export function BacklogPage() {
     reordered.splice(toIdx, 0, from);
     const newRanks = reordered.map((item, idx) => ({ id: item.id, rank: (idx + 1) * 1000 }));
     setItems(prev => prev.map(i => {
+      if (followerIds.includes(i.id)) return { ...i, parentId: targetParentId };
       const r = newRanks.find(u => u.id === i.id);
       if (!r) return i;
       return i.id === fromId ? { ...i, rank: r.rank, parentId: targetParentId } : { ...i, rank: r.rank };
     }));
-    await Promise.all(newRanks.map(({ id, rank }) =>
-      supabase!.from("backlog_items")
-        .update(id === fromId ? { rank, parent_id: targetParentId } : { rank })
-        .eq("id", id).eq("project_id", project.id)
-    ));
+    await Promise.all([
+      ...newRanks.map(({ id, rank }) =>
+        supabase!.from("backlog_items")
+          .update(id === fromId ? { rank, parent_id: targetParentId } : { rank })
+          .eq("id", id).eq("project_id", project.id)),
+      ...(followerIds.length > 0
+        ? [supabase!.from("backlog_items").update({ parent_id: targetParentId }).in("id", followerIds).eq("project_id", project.id)]
+        : []),
+    ]);
   }, [items, project]);
 
   const copyShareLink = useCopyShareLink(projectSlug ?? project?.slug);
@@ -639,7 +825,14 @@ export function BacklogPage() {
       for (const child of items.filter(i => i.parentId === id)) collectIds(child.id, acc);
       return acc;
     };
-    const targetIds = item.isFolder ? collectIds(item.id, []) : [item.id];
+    // 親の項目を消すときは子の項目も一緒に消す（parent_item_id にも FK が無いため）
+    const baseIds = item.isFolder ? collectIds(item.id, []) : [item.id];
+    const targetIds = Array.from(new Set([
+      ...baseIds,
+      ...items.filter(i => i.parentItemId && baseIds.includes(i.parentItemId)).map(i => i.id),
+    ]));
+    // 添付は行に FK が無いので、項目より先に行と実体を消す
+    await purgeBacklogAttachments(project.id, targetIds.filter(id => !itemById.get(id)?.isFolder));
     const { error } = await supabase!.from("backlog_items")
       .delete().in("id", targetIds).eq("project_id", project.id);
     if (error) {
@@ -836,6 +1029,17 @@ export function BacklogPage() {
                     ))}
                   </div>
                 )}
+                {selectedParentItem && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#9E9690", marginBottom: 8 }}>
+                    <CornerDownRight style={{ width: 11, height: 11 }} />
+                    <span>親：</span>
+                    <button type="button" onClick={() => gotoItem(selectedParentItem.id)} title={`${selectedParentItem.id} を開く`}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: 0, background: "none", border: "none", cursor: "pointer", color: "#059669", fontWeight: 600, fontSize: 11, minWidth: 0 }}>
+                      <span style={{ fontFamily: "var(--font-mono)" }}>{selectedParentItem.id}</span>
+                      <TruncatedText text={selectedParentItem.title || "無題"} style={{ maxWidth: 360 }} />
+                    </button>
+                  </div>
+                )}
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
                   <input
                     value={editTitle}
@@ -927,6 +1131,31 @@ export function BacklogPage() {
                       style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 12, border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 9, outline: "none", fontFamily: "inherit" }} />
                   </div>
                 </div>
+
+                {/* 子の項目（親子は1段まで。子の詳細には出さない） */}
+                {!selectedItem.parentItemId && (selectedChildItems.length > 0 || (canEdit && canCreate)) && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                      <p style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", margin: 0 }}>子の項目（{selectedChildItems.length}）</p>
+                      {canEdit && canCreate && (
+                        <button type="button" onClick={() => handleAddItem(null, selectedItem)}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 7, cursor: "pointer" }}>
+                          <Plus style={{ width: 11, height: 11 }} />子の項目を追加
+                        </button>
+                      )}
+                    </div>
+                    {selectedChildItems.length > 0 && (
+                      <div style={{ maxHeight: 132, overflowY: "auto", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 9 }}>
+                        {selectedChildItems.map(child => (
+                          <div key={child.id} onClick={() => gotoItem(child.id)}
+                            style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", cursor: "pointer", borderBottom: "1px solid rgba(26,23,20,0.05)" }}>
+                            <BacklogRowContent item={child} isSelected={false} projectSlug={projectSlug ?? project?.slug ?? ""} />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* エディター + 画像添付（エディター内部でスクロール） */}
@@ -960,6 +1189,20 @@ export function BacklogPage() {
                     maxImages={plan.maxImagesPerItem}
                   />
                 </div>
+                {/* 添付ファイル（画像以外）。閲覧のみの人にも一覧とDLは見せる */}
+                {(itemCanEdit || attachments.length > 0) && (
+                  <div style={{ marginTop: 12, flexShrink: 0 }}>
+                    <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>添付ファイル</p>
+                    <FileAttachments
+                      items={attachments.map(a => ({ id: a.id, fileName: a.fileName, fileSize: a.fileSize, url: a.fileUrl }))}
+                      onAdd={files => { void addBacklogFiles(files); }}
+                      onRemove={id => { void removeBacklogFile(id); }}
+                      onDownload={id => { const a = attachments.find(x => x.id === id); if (a) void downloadTicketAttachment(a); }}
+                      readOnly={!itemCanEdit}
+                      uploading={uploadingAttachment}
+                    />
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -968,6 +1211,9 @@ export function BacklogPage() {
 
       {convertTarget && project && (
         <ConvertToTicketModal item={convertTarget} project={project} sprints={sprints}
+          parentItem={convertTarget.parentItemId ? itemById.get(convertTarget.parentItemId) ?? null : null}
+          childItems={convertTarget.parentItemId ? [] : childItemsOf(convertTarget.id)
+            .filter(c => c.status === "open" || c.status === "in-progress")}
           onClose={() => setConvertTarget(null)}
           onConverted={() => { setConvertTarget(null); load(); }} />
       )}
@@ -976,7 +1222,9 @@ export function BacklogPage() {
           title={deleteTarget.isFolder ? "フォルダの削除" : "バックログ項目の削除"}
           message={deleteTarget.isFolder
             ? `「${deleteTarget.title || "無題のフォルダ"}」を削除します。フォルダ内の項目も一緒に削除されます。`
-            : `${deleteTarget.id}「${deleteTarget.title}」を削除します。`}
+            : `${deleteTarget.id}「${deleteTarget.title}」を削除します。`
+              + (childItemsOf(deleteTarget.id).length > 0
+                ? `\n（子の項目 ${childItemsOf(deleteTarget.id).length}件 も一緒に削除されます）` : "")}
           onConfirm={() => handleDelete(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
       )}

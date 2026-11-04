@@ -308,6 +308,13 @@ export interface TicketAttachment {
   uploadedBy: string; createdAt: string;
 }
 
+// BRU24-001 バックログ項目の添付ファイル。列構成は TicketAttachment と同じ
+export interface BacklogAttachment {
+  id: string; projectId: string; itemId: string; fileName: string; fileSize: number;
+  fileType: string; filePath: string; fileUrl: string;
+  uploadedBy: string; createdAt: string;
+}
+
 // ── ENHA2-035 ファイルボックス ──
 // 非公開バケット(project-files)に置くため公開URLは持たない。
 // 表示・DLのたびに api/project-files/signed-url で短命の署名付きURLを発行する。
@@ -403,6 +410,8 @@ export interface BacklogItem {
   parentId: string | null;
   /** true のときはフォルダ行。description/priority などの列は使わない */
   isFolder: boolean;
+  /** 親の項目（BRU24-001）。項目どうしの親子は1段まで。parentId（フォルダ）は親と同じ値に揃える */
+  parentItemId: string | null;
   status: BacklogStatus; priority: Priority; rank: number;
   assignee: string; estimatedHours: number; convertedTicketId: string | null;
   convertedTicketWbs: string | null;

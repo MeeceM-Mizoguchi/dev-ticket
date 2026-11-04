@@ -92,7 +92,7 @@ export async function deleteTicketAttachment(attachment: TicketAttachment): Prom
  * 公開URLを直接 <a download> に渡すと保存名がストレージキー（乱数）になってしまうため、
  * 一度 Blob にしてから同一オリジンの blob URL 経由で本来のファイル名を付ける。
  */
-export async function downloadTicketAttachment(attachment: TicketAttachment): Promise<void> {
+export async function downloadTicketAttachment(attachment: Pick<TicketAttachment, "fileUrl" | "fileName">): Promise<void> {
   if (!attachment.fileUrl) return;
   try {
     const res = await fetchFileWithRetry(attachment.fileUrl);

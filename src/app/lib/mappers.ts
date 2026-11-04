@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, TicketAttachment, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, ClientNote, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare, WbsSheet, WbsStatus, WbsItem, WbsHoliday } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, TicketAttachment, BacklogAttachment, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, ClientNote, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare, WbsSheet, WbsStatus, WbsItem, WbsHoliday } from "@/app/types";
 import { compareWbs } from "@/app/lib/helpers";
 
 // ── ENHA2-032 タスク ──
@@ -109,6 +109,11 @@ export function mapTicketAttachment(r: any): TicketAttachment {
   return { id: String(r.id), ticketId: r.ticket_id, fileName: r.file_name || "", fileSize: Number(r.file_size) || 0, fileType: r.file_type || "", filePath: r.file_path || "", fileUrl: r.file_url || "", uploadedBy: r.uploaded_by || "", createdAt: r.created_at || "" };
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapBacklogAttachment(r: any): BacklogAttachment {
+  return { id: String(r.id), projectId: r.project_id, itemId: r.item_id, fileName: r.file_name || "", fileSize: Number(r.file_size) || 0, fileType: r.file_type || "", filePath: r.file_path || "", fileUrl: r.file_url || "", uploadedBy: r.uploaded_by || "", createdAt: r.created_at || "" };
+}
+
 // ── ENHA2-035 ファイルボックス ──
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProjectFile(r: any): ProjectFile {
@@ -202,7 +207,7 @@ export function mapActionMemo(r: any): ActionMemo {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapBacklogItem(r: any): BacklogItem {
-  return { id: r.id, projectId: r.project_id, title: r.title, description: r.description || "", parentId: r.parent_id ?? null, isFolder: r.is_folder ?? false, status: r.status || "open", priority: r.priority || "medium", rank: r.rank ?? 0, assignee: r.assignee || "", estimatedHours: r.estimated_hours || 0, convertedTicketId: r.converted_ticket_id ?? null, convertedTicketWbs: r.converted_ticket_wbs ?? null, categoryId: r.category_id ?? null, images: Array.isArray(r.images) ? r.images : [], isUserInquiry: r.is_user_inquiry ?? false, bugReportId: r.bug_report_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+  return { id: r.id, projectId: r.project_id, title: r.title, description: r.description || "", parentId: r.parent_id ?? null, isFolder: r.is_folder ?? false, parentItemId: r.parent_item_id ?? null, status: r.status || "open", priority: r.priority || "medium", rank: r.rank ?? 0, assignee: r.assignee || "", estimatedHours: r.estimated_hours || 0, convertedTicketId: r.converted_ticket_id ?? null, convertedTicketWbs: r.converted_ticket_wbs ?? null, categoryId: r.category_id ?? null, images: Array.isArray(r.images) ? r.images : [], isUserInquiry: r.is_user_inquiry ?? false, bugReportId: r.bug_report_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

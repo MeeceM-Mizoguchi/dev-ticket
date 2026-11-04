@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
 // 🌟 修正: 取下ボタン用のアイコン (Ban) を追加
-import { X, Paperclip, ChevronDown, Trash2, FileCode2, FileText, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, Link2, MoreHorizontal, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
+import { X, Paperclip, ChevronDown, Trash2, ClipboardList, FileCode2, FileText, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, Link2, MoreHorizontal, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, TicketAttachment, Priority, TicketStatus, CommentType, Skill } from "@/app/types";
 // ENHA2-034 担当者レコメンド（自動アサイン）
 import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
@@ -45,6 +45,7 @@ import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
 import { fetchSprintOrder, applySprintOrder } from "@/app/lib/sprintOrder";
 import { MdBulkCreateDialog } from "@/app/components/tickets/MdBulkCreateDialog";
 import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDialog";
+import { MoveToBacklogDialog } from "@/app/components/tickets/MoveToBacklogDialog";
 import { useTruncatedTip } from "@/app/components/shared/TruncatedText";
 import { TicketDetailLoadingOverlay } from "@/app/components/tickets/TicketDetailLoadingOverlay";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
@@ -367,6 +368,9 @@ export function TicketDetailPanel({
   // 🌟 追加(BRU4-059): 親未開始の子チケットを着手する際の「親も開始しますか？」確認モーダル
   const [showParentStartConfirm, setShowParentStartConfirm] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
+  // BRU24-001-3 バックログへ戻す。対象は開いた時点のチケットで固定する
+  const [moveToBacklogIds, setMoveToBacklogIds] = useState<string[] | null>(null);
+  const movedToBacklogRef = useRef(false);
   // 🌟 修正: isUpdating だと名前が被る可能性があるため、専用の名前に変更
   const [isWithdrawLoading, setIsWithdrawLoading] = useState(false);
   const [moveTargetSprintId, setMoveTargetSprintId] = useState<string | null>(null);
@@ -2454,6 +2458,20 @@ export function TicketDetailPanel({
           onClose={() => setShowUndecidedConfirm(false)}
         />
       )}
+      {moveToBacklogIds && projectId && (
+        <MoveToBacklogDialog
+          ticketIds={moveToBacklogIds}
+          projectId={projectId}
+          projectSlug={projectSlug}
+          onMoved={() => { movedToBacklogRef.current = true; return onUpdated?.(); }}
+          onClose={() => {
+            setMoveToBacklogIds(null);
+            // 移動したチケットはもう無いので、パネルも閉じる
+            if (movedToBacklogRef.current) { onDeleted?.(); onClose(); }
+          }}
+        />
+      )}
+
       {showMoveModal && (
         <DialogShell
           title="スプリントへ移動"
@@ -3012,6 +3030,14 @@ export function TicketDetailPanel({
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
                   <ArrowRightLeft style={{ width: 15, height: 15 }} />
+                </button>
+              )}
+              {canEdit && projectId && isSupabaseEnabled && (
+                <button onClick={() => { movedToBacklogRef.current = false; setMoveToBacklogIds([ticket.id]); }} title="バックログへ戻す"
+                  style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; (e.currentTarget as HTMLElement).style.color = "#6D28D9"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
+                  <ClipboardList style={{ width: 15, height: 15 }} />
                 </button>
               )}
               {canEdit && (
