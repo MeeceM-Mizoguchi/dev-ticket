@@ -21,7 +21,7 @@ import { RichEditor } from "@/app/components/shared/RichEditor";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 import { FileAttachments } from "@/app/components/shared/FileAttachments";
 import {
-  reserveBacklogIds, fetchBacklogAttachments, uploadBacklogAttachment, deleteBacklogAttachment, purgeBacklogAttachments,
+  reserveBacklogIds, createBacklogFolder, fetchBacklogAttachments, uploadBacklogAttachment, deleteBacklogAttachment, purgeBacklogAttachments,
 } from "@/app/lib/backlogItems";
 import { downloadTicketAttachment } from "@/app/lib/ticketAttachments";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
@@ -46,17 +46,6 @@ const STATUS_META: Record<BacklogStatus, { label: string; color: string; bg: str
   converted: { label: "チケット化済", color: "#059669", bg: "#ECFDF5" },
   archived: { label: "アーカイブ", color: "#9CA3AF", bg: "#F4F5F6" },
 };
-
-// フォルダ行のIDは "BF-001" 形式。項目の採番(like 'B-%')とは前方一致しないので衝突しない。
-async function nextBacklogFolderId(projectId: string): Promise<string> {
-  const { data } = await supabase!
-    .from("backlog_items").select("id")
-    .eq("project_id", projectId)
-    .like("id", "BF-%")
-    .order("id", { ascending: false }).limit(1).maybeSingle();
-  const next = (parseInt(data?.id?.slice(3) ?? "0", 10) || 0) + 1;
-  return `BF-${String(next).padStart(3, "0")}`;
-}
 
 // ─── チケット化モーダル ─────────────────────────────────────
 // BRU24-001-4 親子・添付ファイル対応:
@@ -732,15 +721,14 @@ export function BacklogPage() {
   // ── フォルダ（Wikiと同仕様） ─────────────────────────────────
   const handleAddFolder = async (parentId: string | null = null) => {
     if (!project) return;
-    const id = await nextBacklogFolderId(project.id);
-    const { error } = await supabase!.from("backlog_items").insert({
-      id, project_id: project.id, parent_id: parentId,
-      title: "無題のフォルダ", description: "", is_folder: true,
-      priority: "medium", assignee: "", estimated_hours: 0, status: "open",
-      rank: items.filter(i => (i.parentId ?? null) === parentId && i.isFolder).length,
-      created_by: userName || null,
-    });
-    if (error) {
+    let id: string;
+    try {
+      id = await createBacklogFolder({
+        projectId: project.id, parentId, title: "無題のフォルダ",
+        rank: items.filter(i => (i.parentId ?? null) === parentId && i.isFolder).length,
+        createdBy: userName,
+      });
+    } catch (error) {
       console.error("[BacklogPage] folder insert error:", error);
       toast("フォルダの作成に失敗しました", "error");
       return;

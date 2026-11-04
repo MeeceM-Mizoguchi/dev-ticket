@@ -36,6 +36,39 @@ export async function reserveBacklogIds(projectId: string, count: number): Promi
   return Array.from({ length: count }, (_, i) => formatBacklogId(start + i));
 }
 
+// フォルダ行のIDは "BF-001" 形式。項目の採番(like 'B-%')とは前方一致しないので衝突しない。
+// 番号は「最大番号＋1」で採るため、同時に作ると重なることがある（既存の挙動のまま）。
+async function nextBacklogFolderId(projectId: string): Promise<string> {
+  const { data } = await supabase!
+    .from("backlog_items").select("id")
+    .eq("project_id", projectId)
+    .like("id", "BF-%")
+    .order("id", { ascending: false }).limit(1).maybeSingle();
+  const next = (parseInt(data?.id?.slice(3) ?? "0", 10) || 0) + 1;
+  return `BF-${String(next).padStart(3, "0")}`;
+}
+
+/**
+ * バックログのフォルダを作り、その ID（"BF-001" 形式）を返す。失敗時は Error を投げる。
+ * バックログ画面の「フォルダを追加」と「バックログへ戻す」の戻す先（BRU24-003）で共用する。
+ * @param rank 同じ階層のフォルダの中での並び順（呼び出し側で数える）
+ */
+export async function createBacklogFolder(params: {
+  projectId: string; parentId: string | null; title: string; rank: number; createdBy: string;
+}): Promise<string> {
+  const { projectId, parentId, title, rank, createdBy } = params;
+  const id = await nextBacklogFolderId(projectId);
+  const { error } = await supabase!.from("backlog_items").insert({
+    id, project_id: projectId, parent_id: parentId,
+    title, description: "", is_folder: true,
+    priority: "medium", assignee: "", estimated_hours: 0, status: "open",
+    rank,
+    created_by: createdBy || null,
+  });
+  if (error) throw new Error(error.message);
+  return id;
+}
+
 function storageKey(projectId: string, itemId: string, fileName: string): string {
   const ext = getExt(fileName);
   return `backlog/${projectId}/${itemId}/attachments/${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext ? `.${ext}` : ""}`;

@@ -147,6 +147,7 @@ export async function bulkMoveTickets(params: {
 //   ・添付ファイルは backlog_attachments へ行を付け替える（ストレージの実体は動かさない）
 //   ・親チケットの子は、子のバックログ項目（parent_item_id）として親につなぐ
 //   ・もともとバックログから作ったチケットは、元の項目（converted_ticket_id）を「未対応」に戻して使い回す
+//   ・親（単独）の項目は、新しく作るものも使い回すものも、選んだ戻す先のフォルダに置く（BRU24-003）。子は親と同じフォルダ
 // 順序は「バックログ作成 → 添付の付け替え → チケット削除」。途中で失敗したらチケットは消さずに止める
 // （purgeTicketAttachments はストレージの実体まで消すので、付け替え前のチケット削除は厳禁）。
 
@@ -285,6 +286,7 @@ function buildMoveHistoryHtml(row: Row, ctx: {
  * チケットをバックログへ戻す。
  * @param detachOrphans 親を選ばずに選ばれた子チケットを、親から独立した単独の項目として戻すか。
  *                      false のまま子だけが含まれていると Error を投げる（呼び出し側で確認してから true で呼ぶ）。
+ * @param folderId 戻す先のバックログのフォルダ。null ならバックログの直下（BRU24-003）。
  * 戻り値: 作成（または使い回し）した親（単独）の項目。先頭が完了表示のリンク先。
  */
 export async function moveTicketsToBacklog(params: {
@@ -292,8 +294,9 @@ export async function moveTicketsToBacklog(params: {
   projectId: string;
   movedBy: string;
   detachOrphans: boolean;
+  folderId: string | null;
 }): Promise<MovedBacklogItem[]> {
-  const { ticketIds, projectId, movedBy, detachOrphans } = params;
+  const { ticketIds, projectId, movedBy, detachOrphans, folderId: targetFolderId } = params;
   if (!isSupabaseEnabled || ticketIds.length === 0 || !projectId) return [];
 
   const { parents, children, orphanRows } = await resolveMoveTargets(ticketIds);
@@ -369,10 +372,10 @@ export async function moveTicketsToBacklog(params: {
   };
 
   let idx = 0;
-  const place = (row: Row, parentItemId: string | null, parentFolder: string | null | undefined) => {
+  const place = (row: Row, parentItemId: string | null, folder: string | null | undefined) => {
     const reuse = reuseByTicket.get(row.id);
-    // 使い回す項目は元のフォルダに残す。新しい項目は親（無ければルート）に置く
-    const folderId = reuse ? (parentItemId ? (parentFolder ?? null) : (reuse.parent_id ?? null)) : (parentFolder ?? null);
+    // 親（単独）は戻す先のフォルダ、子は親と同じフォルダに置く。使い回す項目も元のフォルダには戻さない（BRU24-003 案A）
+    const folderId = folder ?? null;
     const fields = toItem(row, parentItemId, folderId, idx++);
     let itemId: string;
     if (reuse) {
@@ -388,7 +391,7 @@ export async function moveTicketsToBacklog(params: {
   };
 
   for (const root of roots) {
-    const r = place(root, null, null);
+    const r = place(root, null, targetFolderId);
     results.push({ id: r.itemId, title: r.title, reused: r.reused });
     for (const child of children.filter(c => c.parent_id === root.id)) {
       place(child, r.itemId, folderByTicket.get(root.id));

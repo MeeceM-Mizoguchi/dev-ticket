@@ -5,24 +5,40 @@
 //   2. 親を選ばずに子チケットだけが選ばれていたら「親から独立させるか」を1回だけ聞く
 //      いいえ → 「親チケットからバックログへ登録してください」と出して何もしない
 //   3. 件数を出して確認（実績工数・PRがあれば強めに警告）→ 実行
+//      件数の下で戻す先のフォルダ（直下＋全階層）を選べる。その場でフォルダも作れる（BRU24-003）
 //   4. 「B-012 としてバックログへ移動しました」とリンク付きで出す
-// 実行は ref でガードする（BUG-05）。
+// 実行とフォルダの作成は ref でガードする（BUG-05）。
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { AlertTriangle, ClipboardList } from "lucide-react";
+import { AlertTriangle, ClipboardList, Folder, Plus } from "lucide-react";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
+import { FolderPickerList, type DocTreeItem } from "@/app/components/shared/DocTree";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
+import { createBacklogFolder } from "@/app/lib/backlogItems";
+import { submitOnEnter } from "@/app/lib/submitKey";
 import {
   summarizeMoveToBacklog, moveTicketsToBacklog,
   type MoveToBacklogSummary, type MovedBacklogItem,
 } from "@/app/lib/bulkTicketOps";
 
 type Phase = "loading" | "orphan" | "orphan-declined" | "confirm" | "running" | "done" | "error";
+
+/** 戻す先の候補になるバックログのフォルダ一覧。BUG-01 対策で rank + id の安定ソート */
+async function fetchBacklogFolders(projectId: string): Promise<DocTreeItem[]> {
+  if (!isSupabaseEnabled || !projectId) return [];
+  const { data, error } = await supabase!
+    .from("backlog_items").select("id, parent_id, title")
+    .eq("project_id", projectId).eq("is_folder", true)
+    .order("rank", { ascending: true }).order("id", { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data ?? []).map(r => ({ id: r.id as string, parentId: (r.parent_id as string | null) ?? null, title: (r.title as string) ?? "", isFolder: true }));
+}
 
 export function MoveToBacklogDialog({
   ticketIds, projectId, projectSlug, onClose, onMoved,
@@ -43,13 +59,29 @@ export function MoveToBacklogDialog({
   const [moved, setMoved] = useState<MovedBacklogItem[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
   const runningRef = useRef(false);
+  // 戻す先（null = バックログの直下）
+  const [folders, setFolders] = useState<DocTreeItem[]>([]);
+  const [folderError, setFolderError] = useState("");
+  const [targetFolderId, setTargetFolderId] = useState<string | null>(null);
+  const [addingFolder, setAddingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const creatingFolderRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
-    summarizeMoveToBacklog(ticketIds, projectId)
-      .then(s => {
+    Promise.all([
+      summarizeMoveToBacklog(ticketIds, projectId),
+      fetchBacklogFolders(projectId).catch(e => {
+        // フォルダが読めなくても直下へは戻せるので、止めずに理由だけ出す
+        if (!cancelled) setFolderError(`フォルダ一覧を読み込めませんでした: ${e instanceof Error ? e.message : String(e)}`);
+        return [] as DocTreeItem[];
+      }),
+    ])
+      .then(([s, f]) => {
         if (cancelled) return;
         setSummary(s);
+        setFolders(f);
         setPhase(s.orphans.length > 0 ? "orphan" : "confirm");
       })
       .catch(e => {
@@ -65,7 +97,7 @@ export function MoveToBacklogDialog({
     runningRef.current = true;
     setPhase("running");
     try {
-      const result = await moveTicketsToBacklog({ ticketIds, projectId, movedBy: userName, detachOrphans: detach });
+      const result = await moveTicketsToBacklog({ ticketIds, projectId, movedBy: userName, detachOrphans: detach, folderId: targetFolderId });
       setMoved(result);
       emitLinkItemsChanged(projectId, "backlog");
       emitLinkItemsChanged(projectId, "ticket");
@@ -77,6 +109,38 @@ export function MoveToBacklogDialog({
     } finally {
       runningRef.current = false;
     }
+  };
+
+  // いま選んでいる場所の中にフォルダを作り、作ったフォルダを選ぶ
+  const createFolder = async () => {
+    const title = newFolderName.trim();
+    if (!title || creatingFolderRef.current) return;
+    creatingFolderRef.current = true;
+    setCreatingFolder(true);
+    setFolderError("");
+    const parentId = targetFolderId;
+    try {
+      const id = await createBacklogFolder({
+        projectId, parentId, title,
+        rank: folders.filter(f => f.parentId === parentId).length,
+        createdBy: userName,
+      });
+      setFolders(prev => [...prev, { id, parentId, title, isFolder: true }]);
+      setTargetFolderId(id);
+      setAddingFolder(false);
+      setNewFolderName("");
+    } catch (e) {
+      setFolderError(`フォルダを作成できませんでした: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      creatingFolderRef.current = false;
+      setCreatingFolder(false);
+    }
+  };
+
+  const cancelAddFolder = () => {
+    if (creatingFolderRef.current) return;
+    setAddingFolder(false);
+    setNewFolderName("");
   };
 
   const openItem = (id: string) => {
@@ -164,6 +228,39 @@ export function MoveToBacklogDialog({
             </p>
           </div>
         )}
+        <div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>戻す先</span>
+            <button type="button" onClick={() => { setFolderError(""); setAddingFolder(true); }} disabled={busy || addingFolder}
+              style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 8px", fontSize: 12, fontWeight: 600, color: busy || addingFolder ? "#B0A9A4" : "#059669", background: "none", border: "none", borderRadius: 6, cursor: busy || addingFolder ? "default" : "pointer" }}>
+              <Plus style={{ width: 13, height: 13 }} />フォルダを追加
+            </button>
+          </div>
+          <FolderPickerList
+            folders={folders}
+            selectedId={targetFolderId}
+            onSelect={setTargetFolderId}
+            rootLabel="/ バックログの直下"
+            emptyText="フォルダはありません。"
+            disabled={busy}
+            addSlot={addingFolder ? {
+              parentId: targetFolderId,
+              node: (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 12px", border: "1px dashed #10B981", borderRadius: 8, background: "#FFFFFF" }}>
+                  <Folder style={{ width: 14, height: 14, color: "#F59E0B", flexShrink: 0 }} />
+                  <input autoFocus value={newFolderName} disabled={creatingFolder}
+                    onChange={e => setNewFolderName(e.target.value)}
+                    onKeyDown={submitOnEnter(() => void createFolder(), { enabled: !!newFolderName.trim() && !creatingFolder, onCancel: cancelAddFolder })}
+                    onBlur={() => { if (!newFolderName.trim()) cancelAddFolder(); }}
+                    placeholder="フォルダ名を入力して Enter"
+                    style={{ flex: 1, minWidth: 0, fontSize: 12, padding: "4px 0", border: "none", outline: "none", background: "transparent", color: "#1A1714" }} />
+                  {creatingFolder && <BtnSpinner />}
+                </div>
+              ),
+            } : undefined}
+          />
+          {folderError && <p style={{ ...textStyle, fontSize: 12, color: "#DC2626", marginTop: 6 }}>{folderError}</p>}
+        </div>
         <p style={{ ...textStyle, fontSize: 12, color: "#9E9690" }}>WBS画面・リリースノート・内部リンク（#）の候補からも消えます。この操作は取り消せません。</p>
       </DialogShell>
     );
