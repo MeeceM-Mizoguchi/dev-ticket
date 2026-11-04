@@ -844,3 +844,215 @@ export function buildApiSample(lang: SampleLang, ctx: SampleContext, kind: Sampl
   if (lang === "python") return pythonSample(ctx);
   return curlSample(ctx, key);
 }
+
+// ─── バックログ（BRU24-002。POST/GET /api/v1/backlog） ──────────────────
+// バックログ画面の「API連携」から開いたときだけ使う。チケット用の SAMPLE_KINDS とは別に持つ。
+
+export type BacklogSampleKind = "backlog-create" | "backlog-list";
+
+export const BACKLOG_SAMPLE_KINDS: { id: BacklogSampleKind; label: string; endpoint: string; permission: string; notes: string[] }[] = [
+  {
+    id: "backlog-create", label: "登録", endpoint: "POST /api/v1/backlog",
+    permission: "登録のみ／すべて",
+    notes: [
+      "番号（B-001 形式）はサーバーが振ります。同時に登録しても重なりません",
+      "children で子の項目を親子まとめて登録できます（1段まで）。子は親と同じフォルダに入ります",
+      "folderId はこのプロジェクトのフォルダだけ指定できます（GET /api/v1/context の backlogFolders）。無いと 404",
+    ],
+  },
+  {
+    id: "backlog-list", label: "一覧", endpoint: "GET /api/v1/backlog",
+    permission: "読み取りのみ／すべて",
+    notes: [
+      "登録前の重複確認に使います。q（タイトル・本文の部分一致）・status・folderId・limit で絞れます",
+    ],
+  },
+];
+
+export interface BacklogSampleContext {
+  baseUrl: string;
+  /** バックログ画面でフォルダを選んで開いたときの登録先 */
+  folderId?: string | null;
+  plainKey?: string;
+}
+
+function backlogCreateCurlSample(c: BacklogSampleContext, key: string): string {
+  const folderLine = c.folderId ? `\n    "folderId": "${c.folderId}",` : "";
+  return `# ① まず疎通確認。担当者名・分類名・バックログのフォルダ（backlogFolders）の候補が返る
+curl ${c.baseUrl}/api/v1/context \\
+  -H "Authorization: Bearer ${key}"
+
+# ② バックログへ登録（親子まとめて）
+curl -X POST ${c.baseUrl}/api/v1/backlog \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{${folderLine}
+    "items": [
+      {
+        "title": "ログイン画面のバリデーション追加",
+        "priority": "高",
+        "estimatedHours": 4,
+        "description": "**概要**\\nメールアドレス欄に入力チェックが無い",
+        "children": [
+          { "title": "入力チェックの実装", "priority": "高" }
+        ]
+      }
+    ]
+  }'
+
+# 応答（201）
+# { "ok": true, "count": 2, "folder": ${c.folderId ? `{ "id": "${c.folderId}", "name": "…" }` : "null"},
+#   "created": [ { "id": "B-021", "title": "…", "parentId": null, "url": "…" },
+#                { "id": "B-022", "title": "…", "parentId": "B-021", "url": "…" } ],
+#   "warnings": [] }`;
+}
+
+function backlogCreateJsSample(c: BacklogSampleContext): string {
+  const folderArg = c.folderId ? `"${c.folderId}"` : "null";
+  return `// キーはソースに書かず環境変数から読む（Gitに入れないため）
+const API_KEY = process.env.DEV_TICKET_API_KEY;
+
+async function postBacklog(items, folderId = null) {
+  const res = await fetch("${c.baseUrl}/api/v1/backlog", {
+    method: "POST",
+    headers: {
+      "Authorization": \`Bearer \${API_KEY}\`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(folderId ? { folderId, items } : { items }),
+  });
+
+  const json = await res.json();
+  if (!res.ok) {
+    // 400:入力の誤り 401:キーが無効 403:権限不足・プラン 404:フォルダが無い 429:リクエスト過多
+    throw new Error(\`\${res.status}: \${json.error}\`);
+  }
+  if (json.warnings.length > 0) console.warn(json.warnings);
+  return json.created;   // [{ id: "B-021", title, parentId, url }, ...]
+}
+
+// ── ここから下が「自分のシステム」で使う部分 ──
+// 例: 問い合わせ管理から、まだ取り込んでいない要望をバックログへ送る
+const requests = await db.query("SELECT * FROM requests WHERE backlog_id IS NULL");
+
+const created = await postBacklog(
+  requests.map(r => ({
+    title: r.subject,
+    priority: r.urgent ? "高" : "中",
+    description: \`**概要**\\n\${r.body}\`,
+  })),
+  ${folderArg},
+);
+// created は items と同じ順に並ぶ（子の項目は親の直後）`;
+}
+
+function backlogCreatePythonSample(c: BacklogSampleContext): string {
+  const folderArg = c.folderId ? `"${c.folderId}"` : "None";
+  return `import os
+import requests
+
+# キーはソースに書かず環境変数から読む（Gitに入れないため）
+API_KEY = os.environ["DEV_TICKET_API_KEY"]
+BASE_URL = "${c.baseUrl}"
+
+
+def post_backlog(items, folder_id=None):
+    body = {"items": items}
+    if folder_id:
+        body["folderId"] = folder_id
+    res = requests.post(
+        f"{BASE_URL}/api/v1/backlog",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        json=body,
+        timeout=30,
+    )
+
+    data = res.json()
+    if not res.ok:
+        # 400:入力の誤り 401:キーが無効 403:権限不足・プラン 404:フォルダが無い 429:リクエスト過多
+        raise RuntimeError(f"{res.status_code}: {data.get('error')}")
+    if data["warnings"]:
+        print("warnings:", data["warnings"])
+    return data["created"]  # [{"id": "B-021", "title": ..., "parentId": None, "url": ...}, ...]
+
+
+# ── ここから下が「自分のシステム」で使う部分 ──
+# 例: 要望の一覧から、親子まとめてバックログへ送る
+created = post_backlog(
+    [
+        {
+            "title": "ログイン画面のバリデーション追加",
+            "priority": "高",
+            "description": "**概要**\\nメールアドレス欄に入力チェックが無い",
+            "children": [{"title": "入力チェックの実装", "priority": "高"}],
+        }
+    ],
+    ${folderArg},
+)`;
+}
+
+function backlogListCurlSample(c: BacklogSampleContext, key: string): string {
+  return `# 権限: 読み取りのみ／すべて（「登録のみ」のキーでは 403）
+#
+# 登録前の重複確認に使う。q はタイトル・本文の部分一致
+curl "${c.baseUrl}/api/v1/backlog?q=ログイン&status=未対応" \\
+  -H "Authorization: Bearer ${key}"
+
+# 応答の例
+# { "count": 1, "hasMore": false,
+#   "items": [ { "id": "B-012", "title": "…", "status": "未対応", "priority": "高", "assignee": null,
+#                "parentId": null, "folderId": null, "folderName": null, "ticketWbs": null, "url": "…" } ] }`;
+}
+
+function backlogListJsSample(c: BacklogSampleContext): string {
+  return `// 権限: 読み取りのみ／すべて（「登録のみ」のキーでは 403）
+const API_KEY = process.env.DEV_TICKET_API_KEY;
+
+async function findBacklog(params) {
+  const res = await fetch(\`${c.baseUrl}/api/v1/backlog?\${new URLSearchParams(params)}\`, {
+    headers: { "Authorization": \`Bearer \${API_KEY}\` },
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(\`\${res.status}: \${json.error}\`);
+  return json.items;
+}
+
+// ── ここから下が「自分のシステム」で使う部分 ──
+// 例: 同じタイトルの項目が無いときだけ登録する
+const exists = (await findBacklog({ q: "ログイン画面のバリデーション追加" })).length > 0;`;
+}
+
+function backlogListPythonSample(c: BacklogSampleContext): string {
+  return `# 権限: 読み取りのみ／すべて（「登録のみ」のキーでは 403）
+import os
+import requests
+
+API_KEY = os.environ["DEV_TICKET_API_KEY"]
+BASE_URL = "${c.baseUrl}"
+
+
+def find_backlog(**params):
+    res = requests.get(
+        f"{BASE_URL}/api/v1/backlog",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        params=params,
+        timeout=30,
+    )
+    data = res.json()
+    if not res.ok:
+        raise RuntimeError(f"{res.status_code}: {data.get('error')}")
+    return data["items"]
+
+
+# ── ここから下が「自分のシステム」で使う部分 ──
+# 例: 同じタイトルの項目が無いときだけ登録する
+exists = len(find_backlog(q="ログイン画面のバリデーション追加")) > 0`;
+}
+
+export function buildBacklogApiSample(lang: SampleLang, ctx: BacklogSampleContext, kind: BacklogSampleKind = "backlog-create"): string {
+  const key = ctx.plainKey ?? KEY_PLACEHOLDER;
+  if (kind === "backlog-list") {
+    return lang === "js" ? backlogListJsSample(ctx) : lang === "python" ? backlogListPythonSample(ctx) : backlogListCurlSample(ctx, key);
+  }
+  return lang === "js" ? backlogCreateJsSample(ctx) : lang === "python" ? backlogCreatePythonSample(ctx) : backlogCreateCurlSample(ctx, key);
+}
