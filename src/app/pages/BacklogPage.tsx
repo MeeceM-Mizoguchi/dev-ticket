@@ -58,10 +58,23 @@ async function nextBacklogFolderId(projectId: string): Promise<string> {
 }
 
 // ─── チケット化モーダル ─────────────────────────────────────
+// BRU24-001-4 親子・添付ファイル対応:
+//   ・親の項目 … まだチケット化していない子の項目も、子チケット（親WBS-1, -2 …）としてまとめて作る
+//   ・子の項目 … 親がチケット化済みなら、そのチケットの子チケットとして足す（スプリントは親と同じ）
+//               親がまだバックログにあれば「親と一緒にチケット化してください」と出して何も作らない
+//   ・添付ファイルは backlog_attachments → ticket_attachments へ行を付け替える（実体は動かさない）
+function newTicketId(): string {
+  return `TKT-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
 function ConvertToTicketModal({
-  item, project, sprints: initialSprints, onClose, onConverted,
+  item, parentItem, childItems, project, sprints: initialSprints, onClose, onConverted,
 }: {
   item: BacklogItem;
+  /** item が子の項目のときの親の項目 */
+  parentItem: BacklogItem | null;
+  /** item が親の項目のときの、まだチケット化していない子の項目 */
+  childItems: BacklogItem[];
   project: Project;
   sprints: Sprint[];
   onClose: () => void;
@@ -70,9 +83,14 @@ function ConvertToTicketModal({
   const [sprints, setSprints] = useState<Sprint[]>(initialSprints);
   const [sprintId, setSprintId] = useState(initialSprints[0]?.id ?? "");
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [showNewSprint, setShowNewSprint] = useState(false);
   const { userName } = useAuth();
   const { toast } = useToast();
+
+  // 子の項目のとき: 親がチケット化済みなら子チケットとして足す。まだなら止める
+  const parentTicketed = !!parentItem && parentItem.status === "converted" && !!parentItem.convertedTicketId;
+  const blockedByParent = !!parentItem && !parentTicketed;
 
   const reloadSprints = useCallback(async () => {
     if (!isSupabaseEnabled) return;
@@ -90,10 +108,70 @@ function ConvertToTicketModal({
     if (mapped.length > 0) setSprintId(mapped[0].id);
   }, [project.id]);
 
+  const toTicketRow = (src: BacklogItem, id: string, wbs: string, sprint: string, parentId: string | null) => ({
+    id, sprint_id: sprint, wbs, title: src.title, status: "todo",
+    priority: src.priority, assignee: src.assignee || "", estimated_hours: src.estimatedHours || 0,
+    progress: getDefaultProgressForStatus("todo"), description: src.description || "", created_by: userName || null,
+    images: src.images?.length ? src.images : [], category_id: src.categoryId ?? null, parent_id: parentId,
+  });
+
+  // 添付ファイルをチケットへ付け替える。失敗してもチケットは作れているので、止めずに知らせる
+  const moveAttachments = async (pairs: { itemId: string; ticketId: string }[]) => {
+    const itemIds = pairs.map(p => p.itemId);
+    const { data: rows, error } = await supabase!.from("backlog_attachments").select("*")
+      .eq("project_id", project.id).in("item_id", itemIds)
+      .order("created_at", { ascending: true }).order("id", { ascending: true });
+    if (error) { console.warn("[BacklogPage] 添付の取得に失敗:", error.message); return; }
+    if (!rows || rows.length === 0) return;
+    const ticketByItem = new Map(pairs.map(p => [p.itemId, p.ticketId]));
+    const { error: insErr } = await supabase!.from("ticket_attachments").insert(rows.map(a => ({
+      ticket_id: ticketByItem.get(a.item_id),
+      file_name: a.file_name, file_size: a.file_size, file_type: a.file_type,
+      file_path: a.file_path, file_url: a.file_url, uploaded_by: a.uploaded_by, created_at: a.created_at,
+    })));
+    if (insErr) { toast("添付ファイルをチケットへ移せませんでした（バックログに残っています）", "error"); return; }
+    await supabase!.from("backlog_attachments").delete().eq("project_id", project.id).in("item_id", itemIds);
+  };
+
+  const markConverted = (pairs: { itemId: string; ticketId: string; wbs: string }[]) => Promise.all(pairs.map(p =>
+    supabase!.from("backlog_items").update({
+      status: "converted", converted_ticket_id: p.ticketId, converted_ticket_wbs: p.wbs,
+      updated_at: new Date().toISOString(),
+    }).eq("id", p.itemId).eq("project_id", project.id)));
+
   const handleConvert = async () => {
-    if (!sprintId) { toast("スプリントを選択してください", "error"); return; }
+    if (blockedByParent) return;
+    if (savingRef.current) return;
+    if (!parentTicketed && !sprintId) { toast("スプリントを選択してください", "error"); return; }
+    savingRef.current = true;
     setSaving(true);
     try {
+      if (parentTicketed && parentItem?.convertedTicketId) {
+        // ── 親チケットの子として足す。枝番は既存の子の続きから（bulkTicketInsert と同じ数え方） ──
+        const { data: parentRow } = await supabase!.from("sprint_tickets")
+          .select("id, wbs, sprint_id, parent_id").eq("id", parentItem.convertedTicketId).maybeSingle();
+        if (!parentRow) { toast("親のチケットが見つかりません", "error"); return; }
+        if (parentRow.parent_id) { toast("子チケットの下にさらに子チケットは作れません", "error"); return; }
+        const { data: childRows } = await supabase!.from("sprint_tickets").select("wbs")
+          .eq("parent_id", parentRow.id).like("wbs", `${parentRow.wbs}-%`);
+        const nextChildNum = (childRows ?? []).reduce((max, row) => {
+          const n = parseInt(String(row.wbs).slice(String(parentRow.wbs).length + 1), 10);
+          return Number.isNaN(n) ? max : Math.max(max, n);
+        }, 0) + 1;
+        const wbs = `${parentRow.wbs}-${nextChildNum}`;
+        const ticketId = newTicketId();
+        const { error: insErr } = await supabase!.from("sprint_tickets")
+          .insert(toTicketRow(item, ticketId, wbs, parentRow.sprint_id, parentRow.id));
+        if (insErr) { toast("チケット作成に失敗しました", "error"); return; }
+        await moveAttachments([{ itemId: item.id, ticketId }]);
+        await markConverted([{ itemId: item.id, ticketId, wbs }]);
+        emitLinkItemsChanged(project.id, "ticket");
+        emitLinkItemsChanged(project.id, "backlog");
+        toast(`${wbs} として ${parentRow.wbs} の子チケットを作成しました`);
+        onConverted();
+        return;
+      }
+
       const sprint = sprints.find(s => s.id === sprintId);
       const prefix = sprint?.identifier || project.wbsPrefix || "T";
       const { data: maxRow } = await supabase!
@@ -101,26 +179,32 @@ function ConvertToTicketModal({
         .like("wbs", `${prefix}-%`).order("wbs", { ascending: false }).limit(1).maybeSingle();
       const nextNum = (parseInt(maxRow?.wbs?.slice(prefix.length + 1) ?? "0", 10) || 0) + 1;
       const wbs = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-      const ticketId = `T-${Date.now()}`;
+      const ticketId = newTicketId();
 
-      const { error: insErr } = await supabase!.from("sprint_tickets").insert({
-        id: ticketId, sprint_id: sprintId, wbs, title: item.title, status: "todo",
-        priority: item.priority, assignee: item.assignee || "", estimated_hours: item.estimatedHours || 0,
-        progress: getDefaultProgressForStatus("todo"), description: item.description || "", created_by: userName || null,
-        images: item.images?.length ? item.images : [],
+      // 親と子は1回の insert にまとめる（親だけ先に見えて子が遅れて出るのを防ぐ。BUG-04）
+      const pairs = [{ itemId: item.id, ticketId, wbs }];
+      const rows = [toTicketRow(item, ticketId, wbs, sprintId, null)];
+      childItems.forEach((child, i) => {
+        const childWbs = `${wbs}-${i + 1}`;
+        const childTicketId = newTicketId();
+        rows.push(toTicketRow(child, childTicketId, childWbs, sprintId, ticketId));
+        pairs.push({ itemId: child.id, ticketId: childTicketId, wbs: childWbs });
       });
-      if (insErr) { toast("チケット作成に失敗しました", "error"); setSaving(false); return; }
+      const { error: insErr } = await supabase!.from("sprint_tickets").insert(rows);
+      if (insErr) { toast("チケット作成に失敗しました", "error"); return; }
 
-      await supabase!.from("backlog_items").update({
-        status: "converted", converted_ticket_id: ticketId, converted_ticket_wbs: wbs,
-        updated_at: new Date().toISOString(),
-      }).eq("id", item.id).eq("project_id", project.id);
+      await moveAttachments(pairs);
+      await markConverted(pairs);
 
       emitLinkItemsChanged(project.id, "ticket"); // 他タブの # サジェストへ即時反映
+      emitLinkItemsChanged(project.id, "backlog");
 
-      toast(`${wbs} としてチケットを作成しました`);
+      toast(childItems.length > 0
+        ? `${wbs} としてチケットを作成しました（子チケット ${childItems.length}件）`
+        : `${wbs} としてチケットを作成しました`);
       onConverted();
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -129,13 +213,27 @@ function ConvertToTicketModal({
     <>
       <DialogShell title={`${item.id} をチケット化`} onClose={onClose} size="sm"
         footer={<>
-          <BtnSecondary onClick={onClose} disabled={saving}>キャンセル</BtnSecondary>
-          <button type="button" onClick={handleConvert} disabled={saving}
+          <BtnSecondary onClick={onClose} disabled={saving}>{blockedByParent ? "閉じる" : "キャンセル"}</BtnSecondary>
+          {!blockedByParent && <button type="button" onClick={handleConvert} disabled={saving}
             style={{ padding: "9px 20px", background: saving ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: saving ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }}>
             {saving && <BtnSpinner />}{saving ? "作成中..." : "チケットを作成"}
-          </button>
+          </button>}
         </>}>
         <p style={{ fontSize: 13, color: "#1A1714", margin: 0 }}>{item.title}</p>
+        {blockedByParent ? (
+          <p style={{ fontSize: 12, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 9, padding: "10px 12px", margin: 0, lineHeight: 1.6 }}>
+            親の項目（{parentItem?.id}）がまだバックログにあります。親と一緒にチケット化してください。
+          </p>
+        ) : parentTicketed ? (
+          <p style={{ fontSize: 12, color: "#1A1714", margin: 0, lineHeight: 1.6 }}>
+            親の項目（{parentItem?.id}）のチケット <strong>{parentItem?.convertedTicketWbs ?? ""}</strong> の子チケットとして追加します（スプリントは親と同じになります）。
+          </p>
+        ) : (<>
+        {childItems.length > 0 && (
+          <p style={{ fontSize: 12, color: "#1A1714", background: "#F5F3FF", borderRadius: 9, padding: "8px 12px", margin: 0, lineHeight: 1.6 }}>
+            子の項目 {childItems.length}件（{childItems.map(c => c.id).join("、")}）も子チケットとして一緒に作成します。
+          </p>
+        )}
         <div>
           <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 5 }}>追加先スプリント</label>
           {sprints.length === 0 ? (
@@ -151,6 +249,7 @@ function ConvertToTicketModal({
             <Plus style={{ width: 11, height: 11 }} />新規スプリントを作成
           </button>
         </div>
+        </>)}
       </DialogShell>
 
       {showNewSprint && (
@@ -1112,6 +1211,9 @@ export function BacklogPage() {
 
       {convertTarget && project && (
         <ConvertToTicketModal item={convertTarget} project={project} sprints={sprints}
+          parentItem={convertTarget.parentItemId ? itemById.get(convertTarget.parentItemId) ?? null : null}
+          childItems={convertTarget.parentItemId ? [] : childItemsOf(convertTarget.id)
+            .filter(c => c.status === "open" || c.status === "in-progress")}
           onClose={() => setConvertTarget(null)}
           onConverted={() => { setConvertTarget(null); load(); }} />
       )}
