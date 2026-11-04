@@ -160,13 +160,13 @@ const ACTUAL_NOTE = `
 - **完了済みの作業を後から登録するときは、\`status\` を「クローズ」にし、分かる範囲で \`actualHours\`・\`startedAt\`・\`completedAt\` を入れる。**根拠が無ければ省略する（推測で埋めない）。
 - \`completedAt\` は \`startedAt\` より前にしない。クローズ以外のステータスで \`completedAt\` を送っても登録されない（\`warnings\` に出る）。`;
 
-function memberCandidates(ctx: ApiSetupContext): string {
+function memberCandidates(ctx: Pick<ApiSetupContext, "memberNames">): string {
   return ctx.memberNames.length > 0
     ? ctx.memberNames.join(" / ")
     : "（メンバー未設定。assignee は指定しないこと）";
 }
 
-function categoryCandidates(ctx: ApiSetupContext): string {
+function categoryCandidates(ctx: Pick<ApiSetupContext, "categoryNames">): string {
   return ctx.categoryNames.length > 0
     ? ctx.categoryNames.join(" / ")
     : "（分類未設定。category は指定しないこと）";
@@ -461,4 +461,164 @@ Content-Type: application/json
 
 // 既存チケットに子チケットを足す（親は GET /api/v1/tickets で探せる）
 { "tickets": [ { "title": "...", "parentWbs": "T-012" } ] }`;
+}
+
+// ─── バックログ登録（BRU24-002） ───────────────────────────────────────
+// ⚠️ api/v1/[resource].ts の handleCreateBacklog / handleListBacklog と一致させること。
+
+export interface BacklogApiPromptContext {
+  baseUrl: string;
+  projectName: string;
+  /** バックログ画面でフォルダを選んで開いたときの登録先。渡すと folderId を固定する文面になる */
+  folder?: { id: string; name: string } | null;
+  memberNames: string[];
+  categoryNames: string[];
+  today: string;
+  plainKey?: string;
+}
+
+/** バックログ登録の手順書。チケットと違いステータス・日付・スプリントは持たない */
+export function buildBacklogApiPrompt(ctx: BacklogApiPromptContext): string {
+  const members = memberCandidates(ctx);
+  const categories = categoryCandidates(ctx);
+  const folder = ctx.folder ?? null;
+  const folderJsonLine = folder ? `\n  "folderId": "${folder.id}",` : "";
+
+  return `# Dev Ticket のバックログへの登録
+
+あなたはこれから、Dev Ticket（プロジェクト管理ツール）の API を呼んで**バックログ**に項目を登録します。
+バックログはスプリントに入れる前の「やることの候補」の置き場です。チケットではありません。
+以下の仕様に厳密に従ってください。
+
+${buildKeySection(ctx.plainKey)}
+
+## 接続情報
+
+| 項目 | 値 |
+|---|---|
+| バックログに登録する | \`POST ${ctx.baseUrl}/api/v1/backlog\` |
+| 既存のバックログ項目を一覧する | \`GET ${ctx.baseUrl}/api/v1/backlog\`（キーの権限が「読み取りのみ」「すべて」のときだけ） |
+| 候補値（担当者・分類・フォルダ）を取る | \`GET ${ctx.baseUrl}/api/v1/context\` |
+| 認証ヘッダー | \`Authorization: Bearer <上のAPIキー>\` |
+| Content-Type | \`application/json\` |
+| 対象プロジェクト | ${ctx.projectName}（APIキーに紐づいているので指定不要） |
+${folder
+  ? `| **登録先フォルダ** | **${folder.name}** |
+| **folderId** | **\`${folder.id}\`** |
+
+⚠️ \`folderId\` は上の値を**そのまま使う**こと。この手順は利用者がバックログの「${folder.name}」フォルダを開いてコピーしたものであり、
+　 登録先はここで確定している。**自分で別のフォルダを選び直さないこと。**
+　 利用者が会話の中で別のフォルダを明示的に指定した場合のみ、そちらに変更する。`
+  : `| 登録先 | バックログの一番上の階層（フォルダに入れるときだけ \`folderId\` を書く） |`}
+
+## リクエストの形
+
+\`\`\`json
+{${folderJsonLine}
+  "items": [
+    {
+      "title": "ログイン画面のバリデーション追加",
+      "priority": "高",
+      "category": "バグ",
+      "assignee": "山田太郎",
+      "estimatedHours": 4,
+      "description": "**概要**\\nメールアドレス欄に入力チェックが無く…\\n\\n**対象画面**\\nログイン画面（/login）\\n",
+      "children": [
+        { "title": "入力チェックの実装", "priority": "高", "description": "**概要**\\n…" }
+      ]
+    }
+  ]
+}
+\`\`\`
+
+## 項目の仕様
+
+| キー | 必須 | 値 | 未指定のとき |
+|---|---|---|---|
+| title | ✅ | 項目のタイトル（500文字まで） | — |
+| priority | | ${MD_PRIORITY_LABELS.join(" / ")} | 中 |
+| category | | ${categories} | 分類なし |
+| assignee | | ${members} | 空欄 |
+| estimatedHours | | 見積工数（時間数・整数） | 0 |
+| description | | 本文（Markdown 文字列） | 空欄 |
+| children | | 子の項目の配列（同じ形・1段まで） | なし |
+
+リクエスト直下に書くもの:
+
+| キー | 必須 | 値 | 未指定のとき |
+|---|---|---|---|
+| items | ✅ | 上の形の配列 | — |
+| folderId | | 登録先フォルダのID（\`GET /api/v1/context\` の \`backlogFolders[].id\`） | 一番上の階層 |
+
+- 登録した項目の状態は必ず「未対応」になる。ステータス・開始日・期限・スプリントは**送らない**（バックログには無い）。
+- 上の項目は**できる限りすべて埋める**。ただし**根拠なく推測しない**。判断材料が無い項目は**キーごと省略**する（空文字や「未定」とは書かない）。
+- 表に無いキーは送らない（送っても無視される）。
+- assignee / category は上に挙げた名前のいずれかを書く。該当が無ければキーごと省略する。
+- 1回のリクエストで送れる \`items\` は 200 件まで、親1件あたりの子は 50 件まで。
+- 子の項目は親と同じフォルダに入る。子の中にさらに \`children\` は入れない（階層は1段まで）。
+
+${DESCRIPTION_SPEC}
+
+## 親の項目と子の項目
+
+- 1つの作業で完結するものは親の項目だけで書く（これが基本）。
+- 複数の作業に分かれるもの（機能単位・改修一式など）だけ \`children\` に子の項目を入れる。
+- **子の項目にも親と同じ項目と本文を書く**。子だからといって省略しない。
+- 迷ったら子を作らない。
+- バックログから親をチケット化すると、子の項目は子チケットとしてまとめてチケット化される。
+
+## 応答
+
+成功すると \`201\` と以下が返る。
+
+\`\`\`json
+{
+  "ok": true,
+  "count": 2,
+  "folder": ${folder ? `{ "id": "${folder.id}", "name": "${folder.name.replace(/"/g, '\\"')}" }` : "null"},
+  "created": [
+    { "id": "B-021", "title": "…", "parentId": null, "url": "…" },
+    { "id": "B-022", "title": "…", "parentId": "B-021", "url": "…" }
+  ],
+  "warnings": ["「…」: 担当者「佐藤」はプロジェクトのメンバーに見つからないため空欄にしました"]
+}
+\`\`\`
+
+- 番号（\`B-021\` など）は**サーバーが振る**。自分で採番しない。\`parentId\` は子の項目のときだけ親の番号が入る。
+- \`warnings\` が空でなければ、**必ず利用者に読み上げて報告する**。登録自体は成功しているが、担当者や分類が空欄になっている可能性がある。
+- \`401\` はキーが無効・失効・期限切れ。\`403\` はキーの権限不足かプランの制限。\`404\` は \`folderId\` がこのプロジェクトに無い。\`429\` はリクエスト過多（1分あたり60回まで）。
+- **エラーが返ったときに、内容を変えて何度も再送しないこと。** 同じ内容で2回送ると項目が二重に登録される。エラー内容を利用者に伝えて指示を仰ぐ。
+
+## 補足: 二重登録を避けたいとき
+
+\`GET ${ctx.baseUrl}/api/v1/backlog\`（同じ Authorization ヘッダー）で既存の項目を一覧できる。
+登録する前に、同じタイトルの項目が既に無いかを確かめるのに使う。
+**キーの権限が「登録のみ」だと \`403\` になる。**そのときは確認を飛ばして登録してよい。
+
+| クエリ | 意味 |
+|---|---|
+| \`q\` | タイトル・本文の部分一致で絞る |
+| \`status\` | 未対応 / 対応中 / チケット化済 / アーカイブ |
+| \`folderId\` | フォルダで絞る |
+| \`limit\` | 返す件数（既定100・最大500） |
+
+\`\`\`json
+{
+  "count": 1,
+  "hasMore": false,
+  "items": [
+    { "id": "B-012", "title": "…", "status": "未対応", "priority": "高", "assignee": null, "parentId": null, "folderId": null, "folderName": null, "ticketWbs": null, "url": "…" }
+  ]
+}
+\`\`\`
+
+## 補足: 最新の候補値を取りたいとき
+
+\`GET ${ctx.baseUrl}/api/v1/context\` で、メンバー名・分類名・バックログのフォルダ一覧（\`backlogFolders\`）を取得できる。
+${folder ? `**フォルダ一覧が取れても、登録先を \`${folder.id}\` から変えてはならない。**\n` : ""}スプリント一覧も返るが、バックログの登録には使わない。
+
+## 今日の日付
+
+${ctx.today}
+`;
 }

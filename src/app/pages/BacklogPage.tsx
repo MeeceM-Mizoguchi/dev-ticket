@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { FolderKanban, ChevronRight, Plus, GitBranch, ClipboardList, Trash2, Ticket, Search, X, FolderPlus, FolderOpen, Link2, CornerDownRight } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, GitBranch, ClipboardList, Trash2, Ticket, Search, X, FolderPlus, FolderOpen, Link2, CornerDownRight, KeyRound } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
@@ -25,6 +25,7 @@ import {
 } from "@/app/lib/backlogItems";
 import { downloadTicketAttachment } from "@/app/lib/ticketAttachments";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
+import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDialog";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { DocTree, FolderMoveModal, buildDocTree, isCyclicMove, type DocTreeNode } from "@/app/components/shared/DocTree";
@@ -351,6 +352,8 @@ export function BacklogPage() {
   const [sidebarSearch, setSidebarSearch] = useState("");
   const [selectedTicket, setSelectedTicket] = useState<SprintTicket | null>(null);
   const [selectedTicketSprintId, setSelectedTicketSprintId] = useState<string | undefined>(undefined);
+  // API連携（BRU24-002）。フォルダを選んだ状態で開いたときは、そのフォルダを登録先に固定する
+  const [apiDialogFolder, setApiDialogFolder] = useState<{ id: string; name: string } | null | undefined>(undefined);
 
   const handleSelectTicketByWbs = useCallback(async (wbs: string) => {
     if (!isSupabaseEnabled || !project) {
@@ -457,6 +460,26 @@ export function BacklogPage() {
   }, [projectSlug, userId, isAdminRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
+
+  // 別のタブ・ウィンドウから戻ってきたら読み直す（外部APIから登録された項目を出すため。BRU24-002）。
+  // load は loading を true に戻さないので、表示済みの一覧がスピナーに差し替わることはない（BUG-02/03）。
+  // focus と visibilitychange は同時に来ることがあるので、続けて来たものは1回にまとめる。
+  const lastRevalidateRef = useRef(0);
+  useEffect(() => {
+    const revalidate = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastRevalidateRef.current < 1500) return;
+      lastRevalidateRef.current = now;
+      void load();
+    };
+    window.addEventListener("focus", revalidate);
+    document.addEventListener("visibilitychange", revalidate);
+    return () => {
+      window.removeEventListener("focus", revalidate);
+      document.removeEventListener("visibilitychange", revalidate);
+    };
+  }, [load]);
 
   // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
   useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
@@ -879,6 +902,15 @@ export function BacklogPage() {
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project ? `${project.name} · ${itemCount} 件` : "..."}</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          {/* API連携はチケット側と同じ条件（管理者かつ一括作成が使えるプラン）。CreateTicketMenu の buildCreateTicketDisabled を参照 */}
+          {isAdminRole && plan.featureBulkCreate && project && isSupabaseEnabled && (
+            <button type="button"
+              onClick={() => setApiDialogFolder(selectedItem?.isFolder ? { id: selectedItem.id, name: selectedItem.title || "無題のフォルダ" } : null)}
+              title={selectedItem?.isFolder ? `「${selectedItem.title || "無題のフォルダ"}」フォルダへ登録するAPI連携` : "外部システム・AIからバックログへ登録する"}
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: "#ECFDF5", color: "#059669", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+              <KeyRound style={{ width: 13, height: 13 }} />API連携
+            </button>
+          )}
           {permsLoaded && effectiveBacklogPerm === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
@@ -1239,6 +1271,17 @@ export function BacklogPage() {
             await handleMoveNode(movingNodeTarget.id, targetParentId);
             setMovingNodeTarget(null);
           }}
+        />
+      )}
+
+      {apiDialogFolder !== undefined && project && (
+        <ApiIntegrationDialog
+          sprintId=""
+          sprintName=""
+          projectId={project.id}
+          projectName={project.name}
+          backlog={{ folder: apiDialogFolder }}
+          onClose={() => setApiDialogFolder(undefined)}
         />
       )}
 

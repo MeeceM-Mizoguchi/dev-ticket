@@ -9,6 +9,8 @@
 //   ・組み込み … 外部のシステムから API を叩くサンプル（登録・読み取り・ステータス更新・PR紐づけ）
 //   ・APIキー … キーの発行・失効・棚卸し（年に数回しか使わない）
 // チケット詳細から開いたときは、表示条件の違うタブを出し分ける（TicketDetailPanel の 🔑 の注記を参照）。
+// バックログ画面から開いたとき（backlog を渡したとき。BRU24-002）は、プロンプトとサンプルを
+// バックログ登録用（POST/GET /api/v1/backlog）に差し替え、スプリントの指定は出さない。キーはチケットと共通。
 //
 // キーの平文は AES-256-GCM で暗号化して保存してある（暗号鍵はサーバー側の環境変数から導出）。
 // そのため「使用するキー」で選ぶだけで、サーバーが復号した平文をプロンプトへ埋め込める。
@@ -29,10 +31,11 @@ import {
   API_KEY_SCOPES, scopeLabel, canCreateTickets, canReadTickets, canUpdateStatus,
   type ApiKeyRow, type ApiKeyScope,
 } from "@/app/lib/apiKeys";
-import { buildApiSetupPrompt } from "@/app/lib/apiKeyPrompt";
+import { buildApiSetupPrompt, buildBacklogApiPrompt } from "@/app/lib/apiKeyPrompt";
 import {
   buildApiSample, buildKeySetupSnippet, SAMPLE_LANGS, SAMPLE_KINDS, API_LIMITS,
-  type SampleLang, type SampleKind,
+  buildBacklogApiSample, BACKLOG_SAMPLE_KINDS,
+  type SampleLang, type SampleKind, type BacklogSampleKind,
 } from "@/app/lib/apiSamples";
 import { AiImplementPanel } from "@/app/components/tickets/AiImplementDialog";
 import { MD_STATUS_LABELS, MD_PRIORITY_LABELS } from "@/app/lib/mdTickets/parse";
@@ -74,7 +77,7 @@ function SectionNote({ children }: { children: React.ReactNode }) {
 type DialogTab = "implement" | "usage" | "embed" | "keys";
 
 export function ApiIntegrationDialog({
-  sprintId, sprintName, projectId, projectName, parentTicket, implementTicket, zIndexBase = 300, onClose,
+  sprintId, sprintName, projectId, projectName, parentTicket, implementTicket, backlog, zIndexBase = 300, onClose,
 }: {
   sprintId: string;
   sprintName: string;
@@ -87,6 +90,11 @@ export function ApiIntegrationDialog({
    * 渡さないとき（スプリント画面）は「使い方」を初めに開く。
    */
   implementTicket?: { wbs: string; title: string; parentId?: string | null; childCount: number };
+  /**
+   * バックログ画面から開いたとき（BRU24-002）。渡すとバックログ登録用の表示になる。
+   * folder はフォルダを選んだ状態で開いたときの登録先（プロンプトの folderId を固定する）。
+   */
+  backlog?: { folder: { id: string; name: string } | null };
   /** チケット詳細（zIndex 300/301）の上に重ねるときに上げる */
   zIndexBase?: number;
   onClose: () => void;
@@ -117,6 +125,8 @@ export function ApiIntegrationDialog({
   const [lang, setLang] = useState<SampleLang>("curl");
   /** 「組み込み」タブで表示中のサンプルの種類 */
   const [sampleKind, setSampleKind] = useState<SampleKind>("create");
+  /** バックログ画面から開いたときのサンプルの種類 */
+  const [backlogSampleKind, setBacklogSampleKind] = useState<BacklogSampleKind>("backlog-create");
   /** 「AIで実装」タブにキーの一覧を読み直させる（この画面で発行・失効したとき） */
   const [keysRevision, setKeysRevision] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -261,12 +271,21 @@ export function ApiIntegrationDialog({
 
   const parentWbs = parentTicket?.wbs;
   const parentTitle = parentTicket?.title ?? "";
-  const buildPrompt = useCallback((plainKey?: string, prLinkWaived = false) => buildApiSetupPrompt({
-    baseUrl, projectName, sprintId, sprintName,
-    memberNames, categoryNames, today, plainKey,
-    parentTicket: parentWbs ? { wbs: parentWbs, title: parentTitle } : undefined,
-    prLinkWaived,
-  }), [baseUrl, projectName, sprintId, sprintName, memberNames, categoryNames, today, parentWbs, parentTitle]);
+  const isBacklog = !!backlog;
+  const backlogFolderId = backlog?.folder?.id ?? null;
+  const backlogFolderName = backlog?.folder?.name ?? "";
+  const buildPrompt = useCallback((plainKey?: string, prLinkWaived = false) => isBacklog
+    ? buildBacklogApiPrompt({
+      baseUrl, projectName,
+      folder: backlogFolderId ? { id: backlogFolderId, name: backlogFolderName } : null,
+      memberNames, categoryNames, today, plainKey,
+    })
+    : buildApiSetupPrompt({
+      baseUrl, projectName, sprintId, sprintName,
+      memberNames, categoryNames, today, plainKey,
+      parentTicket: parentWbs ? { wbs: parentWbs, title: parentTitle } : undefined,
+      prLinkWaived,
+    }), [isBacklog, backlogFolderId, backlogFolderName, baseUrl, projectName, sprintId, sprintName, memberNames, categoryNames, today, parentWbs, parentTitle]);
 
   // ── 発行 ──────────────────────────────────────────────────────
   const handleIssue = async () => {
@@ -382,7 +401,7 @@ export function ApiIntegrationDialog({
 
       {issuedKey.scope !== "read" && (
         <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", paddingTop: 15 }}>
-          <p style={{ fontSize: 12.5, fontWeight: 700, color: "#1A1714" }}>AIにチケットを登録してもらう場合</p>
+          <p style={{ fontSize: 12.5, fontWeight: 700, color: "#1A1714" }}>{isBacklog ? "AIにバックログへ登録してもらう場合" : "AIにチケットを登録してもらう場合"}</p>
           <SectionNote>
             キーだけを渡してもAIは動きません。エンドポイント・JSONの形式・このプロジェクトのメンバー名や分類名を含んだプロンプトに、
             <strong>上のAPIキーを埋め込んだ状態</strong>でコピーします。AIに貼るだけで登録できます。
@@ -408,7 +427,9 @@ export function ApiIntegrationDialog({
           </div>
           <p style={{ fontSize: 13.5, fontWeight: 700, color: "#1A1714" }}>使えるAPIキーがまだありません</p>
           <p style={{ fontSize: 11.5, color: "#9E9690", marginTop: 5, lineHeight: 1.8 }}>
-            APIキーを発行すると、AIやCIが{parentTicket ? `「${parentTicket.wbs}」の子として` : `「${sprintName}」に`}直接チケットを登録できるようになります。<br />
+            {isBacklog
+              ? <>APIキーを発行すると、AIや外部のシステムが{backlogFolderName ? `バックログの「${backlogFolderName}」フォルダに` : "バックログに"}直接項目を登録できるようになります。<br /></>
+              : <>APIキーを発行すると、AIやCIが{parentTicket ? `「${parentTicket.wbs}」の子として` : `「${sprintName}」に`}直接チケットを登録できるようになります。<br /></>}
             MDファイルを書き出して取り込む作業が不要になります。
           </p>
           <div style={{ marginTop: 16 }}>
@@ -427,10 +448,14 @@ export function ApiIntegrationDialog({
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <p style={{ fontSize: 12.5, color: "#4B4640", lineHeight: 1.8 }}>
-          {parentTicket
-            ? <>下のプロンプトをAIに渡すと、<strong>{parentTicket.wbs}</strong> の子チケットとして直接登録できます。
-              親チケットをAIに別に伝える必要はありません。</>
-            : <>下のプロンプトをAIに渡すと、<strong>{sprintName}</strong> に直接チケットを登録できます。</>}
+          {isBacklog
+            ? <>下のプロンプトをAIに渡すと、{backlogFolderName
+              ? <>バックログの <strong>「{backlogFolderName}」フォルダ</strong> に</>
+              : <><strong>バックログ</strong> に</>}直接項目を登録できます（親子の項目もまとめて登録できます）。</>
+            : parentTicket
+              ? <>下のプロンプトをAIに渡すと、<strong>{parentTicket.wbs}</strong> の子チケットとして直接登録できます。
+                親チケットをAIに別に伝える必要はありません。</>
+              : <>下のプロンプトをAIに渡すと、<strong>{sprintName}</strong> に直接チケットを登録できます。</>}
           MDファイルの書き出しと取り込みは不要です。
         </p>
 
@@ -490,7 +515,7 @@ export function ApiIntegrationDialog({
         </div>
 
         {/* PR を作らない作業を登録したとき、リリース待ち以降で「プルリクエストが紐付いていません」が出ないようにする */}
-        <label style={{ display: "flex", alignItems: "flex-start", gap: 7, cursor: "pointer", userSelect: "none" }}>
+        {!isBacklog && <label style={{ display: "flex", alignItems: "flex-start", gap: 7, cursor: "pointer", userSelect: "none" }}>
           <input type="checkbox" checked={promptPrLinkWaived}
             onChange={e => setPromptPrLinkWaived(e.target.checked)}
             style={{ width: 14, height: 14, marginTop: 2, accentColor: GREEN, cursor: "pointer", flexShrink: 0 }} />
@@ -500,7 +525,7 @@ export function ApiIntegrationDialog({
               仕様の確認・資料作成など、プルリクエストを作らない作業のとき
             </span>
           </span>
-        </label>
+        </label>}
 
         <div>
           {/* 復号中に押されるとキー無しのプロンプトがコピーされるため、終わるまで押させない */}
@@ -551,22 +576,72 @@ export function ApiIntegrationDialog({
   // ── 組み込みタブ ──────────────────────────────────────────────
   /** 自社システム・CI・バッチから叩くための説明。MCP など追加の仕組みは要らない。 */
   const renderEmbed = () => {
-    const kindInfo = SAMPLE_KINDS.find(k => k.id === sampleKind) ?? SAMPLE_KINDS[0];
+    // バックログ画面から開いたときは、サンプルの種類（登録／一覧）が別になる
+    const kinds: { id: string; label: string; endpoint: string; permission: string; notes: string[] }[] =
+      isBacklog ? BACKLOG_SAMPLE_KINDS : SAMPLE_KINDS;
+    const currentKind: string = isBacklog ? backlogSampleKind : sampleKind;
+    const kindInfo = kinds.find(k => k.id === currentKind) ?? kinds[0];
     // curl に埋め込むのは「使い方」タブで選んでいるキー（登録できるキー）。
     // その権限でこのサンプルの操作ができないときは、埋め込まずにプレースホルダを出す（送ると 403 になるため）
     const selectedKey = activeKeys.find(k => k.id === selectedKeyId) ?? null;
     const keyFits = !!selectedKey && (
-      sampleKind === "create" ? canCreateTickets(selectedKey)
-        : sampleKind === "read" ? canReadTickets(selectedKey)
-          : canUpdateStatus(selectedKey));
+      isBacklog
+        ? (backlogSampleKind === "backlog-create" ? canCreateTickets(selectedKey) : canReadTickets(selectedKey))
+        : sampleKind === "create" ? canCreateTickets(selectedKey)
+          : sampleKind === "read" ? canReadTickets(selectedKey)
+            : canUpdateStatus(selectedKey));
     const sampleKey = keyFits ? revealedKey ?? undefined : undefined;
     // 例の WBS は親チケットのもの（子の例は「親-1」で出す）。子チケットから開いたときは枝番を落とす
     const sampleWbs = implementTicket
       ? (implementTicket.parentId ? implementTicket.wbs.replace(/-\d+$/, "") : implementTicket.wbs)
       : parentTicket?.wbs;
-    const sample = buildApiSample(lang, {
-      baseUrl, sprintId, plainKey: sampleKey, wbs: sampleWbs,
-    }, sampleKind);
+    const sample = isBacklog
+      ? buildBacklogApiSample(lang, { baseUrl, folderId: backlogFolderId, plainKey: sampleKey }, backlogSampleKind)
+      : buildApiSample(lang, {
+        baseUrl, sprintId, plainKey: sampleKey, wbs: sampleWbs,
+      }, sampleKind);
+    const endpoints = isBacklog
+      ? [
+        { m: "POST", path: "/api/v1/backlog", desc: "バックログへ項目を登録する（親子まとめて・フォルダ指定も）" },
+        { m: "GET", path: "/api/v1/backlog", desc: "既存のバックログ項目を一覧する（重複確認。権限: 読み取りのみ／すべて）" },
+        { m: "GET", path: "/api/v1/context", desc: "担当者・分類・バックログのフォルダの候補を取得する" },
+      ]
+      : [
+        { m: "POST", path: "/api/v1/tickets", desc: "チケットを登録する（既存チケットへの子の追加も）" },
+        { m: "GET", path: "/api/v1/tickets", desc: "既存チケットを一覧する（子を足す親を探す）" },
+        { m: "GET", path: "/api/v1/context", desc: "スプリント・担当者・分類の候補を取得する" },
+        { m: "GET", path: "/api/v1/ticket?wbs=…", desc: "チケット1件の本文・画像・コメント・子チケットを読み取る（権限: 読み取りのみ／すべて）" },
+        { m: "POST", path: "/api/v1/ticket-status", desc: "ステータスを前へ進める（権限: すべて）" },
+        { m: "POST", path: "/api/v1/ticket-pull", desc: "作成したPRをチケットへ紐づける（権限: すべて）" },
+        { m: "POST", path: "/api/github/ticket-pull-create", desc: "Dev Ticket の bot 名義でPRを作り、チケットへ紐づける（権限: すべて）" },
+        { m: "POST", path: "/api/github/ticket-merge", desc: "チケットに紐づいたPRを bot 名義で Squash マージする（権限: すべて）" },
+      ];
+    const fields = isBacklog
+      ? [
+        { k: "title", req: true, v: "項目名（500文字まで）", def: "—" },
+        { k: "priority", req: false, v: MD_PRIORITY_LABELS.join(" / "), def: "中" },
+        { k: "category", req: false, v: categoryNames.length > 0 ? categoryNames.join(" / ") : "（このプロジェクトには分類が未登録）", def: "分類なし" },
+        { k: "assignee", req: false, v: `プロジェクトのメンバー名（完全一致）。${memberNames.length}名が登録済み。名前は GET /api/v1/context で取得`, def: "空欄" },
+        { k: "estimatedHours", req: false, v: "整数（時間）", def: "0" },
+        { k: "description", req: false, v: "本文（Markdown文字列）", def: "空欄" },
+        { k: "children", req: false, v: "子の項目の配列（同じ形・1段まで）。子は親と同じフォルダに入る", def: "なし" },
+      ]
+      : [
+        { k: "title", req: true, v: "チケット名（500文字まで）", def: "—" },
+        { k: "status", req: false, v: MD_STATUS_LABELS.join(" / "), def: "未着手" },
+        { k: "priority", req: false, v: MD_PRIORITY_LABELS.join(" / "), def: "中" },
+        { k: "category", req: false, v: categoryNames.length > 0 ? categoryNames.join(" / ") : "（このプロジェクトには分類が未登録）", def: "分類なし" },
+        // 実名を画面に並べない（画面共有や資料に映るため）。
+        // 名前の一覧が必要なときは API から取る。
+        { k: "assignee", req: false, v: `プロジェクトのメンバー名（完全一致）。${memberNames.length}名が登録済み。名前は GET /api/v1/context で取得`, def: "空欄" },
+        { k: "startDate", req: false, v: "YYYY/MM/DD", def: "空欄" },
+        { k: "dueDate", req: false, v: "YYYY/MM/DD", def: "空欄" },
+        { k: "estimatedHours", req: false, v: "整数（時間）", def: "0" },
+        { k: "description", req: false, v: "本文（Markdown文字列）", def: "空欄" },
+        { k: "children", req: false, v: "子チケットの配列（同じ形・1階層まで）", def: "なし" },
+        { k: "parentWbs", req: false, v: "既存チケットのWBS（例: T-012）。指定するとその子として登録され、枝番は既存の子の続きから自動で振られる。親は GET /api/v1/tickets で探せる", def: "新しい親として登録" },
+        { k: "prLinkWaived", req: false, v: "true / false。true で「PR不要」として登録し、リリース待ち以降でも「プルリクエストが紐付いていません」の警告を出さない。リクエスト直下に書くと子チケットも含めて全件の既定値になり、1件ずつの指定がそれより優先される", def: "false" },
+      ];
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 15 }}>
@@ -589,8 +664,8 @@ export function ApiIntegrationDialog({
             {[
               { n: 1, t: "APIキーを発行する", d: "「APIキー」タブで発行します。発行は最初の1回だけです" },
               { n: 2, t: "キーを自分のシステムに設定する", d: "環境変数に入れます。この画面に毎回入力するのではありません" },
-              { n: 3, t: "自分のデータを tickets の形に変換する", d: "下の「送れる項目」を見て、自社データの項目を対応づけます" },
-              { n: 4, t: "POST する", d: "登録されると wbs（チケット番号）が返ります" },
+              { n: 3, t: `自分のデータを ${isBacklog ? "items" : "tickets"} の形に変換する`, d: "下の「送れる項目」を見て、自社データの項目を対応づけます" },
+              { n: 4, t: "POST する", d: isBacklog ? "登録されると id（B-001 形式のバックログ番号）が返ります" : "登録されると wbs（チケット番号）が返ります" },
             ].map(s => (
               <div key={s.n} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}>
                 <span style={{
@@ -610,16 +685,7 @@ export function ApiIntegrationDialog({
         <div>
           <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 7 }}>エンドポイント</p>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {[
-              { m: "POST", path: "/api/v1/tickets", desc: "チケットを登録する（既存チケットへの子の追加も）" },
-              { m: "GET", path: "/api/v1/tickets", desc: "既存チケットを一覧する（子を足す親を探す）" },
-              { m: "GET", path: "/api/v1/context", desc: "スプリント・担当者・分類の候補を取得する" },
-              { m: "GET", path: "/api/v1/ticket?wbs=…", desc: "チケット1件の本文・画像・コメント・子チケットを読み取る（権限: 読み取りのみ／すべて）" },
-              { m: "POST", path: "/api/v1/ticket-status", desc: "ステータスを前へ進める（権限: すべて）" },
-              { m: "POST", path: "/api/v1/ticket-pull", desc: "作成したPRをチケットへ紐づける（権限: すべて）" },
-              { m: "POST", path: "/api/github/ticket-pull-create", desc: "Dev Ticket の bot 名義でPRを作り、チケットへ紐づける（権限: すべて）" },
-              { m: "POST", path: "/api/github/ticket-merge", desc: "チケットに紐づいたPRを bot 名義で Squash マージする（権限: すべて）" },
-            ].map(e => (
+            {endpoints.map(e => (
               <div key={`${e.m} ${e.path}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 11px", background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8 }}>
                 <span style={{ fontSize: 10, fontWeight: 800, color: e.m === "POST" ? GREEN : "#0284C7", minWidth: 34 }}>{e.m}</span>
                 <code style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "#1A1714" }}>{e.path}</code>
@@ -629,8 +695,11 @@ export function ApiIntegrationDialog({
           </div>
           <p style={{ fontSize: 10.5, color: "#9E9690", marginTop: 7, lineHeight: 1.75 }}>
             プロジェクトはAPIキーに紐づいているため指定不要です。
-            登録先スプリントは <code style={{ fontFamily: "var(--font-mono)", color: "#4B4640" }}>sprintId</code> で指定します
-            （このスプリントは <code style={{ fontFamily: "var(--font-mono)", color: "#4B4640" }}>{sprintId}</code>）。
+            {isBacklog
+              ? <>登録先フォルダは <code style={{ fontFamily: "var(--font-mono)", color: "#4B4640" }}>folderId</code> で指定します（省略すると一番上の階層）
+                {backlogFolderId && <>（このフォルダは <code style={{ fontFamily: "var(--font-mono)", color: "#4B4640" }}>{backlogFolderId}</code>）</>}。</>
+              : <>登録先スプリントは <code style={{ fontFamily: "var(--font-mono)", color: "#4B4640" }}>sprintId</code> で指定します
+                （このスプリントは <code style={{ fontFamily: "var(--font-mono)", color: "#4B4640" }}>{sprintId}</code>）。</>}
           </p>
         </div>
 
@@ -658,13 +727,14 @@ export function ApiIntegrationDialog({
         <div>
           <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 7 }}>サンプルコード</p>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 9 }}>
-            {SAMPLE_KINDS.map(k => (
-              <button key={k.id} type="button" onClick={() => setSampleKind(k.id)}
+            {kinds.map(k => (
+              <button key={k.id} type="button"
+                onClick={() => { if (isBacklog) setBacklogSampleKind(k.id as BacklogSampleKind); else setSampleKind(k.id as SampleKind); }}
                 style={{
                   padding: "6px 12px", fontSize: 11.5, fontWeight: 700, borderRadius: 8, cursor: "pointer",
-                  border: `1px solid ${sampleKind === k.id ? GREEN : "rgba(26,23,20,0.12)"}`,
-                  background: sampleKind === k.id ? "#ECFDF5" : "#FFFFFF",
-                  color: sampleKind === k.id ? GREEN : "#6B6458",
+                  border: `1px solid ${currentKind === k.id ? GREEN : "rgba(26,23,20,0.12)"}`,
+                  background: currentKind === k.id ? "#ECFDF5" : "#FFFFFF",
+                  color: currentKind === k.id ? GREEN : "#6B6458",
                 }}>{k.label}</button>
             ))}
           </div>
@@ -726,27 +796,12 @@ export function ApiIntegrationDialog({
         <div>
           <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 3 }}>送れる項目</p>
           <p style={{ fontSize: 10.5, color: "#9E9690", lineHeight: 1.7, marginBottom: 8 }}>
-            tickets 配列の1要素に指定できるキーです。<strong>title 以外はすべて任意</strong>で、
+            {isBacklog ? "items" : "tickets"} 配列の1要素に指定できるキーです。<strong>title 以外はすべて任意</strong>で、
             省略すると「未指定のとき」の値になります。判断材料が無い項目は、空文字を入れずに
             <strong>キーごと省略</strong>してください。
           </p>
           <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9, overflow: "hidden" }}>
-            {[
-              { k: "title", req: true, v: "チケット名（500文字まで）", def: "—" },
-              { k: "status", req: false, v: MD_STATUS_LABELS.join(" / "), def: "未着手" },
-              { k: "priority", req: false, v: MD_PRIORITY_LABELS.join(" / "), def: "中" },
-              { k: "category", req: false, v: categoryNames.length > 0 ? categoryNames.join(" / ") : "（このプロジェクトには分類が未登録）", def: "分類なし" },
-              // 実名を画面に並べない（画面共有や資料に映るため）。
-              // 名前の一覧が必要なときは API から取る。
-              { k: "assignee", req: false, v: `プロジェクトのメンバー名（完全一致）。${memberNames.length}名が登録済み。名前は GET /api/v1/context で取得`, def: "空欄" },
-              { k: "startDate", req: false, v: "YYYY/MM/DD", def: "空欄" },
-              { k: "dueDate", req: false, v: "YYYY/MM/DD", def: "空欄" },
-              { k: "estimatedHours", req: false, v: "整数（時間）", def: "0" },
-              { k: "description", req: false, v: "本文（Markdown文字列）", def: "空欄" },
-              { k: "children", req: false, v: "子チケットの配列（同じ形・1階層まで）", def: "なし" },
-              { k: "parentWbs", req: false, v: "既存チケットのWBS（例: T-012）。指定するとその子として登録され、枝番は既存の子の続きから自動で振られる。親は GET /api/v1/tickets で探せる", def: "新しい親として登録" },
-              { k: "prLinkWaived", req: false, v: "true / false。true で「PR不要」として登録し、リリース待ち以降でも「プルリクエストが紐付いていません」の警告を出さない。リクエスト直下に書くと子チケットも含めて全件の既定値になり、1件ずつの指定がそれより優先される", def: "false" },
-            ].map((f, i) => (
+            {fields.map((f, i) => (
               <div key={f.k} style={{
                 display: "flex", gap: 9, padding: "7px 11px", alignItems: "flex-start",
                 background: i % 2 === 0 ? "#FFFFFF" : "#FAFAF8",
@@ -774,8 +829,10 @@ export function ApiIntegrationDialog({
           <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 7 }}>制限</p>
           <ul style={{ margin: 0, paddingLeft: 17, fontSize: 11.5, color: "#4B4640", lineHeight: 1.9 }}>
             <li>1分あたり {API_LIMITS.requestsPerMinute} リクエストまで（超過すると 429）</li>
-            <li>1リクエストで tickets {API_LIMITS.parentsPerRequest} 件、親1件あたり子 {API_LIMITS.childrenPerParent} 件まで</li>
-            <li>子チケットの階層は1段まで（子チケットに <code style={{ fontFamily: "var(--font-mono)" }}>parentWbs</code> を指定することはできません）</li>
+            <li>1リクエストで {isBacklog ? "items" : "tickets"} {API_LIMITS.parentsPerRequest} 件、親1件あたり子 {API_LIMITS.childrenPerParent} 件まで</li>
+            {isBacklog
+              ? <li>子の項目の階層は1段まで（子の中の <code style={{ fontFamily: "var(--font-mono)" }}>children</code> は無視されます）</li>
+              : <li>子チケットの階層は1段まで（子チケットに <code style={{ fontFamily: "var(--font-mono)" }}>parentWbs</code> を指定することはできません）</li>}
             <li>一覧（GET）は1回に {API_LIMITS.listMaxLimit} 件まで（既定 {API_LIMITS.listDefaultLimit} 件）</li>
           </ul>
         </div>
@@ -995,7 +1052,9 @@ export function ApiIntegrationDialog({
                 {issuedKey ? "APIキーを発行しました" : "API連携"}
               </p>
               <p style={{ fontSize: 11, color: "#9E9690", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {implementTicket ? `${implementTicket.wbs} ／ ${implementTicket.title}` : `${projectName} ／ ${sprintName}`}
+                {implementTicket ? `${implementTicket.wbs} ／ ${implementTicket.title}`
+                  : isBacklog ? `${projectName} ／ バックログ${backlogFolderName ? ` ／ ${backlogFolderName}` : ""}`
+                    : `${projectName} ／ ${sprintName}`}
               </p>
             </div>
           </div>
