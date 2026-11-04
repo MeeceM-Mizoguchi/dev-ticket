@@ -7,7 +7,7 @@
 // 「PR不要」は、選んだチケットの pr_link_waived をまとめて付け外しする。メニューはエクスポートと同じく上向き（BRU21-003）。
 
 import { useEffect, useRef, useState } from "react";
-import { Trash2, ArrowRightLeft, Sparkles, Link2, Download, X, Bot, GitPullRequest, Check } from "lucide-react";
+import { Trash2, ArrowRightLeft, Sparkles, Link2, Download, X, Bot, GitPullRequest, Check, ClipboardList } from "lucide-react";
 import { TICKET_EXPORT_LABEL, type TicketExportFormat } from "@/app/lib/ticketExport";
 
 const EXPORT_FORMATS: TicketExportFormat[] = ["csv", "docx", "md"];
@@ -20,11 +20,13 @@ const EXPORT_FORMATS: TicketExportFormat[] = ["csv", "docx", "md"];
 export const BULK_ACTION_BAR_CLEARANCE = 96;
 
 export function BulkActionBar({
-  count, onDelete, onMove, onAssign, onCopyLinks, onPrWaive, onAiImplement, onExport, exportEnabled = true, onClear, disabled,
+  count, onDelete, onMove, onMoveToBacklog, onAssign, onCopyLinks, onPrWaive, onAiImplement, onExport, exportEnabled = true, onClear, disabled,
 }: {
   count: number;
   onDelete: () => void;
   onMove: () => void;
+  /** 選んだチケットをバックログへ戻す（BRU24-001）。未指定ならボタンを出さない */
+  onMoveToBacklog?: () => void;
   onAssign: () => void;
   onCopyLinks: () => void;
   /** 選んだチケットを「PR不要」にする（true）／外す（false）。未指定ならボタンを出さない */
@@ -101,6 +103,15 @@ export function BulkActionBar({
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.10)"; }}>
         <ArrowRightLeft style={{ width: 14, height: 14 }} />スプリント移動
       </button>
+
+      {onMoveToBacklog && (
+        <button type="button" disabled={disabled} onClick={onMoveToBacklog}
+          style={{ ...btnBase, background: "rgba(255,255,255,0.10)", color: "#F3F4F6", border: "1px solid rgba(255,255,255,0.16)" }}
+          onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.18)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.10)"; }}>
+          <ClipboardList style={{ width: 14, height: 14 }} />バックログへ戻す
+        </button>
+      )}
 
       <button type="button" disabled={disabled} onClick={onCopyLinks}
         style={{ ...btnBase, background: "rgba(255,255,255,0.10)", color: "#F3F4F6", border: "1px solid rgba(255,255,255,0.16)" }}

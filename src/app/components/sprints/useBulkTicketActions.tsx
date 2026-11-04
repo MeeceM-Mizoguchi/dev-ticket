@@ -24,6 +24,7 @@ import { fetchSkills, fetchBulkRecommendations, logRecommendationAccepted } from
 import { detectSkillKeywords, ticketSearchText } from "@/app/lib/skills";
 import { fireSlackNotify, slackTicketLink } from "@/app/utils/slackNotify";
 import { AiImplementDialog } from "@/app/components/tickets/AiImplementDialog";
+import { MoveToBacklogDialog } from "@/app/components/tickets/MoveToBacklogDialog";
 import type { BulkImplementTicket } from "@/app/lib/apiImplementPrompt";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 
@@ -160,6 +161,14 @@ export function useBulkTicketActions({
       waivingRef.current = false;
       setWaiving(false);
     }
+  };
+
+  // BRU24-001-3 バックログへ戻す。対象は開いた時点の選択で固定する
+  const [moveToBacklogIds, setMoveToBacklogIds] = useState<string[] | null>(null);
+  const movedToBacklogRef = useRef(false);
+  const closeMoveToBacklog = () => {
+    setMoveToBacklogIds(null);
+    if (movedToBacklogRef.current) clearSelection();
   };
 
   // 「AIで実装」の対象。開いた時点の選択で固定する（開いている間に一覧が更新されても手順書が変わらないように）
@@ -368,6 +377,9 @@ export function useBulkTicketActions({
         disabled={!!assignState || exporting || waiving}
         onAssign={runBulkAssign}
         onMove={async () => { await onBeforeMove?.(); setBulkAction("move"); }}
+        onMoveToBacklog={projectId && isSupabaseEnabled
+          ? () => { movedToBacklogRef.current = false; setMoveToBacklogIds(Array.from(selectedIds)); }
+          : undefined}
         onCopyLinks={runBulkCopyLinks}
         onPrWaive={canWaivePrLink && isSupabaseEnabled ? (waived => void runBulkPrWaive(waived)) : undefined}
         onAiImplement={aiImplement && projectId && isSupabaseEnabled ? openBulkAiImplement : undefined}
@@ -385,6 +397,16 @@ export function useBulkTicketActions({
           confirmLabel="削除する"
           onConfirm={runBulkDelete}
           onClose={() => setBulkAction(null)}
+        />
+      )}
+
+      {moveToBacklogIds && projectId && (
+        <MoveToBacklogDialog
+          ticketIds={moveToBacklogIds}
+          projectId={projectId}
+          projectSlug={projectSlug}
+          onMoved={() => { movedToBacklogRef.current = true; return onUpdated?.(); }}
+          onClose={closeMoveToBacklog}
         />
       )}
 
