@@ -384,6 +384,88 @@ function DocTreeRow({
   );
 }
 
+// ─── フォルダの選択一覧（ルート＋全階層のフォルダを字下げで並べる） ─────────
+// FolderMoveModal と「バックログへ戻す」の戻す先（BRU24-003）で共用する。
+// addSlot を渡すと、そのフォルダの中（null ならルートの直下）に任意の行（名前の入力欄など）を差し込む。
+export function FolderPickerList({
+  folders, selectedId, onSelect, rootLabel, emptyText, addSlot, disabled, style,
+}: {
+  /** フォルダだけ（isFolder=true）を渡す。並び順はこの配列の順 */
+  folders: DocTreeItem[];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  rootLabel: string;
+  emptyText: string;
+  addSlot?: { parentId: string | null; node: ReactNode };
+  disabled?: boolean;
+  style?: React.CSSProperties;
+}) {
+  const folderTree = useMemo(() => buildDocTree(folders), [folders]);
+  const pick = (id: string | null) => { if (!disabled) onSelect(id); };
+
+  const renderSlot = (parentId: string | null, depth: number) =>
+    addSlot && addSlot.parentId === parentId
+      ? <div style={{ paddingLeft: 12 + depth * 16, paddingRight: 4, marginBottom: 2 }}>{addSlot.node}</div>
+      : null;
+
+  const renderFolderOption = (folder: DocTreeNode, depth: number) => {
+    const isChosen = selectedId === folder.id;
+    return (
+      <div key={folder.id}>
+        <div
+          onClick={() => pick(folder.id)}
+          style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
+            paddingLeft: 12 + depth * 16, borderRadius: 8, cursor: disabled ? "default" : "pointer",
+            background: isChosen ? "#ECFDF5" : "transparent",
+            border: isChosen ? "1px solid #10B981" : "1px solid transparent",
+            transition: "all 0.1s", marginBottom: 2,
+          }}
+        >
+          <Folder style={{ width: 14, height: 14, color: isChosen ? "#059669" : "#F59E0B" }} />
+          <span style={{ fontSize: 12, fontWeight: isChosen ? 700 : 500, color: isChosen ? "#059669" : "#1A1714" }}>
+            {folder.title || "無題のフォルダ"}
+          </span>
+        </div>
+        {renderSlot(folder.id, depth + 1)}
+        {folder.children.map(c => renderFolderOption(c, depth + 1))}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: 8, maxHeight: 220, overflowY: "auto", background: "#FAFAF8", ...style }}>
+      <div
+        onClick={() => pick(null)}
+        style={{
+          display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 8, cursor: disabled ? "default" : "pointer",
+          background: selectedId === null ? "#ECFDF5" : "transparent",
+          border: selectedId === null ? "1px solid #10B981" : "1px solid transparent",
+          transition: "all 0.1s", marginBottom: 4,
+        }}
+      >
+        <FolderTree style={{ width: 14, height: 14, color: selectedId === null ? "#059669" : "#B0A9A4" }} />
+        <span style={{ fontSize: 12, fontWeight: selectedId === null ? 700 : 500, color: selectedId === null ? "#059669" : "#1A1714" }}>
+          {rootLabel}
+        </span>
+      </div>
+
+      <div style={{ height: 1, background: "rgba(26,23,20,0.04)", margin: "4px 0" }} />
+
+      {renderSlot(null, 0)}
+      {folderTree.length === 0 ? (
+        addSlot ? null : (
+          <div style={{ padding: 16, textAlign: "center", fontSize: 11, color: "#B0A9A4" }}>
+            {emptyText}
+          </div>
+        )
+      ) : (
+        folderTree.map(f => renderFolderOption(f, 0))
+      )}
+    </div>
+  );
+}
+
 // ─── 移動先フォルダの選択モーダル（Googleドライブ風。Wiki と同じ） ───────────
 export function FolderMoveModal({
   node, items, onClose, onConfirm,
@@ -398,32 +480,7 @@ export function FolderMoveModal({
     () => items.filter(i => i.isFolder && i.id !== node.id && !isCyclicMove(items, node.id, i.id)),
     [items, node.id],
   );
-  const folderTree = useMemo(() => buildDocTree(foldersOnly), [foldersOnly]);
   const [selectedParentId, setSelectedParentId] = useState<string | null>(node.parentId);
-
-  const renderFolderOption = (folder: DocTreeNode, depth: number) => {
-    const isChosen = selectedParentId === folder.id;
-    return (
-      <div key={folder.id}>
-        <div
-          onClick={() => setSelectedParentId(folder.id)}
-          style={{
-            display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
-            paddingLeft: 12 + depth * 16, borderRadius: 8, cursor: "pointer",
-            background: isChosen ? "#ECFDF5" : "transparent",
-            border: isChosen ? "1px solid #10B981" : "1px solid transparent",
-            transition: "all 0.1s", marginBottom: 2,
-          }}
-        >
-          <Folder style={{ width: 14, height: 14, color: isChosen ? "#059669" : "#F59E0B" }} />
-          <span style={{ fontSize: 12, fontWeight: isChosen ? 700 : 500, color: isChosen ? "#059669" : "#1A1714" }}>
-            {folder.title || "無題のフォルダ"}
-          </span>
-        </div>
-        {folder.children.map(c => renderFolderOption(c, depth + 1))}
-      </div>
-    );
-  };
 
   return (
     <>
@@ -442,32 +499,14 @@ export function FolderMoveModal({
           「{node.title || "無題"}」を配置する移動先フォルダーを選択してください。
         </p>
 
-        <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: 8, maxHeight: 220, overflowY: "auto", background: "#FAFAF8", marginBottom: 16 }}>
-          <div
-            onClick={() => setSelectedParentId(null)}
-            style={{
-              display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 8, cursor: "pointer",
-              background: selectedParentId === null ? "#ECFDF5" : "transparent",
-              border: selectedParentId === null ? "1px solid #10B981" : "1px solid transparent",
-              transition: "all 0.1s", marginBottom: 4,
-            }}
-          >
-            <FolderTree style={{ width: 14, height: 14, color: selectedParentId === null ? "#059669" : "#B0A9A4" }} />
-            <span style={{ fontSize: 12, fontWeight: selectedParentId === null ? 700 : 500, color: selectedParentId === null ? "#059669" : "#1A1714" }}>
-              / プロジェクトの最上位（ルート階層）
-            </span>
-          </div>
-
-          <div style={{ height: 1, background: "rgba(26,23,20,0.04)", margin: "4px 0" }} />
-
-          {folderTree.length === 0 ? (
-            <div style={{ padding: 16, textAlign: "center", fontSize: 11, color: "#B0A9A4" }}>
-              移動可能な他のフォルダがありません。
-            </div>
-          ) : (
-            folderTree.map(f => renderFolderOption(f, 0))
-          )}
-        </div>
+        <FolderPickerList
+          folders={foldersOnly}
+          selectedId={selectedParentId}
+          onSelect={setSelectedParentId}
+          rootLabel="/ プロジェクトの最上位（ルート階層）"
+          emptyText="移動可能な他のフォルダがありません。"
+          style={{ marginBottom: 16 }}
+        />
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button type="button" onClick={onClose}
