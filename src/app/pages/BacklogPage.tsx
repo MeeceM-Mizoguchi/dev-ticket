@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { FolderKanban, ChevronRight, Plus, GitBranch, ClipboardList, Trash2, Ticket, Search, X, FolderPlus, FolderOpen, Link2 } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, GitBranch, ClipboardList, Trash2, Ticket, Search, X, FolderPlus, FolderOpen, Link2, CornerDownRight } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
@@ -8,7 +8,7 @@ import { usePlan } from "@/app/contexts/PlanContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { mapProject, mapBacklogItem, mapTicketCategory, mapSprintTicket } from "@/app/lib/mappers";
 import { getDefaultProgressForStatus } from "@/app/lib/helpers";
-import type { Project, BacklogItem, BacklogStatus, Priority, Sprint, TicketCategory, AccessLevel, UserPermissions, SprintTicket } from "@/app/types";
+import type { Project, BacklogItem, BacklogAttachment, BacklogStatus, Priority, Sprint, TicketCategory, AccessLevel, UserPermissions, SprintTicket } from "@/app/types";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { DialogShell } from "@/app/components/shared/DialogShell";
@@ -19,6 +19,11 @@ import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
+import { FileAttachments } from "@/app/components/shared/FileAttachments";
+import {
+  reserveBacklogIds, fetchBacklogAttachments, uploadBacklogAttachment, deleteBacklogAttachment, purgeBacklogAttachments,
+} from "@/app/lib/backlogItems";
+import { downloadTicketAttachment } from "@/app/lib/ticketAttachments";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
@@ -40,16 +45,6 @@ const STATUS_META: Record<BacklogStatus, { label: string; color: string; bg: str
   converted: { label: "チケット化済", color: "#059669", bg: "#ECFDF5" },
   archived: { label: "アーカイブ", color: "#9CA3AF", bg: "#F4F5F6" },
 };
-
-async function nextBacklogId(projectId: string): Promise<string> {
-  const { data } = await supabase!
-    .from("backlog_items").select("id")
-    .eq("project_id", projectId)
-    .like("id", "B-%")
-    .order("id", { ascending: false }).limit(1).maybeSingle();
-  const next = (parseInt(data?.id?.slice(2) ?? "0", 10) || 0) + 1;
-  return `B-${String(next).padStart(3, "0")}`;
-}
 
 // フォルダ行のIDは "BF-001" 形式。項目の採番(like 'B-%')とは前方一致しないので衝突しない。
 async function nextBacklogFolderId(projectId: string): Promise<string> {
@@ -336,7 +331,7 @@ export function BacklogPage() {
     setProject(mapProject(p));
 
     const [{ data: itemRows }, { data: sprintRows }, { data: catRows }, { data: permData }] = await Promise.all([
-      supabase!.from("backlog_items").select("*").eq("project_id", p.id).order("rank"),
+      supabase!.from("backlog_items").select("*").eq("project_id", p.id).order("rank").order("id", { ascending: true }),
       supabase!.from("sprints").select("id, project_id, name, goal, status, start_date, end_date, identifier").eq("project_id", p.id),
       supabase!.from("ticket_categories").select("*").eq("project_id", p.id).order("name"),
       isAdminRole ? Promise.resolve({ data: null }) :
@@ -393,6 +388,7 @@ export function BacklogPage() {
     && selectedItem.status !== "converted" && selectedItem.status !== "archived";
 
   const itemById = useMemo(() => new Map(items.map(i => [i.id, i])), [items]);
+  const selectedParentItem = selectedItem?.parentItemId ? itemById.get(selectedItem.parentItemId) ?? null : null;
   const itemCount = useMemo(() => items.filter(i => !i.isFolder).length, [items]);
 
   // ツリー用の並び。各階層で「フォルダ → 未完了 → 完了/アーカイブ」の順、同種内は rank 昇順。
@@ -405,7 +401,21 @@ export function BacklogPage() {
       return doneRank(a) - doneRank(b) || a.rank - b.rank;
     });
   }, [items]);
-  const tree = useMemo(() => buildDocTree(orderedItems), [orderedItems]);
+  // 子の項目（parentItemId）は親の項目の下に1段下げて並べる（BRU24-001）。
+  // 親が見つからない／親がフォルダ・子の項目になっている壊れたデータは、フォルダ直下の単独項目として出す。
+  const treeItems = useMemo(() => orderedItems.map(i => {
+    if (!i.parentItemId || i.isFolder) return i;
+    const parent = itemById.get(i.parentItemId);
+    return parent && !parent.isFolder && !parent.parentItemId ? { ...i, parentId: parent.id } : i;
+  }), [orderedItems, itemById]);
+  const tree = useMemo(() => buildDocTree(treeItems), [treeItems]);
+  const selectedChildItems = useMemo(
+    () => selectedItem && !selectedItem.isFolder ? orderedItems.filter(i => !i.isFolder && i.parentItemId === selectedItem.id) : [],
+    [selectedItem, orderedItems]);
+
+  // 親の項目ごとの子の項目（rank 昇順）
+  const childItemsOf = useCallback((parentItemId: string) =>
+    orderedItems.filter(i => !i.isFolder && i.parentItemId === parentItemId), [orderedItems]);
 
   // パンくず用：選択中の祖先フォルダ一覧
   const ancestors = useMemo(() => {
@@ -517,6 +527,60 @@ export function BacklogPage() {
     return ""; // インライン挿入を抑制
   }, [selectedId, handleImagesChange]);
 
+  // ── 添付ファイル（BRU24-001。backlog_attachments） ─────────────────────
+  const [attachments, setAttachments] = useState<BacklogAttachment[]>([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const uploadingAttachmentRef = useRef(false);
+  // 読み込み中に別の項目へ切り替わったら、前の項目の結果で上書きしない
+  const attachmentsForRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const itemId = selectedItem && !selectedItem.isFolder ? selectedItem.id : null;
+    attachmentsForRef.current = itemId;
+    setAttachments([]);
+    if (!itemId || !project) return;
+    void fetchBacklogAttachments(project.id, itemId).then(list => {
+      if (attachmentsForRef.current === itemId) setAttachments(list);
+    });
+  }, [selectedItem?.id, selectedItem?.isFolder, project?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const addBacklogFiles = useCallback(async (files: File[]) => {
+    if (!project || !selectedId || files.length === 0) return;
+    if (uploadingAttachmentRef.current) return;
+    uploadingAttachmentRef.current = true;
+    setUploadingAttachment(true);
+    const itemId = selectedId;
+    try {
+      for (const f of files) {
+        try {
+          const created = await uploadBacklogAttachment(project.id, itemId, f, userName);
+          if (attachmentsForRef.current === itemId) {
+            setAttachments(prev => prev.some(a => a.id === created.id) ? prev : [...prev, created]);
+          }
+        } catch (e) {
+          console.error("[BacklogPage] 添付のアップロードに失敗:", e);
+          toast(e instanceof Error ? e.message : "アップロードに失敗しました", "error");
+        }
+      }
+    } finally {
+      uploadingAttachmentRef.current = false;
+      setUploadingAttachment(false);
+    }
+  }, [project, selectedId, userName, toast]);
+
+  const removeBacklogFile = useCallback(async (id: string) => {
+    const target = attachments.find(a => a.id === id);
+    if (!target) return;
+    setAttachments(prev => prev.filter(a => a.id !== id));
+    try {
+      await deleteBacklogAttachment(target);
+    } catch (e) {
+      console.error("[BacklogPage] 添付の削除に失敗:", e);
+      toast("添付ファイルの削除に失敗しました", "error");
+      setAttachments(prev => [...prev, target].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+    }
+  }, [attachments, toast]);
+
   // 検索中はフォルダ階層をたたんで、一致した項目だけを平らに並べる（Wikiと同仕様）
   const searchMatched = useMemo(() => {
     const q = sidebarSearch.trim().toLowerCase();
@@ -525,12 +589,15 @@ export function BacklogPage() {
       && (i.title.toLowerCase().includes(q) || (i.description ?? "").toLowerCase().includes(q)));
   }, [orderedItems, sidebarSearch]);
 
-  const handleAddItem = async (parentId: string | null = null) => {
+  // parentItem を渡すと、その項目の子の項目として作る（フォルダは親と同じにする）
+  const handleAddItem = async (parentId: string | null = null, parentItem: BacklogItem | null = null) => {
     if (!project) return;
-    const id = await nextBacklogId(project.id);
+    const [id] = await reserveBacklogIds(project.id, 1);
     const { error } = await supabase!.from("backlog_items").insert({
-      id, project_id: project.id, parent_id: parentId,
-      title: "新規バックログ項目", description: "", priority: "medium",
+      id, project_id: project.id,
+      parent_id: parentItem ? parentItem.parentId : parentId,
+      parent_item_id: parentItem?.id ?? null,
+      title: parentItem ? "新規子項目" : "新規バックログ項目", description: "", priority: "medium",
       assignee: "", estimated_hours: 0, status: "open", rank: Date.now(), created_by: userName || null,
     });
     if (error) { toast("作成に失敗しました", "error"); return; }
@@ -581,14 +648,23 @@ export function BacklogPage() {
     if (!project || draggedId === targetParentId) return;
     const dragged = items.find(i => i.id === draggedId);
     if (!dragged || (dragged.parentId ?? null) === targetParentId) return;
+    // 移動先は必ずフォルダ（またはルート）。項目の上へのドロップは並べ替え側で受ける
+    if (targetParentId && !items.find(i => i.id === targetParentId)?.isFolder) return;
+    // 子の項目は親と同じフォルダに置く。単独では動かさない（BRU24-001）
+    if (dragged.parentItemId && items.some(i => i.id === dragged.parentItemId)) {
+      toast("子の項目は親の項目と一緒に移動します。親の項目を移動してください", "error");
+      return;
+    }
     if (isCyclicMove(items, draggedId, targetParentId)) {
       toast("フォルダを自身の子孫フォルダ配下に移動することはできません", "error");
       return;
     }
-    setItems(prev => prev.map(i => i.id === draggedId ? { ...i, parentId: targetParentId } : i));
+    // 親の項目を動かすときは子の項目も同じフォルダへ
+    const movingIds = [draggedId, ...(dragged.isFolder ? [] : items.filter(i => i.parentItemId === draggedId).map(i => i.id))];
+    setItems(prev => prev.map(i => movingIds.includes(i.id) ? { ...i, parentId: targetParentId } : i));
     const { error } = await supabase!.from("backlog_items")
       .update({ parent_id: targetParentId, updated_at: new Date().toISOString() })
-      .eq("id", draggedId).eq("project_id", project.id);
+      .in("id", movingIds).eq("project_id", project.id);
     if (error) {
       console.error("[BacklogPage] move error:", error);
       toast("移動に失敗しました", "error");
@@ -604,9 +680,15 @@ export function BacklogPage() {
     const from = items.find(i => i.id === fromId);
     const to = items.find(i => i.id === toId);
     if (!from || !to || from.isFolder) return;
+    // 親子の段をまたぐ並べ替えはしない（子は同じ親の子どうし、親は親どうしでだけ並べ替える）
+    if ((from.parentItemId ?? null) !== (to.parentItemId ?? null)) return;
     const targetParentId = to.parentId ?? null;
+    // 親の項目をフォルダをまたいで動かすときは、子の項目も同じフォルダへ付いていく
+    const followerIds = from.parentItemId || (from.parentId ?? null) === targetParentId
+      ? [] : items.filter(i => i.parentItemId === fromId).map(i => i.id);
     const siblings = items
-      .filter(i => !i.isFolder && (i.parentId ?? null) === targetParentId && i.id !== fromId)
+      .filter(i => !i.isFolder && (i.parentId ?? null) === targetParentId && i.id !== fromId
+        && (i.parentItemId ?? null) === (from.parentItemId ?? null))
       .sort((a, b) => a.rank - b.rank);
     const toIdx = siblings.findIndex(i => i.id === toId);
     if (toIdx === -1) return;
@@ -614,15 +696,20 @@ export function BacklogPage() {
     reordered.splice(toIdx, 0, from);
     const newRanks = reordered.map((item, idx) => ({ id: item.id, rank: (idx + 1) * 1000 }));
     setItems(prev => prev.map(i => {
+      if (followerIds.includes(i.id)) return { ...i, parentId: targetParentId };
       const r = newRanks.find(u => u.id === i.id);
       if (!r) return i;
       return i.id === fromId ? { ...i, rank: r.rank, parentId: targetParentId } : { ...i, rank: r.rank };
     }));
-    await Promise.all(newRanks.map(({ id, rank }) =>
-      supabase!.from("backlog_items")
-        .update(id === fromId ? { rank, parent_id: targetParentId } : { rank })
-        .eq("id", id).eq("project_id", project.id)
-    ));
+    await Promise.all([
+      ...newRanks.map(({ id, rank }) =>
+        supabase!.from("backlog_items")
+          .update(id === fromId ? { rank, parent_id: targetParentId } : { rank })
+          .eq("id", id).eq("project_id", project.id)),
+      ...(followerIds.length > 0
+        ? [supabase!.from("backlog_items").update({ parent_id: targetParentId }).in("id", followerIds).eq("project_id", project.id)]
+        : []),
+    ]);
   }, [items, project]);
 
   const copyShareLink = useCopyShareLink(projectSlug ?? project?.slug);
@@ -639,7 +726,14 @@ export function BacklogPage() {
       for (const child of items.filter(i => i.parentId === id)) collectIds(child.id, acc);
       return acc;
     };
-    const targetIds = item.isFolder ? collectIds(item.id, []) : [item.id];
+    // 親の項目を消すときは子の項目も一緒に消す（parent_item_id にも FK が無いため）
+    const baseIds = item.isFolder ? collectIds(item.id, []) : [item.id];
+    const targetIds = Array.from(new Set([
+      ...baseIds,
+      ...items.filter(i => i.parentItemId && baseIds.includes(i.parentItemId)).map(i => i.id),
+    ]));
+    // 添付は行に FK が無いので、項目より先に行と実体を消す
+    await purgeBacklogAttachments(project.id, targetIds.filter(id => !itemById.get(id)?.isFolder));
     const { error } = await supabase!.from("backlog_items")
       .delete().in("id", targetIds).eq("project_id", project.id);
     if (error) {
@@ -836,6 +930,17 @@ export function BacklogPage() {
                     ))}
                   </div>
                 )}
+                {selectedParentItem && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#9E9690", marginBottom: 8 }}>
+                    <CornerDownRight style={{ width: 11, height: 11 }} />
+                    <span>親：</span>
+                    <button type="button" onClick={() => gotoItem(selectedParentItem.id)} title={`${selectedParentItem.id} を開く`}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: 0, background: "none", border: "none", cursor: "pointer", color: "#059669", fontWeight: 600, fontSize: 11, minWidth: 0 }}>
+                      <span style={{ fontFamily: "var(--font-mono)" }}>{selectedParentItem.id}</span>
+                      <TruncatedText text={selectedParentItem.title || "無題"} style={{ maxWidth: 360 }} />
+                    </button>
+                  </div>
+                )}
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
                   <input
                     value={editTitle}
@@ -927,6 +1032,31 @@ export function BacklogPage() {
                       style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 12, border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 9, outline: "none", fontFamily: "inherit" }} />
                   </div>
                 </div>
+
+                {/* 子の項目（親子は1段まで。子の詳細には出さない） */}
+                {!selectedItem.parentItemId && (selectedChildItems.length > 0 || (canEdit && canCreate)) && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                      <p style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", margin: 0 }}>子の項目（{selectedChildItems.length}）</p>
+                      {canEdit && canCreate && (
+                        <button type="button" onClick={() => handleAddItem(null, selectedItem)}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 7, cursor: "pointer" }}>
+                          <Plus style={{ width: 11, height: 11 }} />子の項目を追加
+                        </button>
+                      )}
+                    </div>
+                    {selectedChildItems.length > 0 && (
+                      <div style={{ maxHeight: 132, overflowY: "auto", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 9 }}>
+                        {selectedChildItems.map(child => (
+                          <div key={child.id} onClick={() => gotoItem(child.id)}
+                            style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", cursor: "pointer", borderBottom: "1px solid rgba(26,23,20,0.05)" }}>
+                            <BacklogRowContent item={child} isSelected={false} projectSlug={projectSlug ?? project?.slug ?? ""} />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* エディター + 画像添付（エディター内部でスクロール） */}
@@ -960,6 +1090,20 @@ export function BacklogPage() {
                     maxImages={plan.maxImagesPerItem}
                   />
                 </div>
+                {/* 添付ファイル（画像以外）。閲覧のみの人にも一覧とDLは見せる */}
+                {(itemCanEdit || attachments.length > 0) && (
+                  <div style={{ marginTop: 12, flexShrink: 0 }}>
+                    <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>添付ファイル</p>
+                    <FileAttachments
+                      items={attachments.map(a => ({ id: a.id, fileName: a.fileName, fileSize: a.fileSize, url: a.fileUrl }))}
+                      onAdd={files => { void addBacklogFiles(files); }}
+                      onRemove={id => { void removeBacklogFile(id); }}
+                      onDownload={id => { const a = attachments.find(x => x.id === id); if (a) void downloadTicketAttachment(a); }}
+                      readOnly={!itemCanEdit}
+                      uploading={uploadingAttachment}
+                    />
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -976,7 +1120,9 @@ export function BacklogPage() {
           title={deleteTarget.isFolder ? "フォルダの削除" : "バックログ項目の削除"}
           message={deleteTarget.isFolder
             ? `「${deleteTarget.title || "無題のフォルダ"}」を削除します。フォルダ内の項目も一緒に削除されます。`
-            : `${deleteTarget.id}「${deleteTarget.title}」を削除します。`}
+            : `${deleteTarget.id}「${deleteTarget.title}」を削除します。`
+              + (childItemsOf(deleteTarget.id).length > 0
+                ? `\n（子の項目 ${childItemsOf(deleteTarget.id).length}件 も一緒に削除されます）` : "")}
           onConfirm={() => handleDelete(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
       )}
