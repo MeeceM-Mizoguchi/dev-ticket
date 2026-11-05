@@ -6,12 +6,13 @@
 //      いいえ → 「親チケットからバックログへ登録してください」と出して何もしない
 //   3. 件数を出して確認（実績工数・PRがあれば強めに警告）→ 実行
 //      件数の下で戻す先のフォルダ（直下＋全階層）を選べる。その場でフォルダも作れる（BRU24-003）
-//   4. 「B-012 としてバックログへ移動しました」とリンク付きで出す
+//      実行中は本文を段階つきの進捗に切り替え、一覧の読み直し（onMoved）が終わるまで出し続ける（BRU24-004）
+//   4. 「B-012 としてバックログへ移動しました」とリンク付きで出す（一覧からチケットが消えてから）
 // 実行とフォルダの作成は ref でガードする（BUG-05）。
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { AlertTriangle, ClipboardList, Folder, Plus } from "lucide-react";
+import { AlertTriangle, Check, ClipboardList, Folder, Plus } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
@@ -24,10 +25,38 @@ import { createBacklogFolder } from "@/app/lib/backlogItems";
 import { submitOnEnter } from "@/app/lib/submitKey";
 import {
   summarizeMoveToBacklog, moveTicketsToBacklog,
-  type MoveToBacklogSummary, type MovedBacklogItem,
+  type MoveToBacklogSummary, type MovedBacklogItem, type MoveToBacklogStep,
 } from "@/app/lib/bulkTicketOps";
 
 type Phase = "loading" | "orphan" | "orphan-declined" | "confirm" | "running" | "done" | "error";
+
+// 実行中に出す段階。最後の「スプリント一覧を更新」は onMoved（一覧の読み直し）を待つ間
+const RUN_STEPS = ["バックログ項目を作成", "添付ファイルを移動", "スプリントから外す", "スプリント一覧を更新"];
+// moveTicketsToBacklog から知らされた「終わった段階」→ 次に進む段階の番号
+const NEXT_STEP: Record<MoveToBacklogStep, number> = { items: 1, attachments: 2, detach: 3 };
+
+/** 白い背景で見える緑のスピナー（BtnSpinner はボタン用の白） */
+function ProgressSpinner() {
+  return (
+    <span style={{ display: "inline-block", width: 14, height: 14, flexShrink: 0, boxSizing: "border-box", border: "2px solid rgba(5,150,105,0.25)", borderTopColor: "#059669", borderRadius: "50%", animation: "pageloader-spin 0.75s linear infinite" }}>
+      <style>{`@keyframes pageloader-spin { to { transform: rotate(360deg); } }`}</style>
+    </span>
+  );
+}
+
+/** 進捗の1行（スピナー／チェック／点 ＋ 文言）。開いた直後の確認中と実行中で同じ大きさにそろえる */
+function ProgressRow({ state, label }: { state: "done" | "current" | "todo"; label: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0", fontSize: 13, lineHeight: 1.5, color: state === "todo" ? "#9E9690" : "#1A1714", fontWeight: state === "current" ? 700 : 500 }}>
+      <span style={{ width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        {state === "done" && <Check style={{ width: 16, height: 16, color: "#059669" }} />}
+        {state === "current" && <ProgressSpinner />}
+        {state === "todo" && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#D6D1CB" }} />}
+      </span>
+      <span>{label}</span>
+    </div>
+  );
+}
 
 /** 戻す先の候補になるバックログのフォルダ一覧。BUG-01 対策で rank + id の安定ソート */
 async function fetchBacklogFolders(projectId: string): Promise<DocTreeItem[]> {
@@ -58,6 +87,8 @@ export function MoveToBacklogDialog({
   const [detach, setDetach] = useState(false);
   const [moved, setMoved] = useState<MovedBacklogItem[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
+  // 実行中の段階（RUN_STEPS の番号）
+  const [stepIdx, setStepIdx] = useState(0);
   const runningRef = useRef(false);
   // 戻す先（null = バックログの直下）
   const [folders, setFolders] = useState<DocTreeItem[]>([]);
@@ -95,14 +126,24 @@ export function MoveToBacklogDialog({
   const run = async () => {
     if (runningRef.current) return;
     runningRef.current = true;
+    setStepIdx(0);
     setPhase("running");
     try {
-      const result = await moveTicketsToBacklog({ ticketIds, projectId, movedBy: userName, detachOrphans: detach, folderId: targetFolderId });
+      const result = await moveTicketsToBacklog({
+        ticketIds, projectId, movedBy: userName, detachOrphans: detach, folderId: targetFolderId,
+        onProgress: done => setStepIdx(NEXT_STEP[done]),
+      });
       setMoved(result);
       emitLinkItemsChanged(projectId, "backlog");
       emitLinkItemsChanged(projectId, "ticket");
+      // 一覧からチケットが消えるまで進捗を出し続け、そのあとで完了にする（BRU24-004）
+      setStepIdx(RUN_STEPS.length - 1);
+      try {
+        await onMoved?.();
+      } catch {
+        // 移動そのものは終わっている。一覧は60秒ごとの定期更新で直るので、完了へ進む
+      }
       setPhase("done");
-      await onMoved?.();
     } catch (e) {
       setErrorMessage(String(e instanceof Error ? e.message : e));
       setPhase("error");
@@ -155,7 +196,7 @@ export function MoveToBacklogDialog({
     return (
       <DialogShell title="バックログへ戻す" onClose={onClose} size="sm"
         footer={<BtnSecondary onClick={onClose}>キャンセル</BtnSecondary>}>
-        <p style={{ ...textStyle, display: "flex", alignItems: "center", gap: 8, color: "#6B6458" }}><BtnSpinner />移すものを確認しています...</p>
+        <ProgressRow state="current" label="移すチケットを確認しています..." />
       </DialogShell>
     );
   }
@@ -207,6 +248,14 @@ export function MoveToBacklogDialog({
             {busy && <BtnSpinner />}{busy ? "移動中..." : "バックログへ戻す"}
           </button>
         </>}>
+        {busy ? (
+          // 実行中は確認の文の代わりに段階つきの進捗を出す（BRU24-004）
+          <div>
+            {RUN_STEPS.map((label, i) => (
+              <ProgressRow key={label} label={label} state={i < stepIdx ? "done" : i === stepIdx ? "current" : "todo"} />
+            ))}
+          </div>
+        ) : (<>
         <p style={textStyle}>
           チケットをバックログへ移し、スプリントから外します。移動前の状態とコメントはバックログの本文の末尾に書き残し、添付ファイルもバックログへ移します。
         </p>
@@ -262,6 +311,7 @@ export function MoveToBacklogDialog({
           {folderError && <p style={{ ...textStyle, fontSize: 12, color: "#DC2626", marginTop: 6 }}>{folderError}</p>}
         </div>
         <p style={{ ...textStyle, fontSize: 12, color: "#9E9690" }}>WBS画面・リリースノート・内部リンク（#）の候補からも消えます。この操作は取り消せません。</p>
+        </>)}
       </DialogShell>
     );
   }

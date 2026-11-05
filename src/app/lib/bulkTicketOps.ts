@@ -170,6 +170,9 @@ export interface MoveToBacklogSummary {
 
 export interface MovedBacklogItem { id: string; title: string; reused: boolean }
 
+/** moveTicketsToBacklog の終わった段階（items: バックログ項目の作成 / attachments: 添付の移動 / detach: スプリントから外す） */
+export type MoveToBacklogStep = "items" | "attachments" | "detach";
+
 const BACKLOG_STATUS_LABEL_CHILD_CLOSED = "対応完了";
 
 function escHtml(s: string): string {
@@ -287,6 +290,7 @@ function buildMoveHistoryHtml(row: Row, ctx: {
  * @param detachOrphans 親を選ばずに選ばれた子チケットを、親から独立した単独の項目として戻すか。
  *                      false のまま子だけが含まれていると Error を投げる（呼び出し側で確認してから true で呼ぶ）。
  * @param folderId 戻す先のバックログのフォルダ。null ならバックログの直下（BRU24-003）。
+ * @param onProgress 各段階（バックログ項目の作成・添付の移動・スプリントから外す）が終わるたびに呼ぶ（BRU24-004）。
  * 戻り値: 作成（または使い回し）した親（単独）の項目。先頭が完了表示のリンク先。
  */
 export async function moveTicketsToBacklog(params: {
@@ -295,8 +299,9 @@ export async function moveTicketsToBacklog(params: {
   movedBy: string;
   detachOrphans: boolean;
   folderId: string | null;
+  onProgress?: (done: MoveToBacklogStep) => void;
 }): Promise<MovedBacklogItem[]> {
-  const { ticketIds, projectId, movedBy, detachOrphans, folderId: targetFolderId } = params;
+  const { ticketIds, projectId, movedBy, detachOrphans, folderId: targetFolderId, onProgress } = params;
   if (!isSupabaseEnabled || ticketIds.length === 0 || !projectId) return [];
 
   const { parents, children, orphanRows } = await resolveMoveTargets(ticketIds);
@@ -407,6 +412,7 @@ export async function moveTicketsToBacklog(params: {
     const { error } = await supabase!.from("backlog_items").update(u.patch).eq("id", u.id).eq("project_id", projectId);
     if (error) throw new Error(`バックログ項目（${u.id}）の更新に失敗しました: ${error.message}`);
   }
+  onProgress?.("items");
 
   // 2) 添付の付け替え（行を写してからチケット側の行だけ消す。実体は動かさない）
   if ((attachmentRows ?? []).length > 0) {
@@ -420,6 +426,7 @@ export async function moveTicketsToBacklog(params: {
     const { error: delErr } = await supabase!.from("ticket_attachments").delete().in("ticket_id", allIds);
     if (delErr) throw new Error(`添付ファイルの付け替えに失敗しました（チケットは残っています）: ${delErr.message}`);
   }
+  onProgress?.("attachments");
 
   // 3) チケット削除（子 → 親）。関連行は単一削除と同じく先に掃除する
   await supabase!.from("ticket_comments").delete().in("ticket_id", allIds);
@@ -428,6 +435,7 @@ export async function moveTicketsToBacklog(params: {
   if (childIds.length > 0) await supabase!.from("sprint_tickets").delete().in("id", childIds);
   const parentOnlyIds = parents.map(r => r.id as string);
   if (parentOnlyIds.length > 0) await supabase!.from("sprint_tickets").delete().in("id", parentOnlyIds);
+  onProgress?.("detach");
 
   return results;
 }

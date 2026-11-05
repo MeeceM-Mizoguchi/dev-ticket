@@ -2298,7 +2298,23 @@ export function TicketDetailPanel({
     setSourceFiles(prev => prev.filter(f => f.id !== id));
   };
 
-  if (!ticket) return null;
+  // バックログへ戻すダイアログ。移したあとの一覧の読み直しでチケットが消え（ticket が null になっ）ても、
+  // 「移動しました」を出し続けるため、パネルの中身とは別に出す（BRU24-004）
+  const moveToBacklogDialog = moveToBacklogIds && projectId ? (
+    <MoveToBacklogDialog
+      ticketIds={moveToBacklogIds}
+      projectId={projectId}
+      projectSlug={projectSlug}
+      onMoved={() => { movedToBacklogRef.current = true; return onUpdated?.(); }}
+      onClose={() => {
+        setMoveToBacklogIds(null);
+        // 移動したチケットはもう無いので、パネルも閉じる
+        if (movedToBacklogRef.current) { onDeleted?.(); onClose(); }
+      }}
+    />
+  ) : null;
+
+  if (!ticket) return moveToBacklogDialog;
 
   const todayStr = new Date().toISOString().split("T")[0];
   const isOverdue = status !== "done" && status !== "closed" && status !== "waiting-release" && status !== "released" && !!dueDate && dueDate < todayStr;
@@ -2458,19 +2474,7 @@ export function TicketDetailPanel({
           onClose={() => setShowUndecidedConfirm(false)}
         />
       )}
-      {moveToBacklogIds && projectId && (
-        <MoveToBacklogDialog
-          ticketIds={moveToBacklogIds}
-          projectId={projectId}
-          projectSlug={projectSlug}
-          onMoved={() => { movedToBacklogRef.current = true; return onUpdated?.(); }}
-          onClose={() => {
-            setMoveToBacklogIds(null);
-            // 移動したチケットはもう無いので、パネルも閉じる
-            if (movedToBacklogRef.current) { onDeleted?.(); onClose(); }
-          }}
-        />
-      )}
+      {moveToBacklogDialog}
 
       {showMoveModal && (
         <DialogShell
