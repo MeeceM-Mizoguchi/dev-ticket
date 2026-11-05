@@ -48,16 +48,29 @@ export interface TicketPrLink {
   url: string;
 }
 
-async function fetchPrLinks(projectId: string | null | undefined, ticketIds: string[]): Promise<Map<string, TicketPrLink[]>> {
+/**
+ * チケットIDごとの紐付きPR（PR番号の昇順）。1回の select でまとめて読む。
+ * 一括操作の「PRのリンクをコピー」（BRU24-007）でも使う。
+ * 既定では取れなくても空の Map を返す（エクスポートはPR欄が空になるだけで成立させる）。
+ * throwOnError を付けると、取得の失敗を例外にする（失敗と「PRが無い」を区別したいとき）。
+ */
+export async function fetchPrLinks(
+  projectId: string | null | undefined,
+  ticketIds: string[],
+  options?: { throwOnError?: boolean },
+): Promise<Map<string, TicketPrLink[]>> {
   const byTicket = new Map<string, TicketPrLink[]>();
-  if (!isSupabaseEnabled || !projectId || ticketIds.length === 0) return byTicket;
-  // 取れなくてもエクスポート自体は成立させる（PR欄が空になるだけ）
+  if (!isSupabaseEnabled || !projectId || ticketIds.length === 0) {
+    if (options?.throwOnError && ticketIds.length > 0) throw new Error("PRの情報を取得できませんでした。");
+    return byTicket;
+  }
   const { data, error } = await supabase!
     .from("ticket_github_links")
     .select("ticket_id, number, title, url")
     .eq("project_id", projectId)
     .eq("kind", "pull")
     .in("ticket_id", ticketIds);
+  if (options?.throwOnError && error) throw new Error(error.message);
   if (error || !data) return byTicket;
   for (const r of data as { ticket_id: string; number: number; title: string | null; url: string | null }[]) {
     const arr = byTicket.get(r.ticket_id) ?? [];
