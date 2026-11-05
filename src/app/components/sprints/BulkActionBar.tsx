@@ -20,7 +20,7 @@ const EXPORT_FORMATS: TicketExportFormat[] = ["csv", "docx", "md"];
 export const BULK_ACTION_BAR_CLEARANCE = 96;
 
 export function BulkActionBar({
-  count, onDelete, onMove, onMoveToBacklog, onAssign, onCopyLinks, onPrWaive, onAiImplement, onExport, exportEnabled = true, onClear, disabled,
+  count, onDelete, onMove, onMoveToBacklog, onAssign, onCopyLinks, onCopyPrLinks, onPrWaive, onAiImplement, onExport, exportEnabled = true, onClear, disabled,
 }: {
   count: number;
   onDelete: () => void;
@@ -29,6 +29,8 @@ export function BulkActionBar({
   onMoveToBacklog?: () => void;
   onAssign: () => void;
   onCopyLinks: () => void;
+  /** 選んだチケットに紐づくPRのリンクをまとめてコピーする（BRU24-007）。未指定ならボタンを出さない */
+  onCopyPrLinks?: () => void;
   /** 選んだチケットを「PR不要」にする（true）／外す（false）。未指定ならボタンを出さない */
   onPrWaive?: (waived: boolean) => void;
   /** 選んだチケットを「AIで実装」する手順書の画面を開く。未指定ならボタンを出さない */
@@ -119,6 +121,16 @@ export function BulkActionBar({
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.10)"; }}>
         <Link2 style={{ width: 14, height: 14 }} />リンクをコピー
       </button>
+
+      {onCopyPrLinks && (
+        <button type="button" disabled={disabled} onClick={onCopyPrLinks}
+          title="選んだチケットに紐づくプルリクエストのリンクをまとめてコピー"
+          style={{ ...btnBase, background: "rgba(255,255,255,0.10)", color: "#F3F4F6", border: "1px solid rgba(255,255,255,0.16)" }}
+          onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.18)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.10)"; }}>
+          <GitPullRequest style={{ width: 14, height: 14 }} />PRのリンクをコピー
+        </button>
+      )}
 
       {onPrWaive && (
         <div ref={waiveRef} style={{ position: "relative", flexShrink: 0 }}>

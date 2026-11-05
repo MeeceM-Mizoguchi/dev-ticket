@@ -1,7 +1,7 @@
 // BRU6-002 一括操作の共通ロジック
 //
 // チケットの複数選択と、それに対する一括アクション（自動アサイン / スプリント移動 /
-// リンクコピー / PR不要 / AIで実装 / エクスポート / 削除）をまとめたフック。もともと SprintListView にだけ実装されていたが、
+// リンクコピー / PRのリンクコピー / PR不要 / AIで実装 / エクスポート / 削除）をまとめたフック。もともと SprintListView にだけ実装されていたが、
 // スプリント詳細のチケット一覧でも同じ機能を使うため共通化した。
 // 選択状態・確認ダイアログ・進捗モーダルはすべてこのフックが持ち、呼び出し側は
 // 返り値の ui を描画してチェックボックスを置くだけでよい。
@@ -19,7 +19,7 @@ import { BulkActionBar, BULK_ACTION_BAR_CLEARANCE } from "@/app/components/sprin
 import { BulkAssignProgress, type BulkAssignPhase } from "@/app/components/sprints/BulkAssignProgress";
 import { MoveToSprintDialog } from "@/app/components/sprints/MoveToSprintDialog";
 import { bulkDeleteTickets, bulkMoveTickets } from "@/app/lib/bulkTicketOps";
-import { exportTicketList, type TicketExportFormat } from "@/app/lib/ticketExport";
+import { exportTicketList, fetchPrLinks, type TicketExportFormat } from "@/app/lib/ticketExport";
 import { fetchSkills, fetchBulkRecommendations, logRecommendationAccepted } from "@/app/lib/skillsApi";
 import { detectSkillKeywords, ticketSearchText } from "@/app/lib/skills";
 import { fireSlackNotify, slackTicketLink } from "@/app/utils/slackNotify";
@@ -93,6 +93,9 @@ export function useBulkTicketActions({
   // PR不要の書き換え中もバーを押せなくする。state は表示用、二重実行は ref で止める（BUG-05）
   const [waiving, setWaiving] = useState(false);
   const waivingRef = useRef(false);
+  // PRのリンクの取得中もバーを押せなくする。二重実行は ref で止める（BUG-05）
+  const [copyingPrs, setCopyingPrs] = useState(false);
+  const copyingPrsRef = useRef(false);
 
   // 「PR不要」はチケット詳細のチェックボックスと同じ人だけに出す
   //（リポジトリが紐づいていて、GitHub 権限のマージが「書き込み」）
@@ -137,6 +140,48 @@ export function useBulkTicketActions({
       setSuccessMessage(`${targets.length}件のチケットのリンクをコピーしました。`);
     } else {
       showAlert("リンクのコピーに失敗しました。", "エラー");
+    }
+  };
+
+  // BRU24-007 選んだチケットに紐づくPRのURLを1行1件でコピーする。
+  // 並びは画面の一覧の順（order が無ければ tickets の順）、同じチケットの中はPR番号の昇順。
+  // 選んだチケットだけが対象（親を選んでも、選んでいない子のPRは含めない）。
+  // ticket_github_links を1回だけまとめて読む（チケットごとに API を呼ばない）
+  const runBulkCopyPrLinks = async () => {
+    if (copyingPrsRef.current) return;
+    const source = exportOptions?.order ?? tickets;
+    const seen = new Set<string>();
+    const targets = source.filter(t => selectedIds.has(t.id) && !seen.has(t.id) && (seen.add(t.id), true));
+    if (targets.length === 0) return;
+    copyingPrsRef.current = true;
+    setCopyingPrs(true);
+    try {
+      const prs = await fetchPrLinks(projectId, targets.map(t => t.id), { throwOnError: true });
+      // 同じPRが複数のチケットに紐づいていても1回だけ出す。URL が空の行は外す
+      const urls: string[] = [];
+      const seenUrl = new Set<string>();
+      for (const t of targets) {
+        for (const pr of prs.get(t.id) ?? []) {
+          const url = pr.url.trim();
+          if (!url || seenUrl.has(url)) continue;
+          seenUrl.add(url);
+          urls.push(url);
+        }
+      }
+      if (urls.length === 0) {
+        showAlert("選んだチケットに紐づいているPRがありません。", "お知らせ");
+        return;
+      }
+      if (await copyText(urls.join("\n"))) {
+        setSuccessMessage(`${urls.length}件のPRのリンクをコピーしました。`);
+      } else {
+        showAlert("PRのリンクのコピーに失敗しました。", "エラー");
+      }
+    } catch (e) {
+      showAlert("PRのリンクのコピーに失敗しました。\n\n" + String(e), "エラー");
+    } finally {
+      copyingPrsRef.current = false;
+      setCopyingPrs(false);
     }
   };
 
@@ -374,13 +419,14 @@ export function useBulkTicketActions({
 
       <BulkActionBar
         count={selectedIds.size}
-        disabled={!!assignState || exporting || waiving}
+        disabled={!!assignState || exporting || waiving || copyingPrs}
         onAssign={runBulkAssign}
         onMove={async () => { await onBeforeMove?.(); setBulkAction("move"); }}
         onMoveToBacklog={projectId && isSupabaseEnabled
           ? () => { movedToBacklogRef.current = false; setMoveToBacklogIds(Array.from(selectedIds)); }
           : undefined}
         onCopyLinks={runBulkCopyLinks}
+        onCopyPrLinks={projectId && isSupabaseEnabled ? (() => void runBulkCopyPrLinks()) : undefined}
         onPrWaive={canWaivePrLink && isSupabaseEnabled ? (waived => void runBulkPrWaive(waived)) : undefined}
         onAiImplement={aiImplement && projectId && isSupabaseEnabled ? openBulkAiImplement : undefined}
         onExport={exportOptions ? runBulkExport : undefined}
