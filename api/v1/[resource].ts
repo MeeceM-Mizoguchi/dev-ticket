@@ -158,12 +158,50 @@ function safeHref(href: string): string | null {
 
 // コード（`…`）を一時退避するときの目印。本文に絶対に現れない NUL を使う。
 const CODE_MARK = "\u0000";
+// そのままの URL から作ったリンクを一時退避する目印。URL の中の * ~ を太字・打消しと読まないため
+const URL_MARK = "\u0001";
+
+// そのままの URL（エスケープ済みの文字列の上で探す）。URL に使える半角の文字だけを拾うので、
+// 日本語・全角の文字（「）」「。」など）でそこで切れる。& は &amp; の形のときだけ含める（&quot; などで切る）
+const BARE_URL_RE = /(?<![A-Za-z0-9])https?:\/\/(?:&amp;|[A-Za-z0-9\-._~:/?#[\]@!$'()*+,;=%])+/g;
+
+/** URL の末尾の句読点・閉じかっこを外す。かっこは URL の中で閉じていないものだけ外す */
+function trimUrlTail(url: string): string {
+  let u = url;
+  for (;;) {
+    const last = u.slice(-1);
+    if (/[.,;:!?'*~]/.test(last)) { u = u.slice(0, -1); continue; }
+    if (last === ")" && (u.split("(").length < u.split(")").length)) { u = u.slice(0, -1); continue; }
+    if (last === "]" && (u.split("[").length < u.split("]").length)) { u = u.slice(0, -1); continue; }
+    return u;
+  }
+}
+
+/**
+ * そのままの URL を <a href="URL">URL</a> に変える（BRU24-005）。
+ * 画面は文字と href が同じリンクだけを関連チケットのラベルにするので、文字は URL のまま変えない。
+ * すでに <a> の中にあるものは触らない。作ったリンクは URL_MARK で退避して links に入れる。
+ */
+function linkBareUrls(s: string, links: string[]): string {
+  return s.split(/(<a\b[^>]*>[\s\S]*?<\/a>)/).map((part, i) => {
+    if (i % 2 === 1) return part;
+    return part.replace(BARE_URL_RE, (m: string) => {
+      const url = trimUrlTail(m);
+      const rest = m.slice(url.length);
+      if (!/^https?:\/\/[^/?#]/i.test(url)) return m;
+      const h = safeHref(url.replace(/&amp;/g, "&"));
+      if (!h) return m;
+      links.push(`<a href="${esc(h)}">${url}</a>`);
+      return `${URL_MARK}${links.length - 1}${URL_MARK}${rest}`;
+    });
+  }).join("");
+}
 
 /** インライン装飾を HTML へ。エスケープはこの中で行う。 */
 function inlineToHtml(text: string): string {
   // 先にコード（`...`）を退避しておく。中身は装飾解釈をしない。
   const codes: string[] = [];
-  let s = text.split(CODE_MARK).join("").replace(/`([^`]+)`/g, (_m, code: string) => {
+  let s = text.split(CODE_MARK).join("").split(URL_MARK).join("").replace(/`([^`]+)`/g, (_m, code: string) => {
     codes.push(`<code>${esc(code)}</code>`);
     return `${CODE_MARK}${codes.length - 1}${CODE_MARK}`;
   });
@@ -173,10 +211,14 @@ function inlineToHtml(text: string): string {
     const h = safeHref(href.replace(/&amp;/g, "&"));
     return h ? `<a href="${esc(h)}">${label}</a>` : label;
   });
+  // [文字](URL) の変換のあと。そのままの URL もリンクにする（コードは退避済みなので変わらない）
+  const links: string[] = [];
+  s = linkBareUrls(s, links);
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
   s = s.replace(/~~([^~]+)~~/g, "<s>$1</s>");
 
+  s = s.replace(new RegExp(URL_MARK + "(\\d+)" + URL_MARK, "g"), (_m, i: string) => links[Number(i)] ?? "");
   return s.replace(new RegExp(CODE_MARK + "(\\d+)" + CODE_MARK, "g"), (_m, i: string) => codes[Number(i)] ?? "");
 }
 
@@ -687,7 +729,8 @@ export function htmlToText(html: string): { text: string; images: string[] } {
     const href = attrOf(attrs, "href");
     const text = label.replace(/<[^>]+>/g, "").trim();
     if (!href) return text;
-    if (!text || text === href) return href;
+    // 文字はエスケープされたまま（&amp; など）なので、戻してから href と比べる。比べないと URL が二重になる（BRU24-005）
+    if (!text || decodeEntities(text) === href) return href;
     return `[${text}](${href})`;
   });
 
