@@ -18,9 +18,9 @@ export function isWbsDefaultStatusName(name: string): boolean {
   return (WBS_DEFAULT_STATUS_NAMES as readonly string[]).includes(name);
 }
 
-/** 遅延として扱わないステータスか（取下） */
+/** 遅延として扱わないステータスか（取下・保留。BRU24-006 で保留を追加） */
 export function isWbsDelayExemptStatus(name: string): boolean {
-  return name === "取下";
+  return name === "取下" || name === "保留";
 }
 
 // ── 日付 ──────────────────────────────────────────────────────
@@ -85,22 +85,27 @@ export interface WbsRow {
    * 一番右の段の行すべての平均（中項目の平均の平均にはしない）。下に行が無ければ null（「—」）。
    */
   progress: number | null;
-  /** 終了予定日を過ぎていて進捗率が100%でない。取下の行（見出し行は配下の一番右の段がすべて取下）は除く */
+  /** 終了予定日を過ぎていて進捗率が100%でない。取下・保留の行（見出し行は配下の一番右の段がすべて取下か保留）は除く */
   delayed: boolean;
-  /** 取下の行か。見出し行は、配下に一番右の段の行が1つ以上あり、すべて取下のとき true */
+  /**
+   * 取下の行か。見出し行は、配下に一番右の段の行が1つ以上あり、すべて取下のとき true。
+   * お知らせの「着手していない作業」から取下を外すのにも使うので、保留は混ぜない（BRU24-006）
+   */
   withdrawn: boolean;
 }
 
 /**
  * 行を親と段の情報から木の形に組み立て、上から順に並べる。
  * levels はそのWBSの段数（1〜3）。一番右の段＝ level === levels の行。
- * statuses はそのWBSのステータス（並び順）。取下の行を遅延から外すのに使う。
+ * statuses はそのWBSのステータス（並び順）。取下・保留の行を遅延から外すのに使う。
  * ステータスを選んでいない行は、表の表示と同じく先頭のステータスとして扱う。
  */
 export function buildWbsRows(items: WbsItem[], levels: number, today: string, statuses: WbsStatus[]): WbsRow[] {
   const nameOf = new Map(statuses.map(s => [s.id, s.name]));
   const fallback = statuses[0]?.name ?? "";
-  const isWithdrawn = (it: WbsItem) => isWbsDelayExemptStatus((it.statusId && nameOf.get(it.statusId)) || fallback);
+  const statusName = (it: WbsItem) => (it.statusId && nameOf.get(it.statusId)) || fallback;
+  const isWithdrawn = (it: WbsItem) => statusName(it) === "取下";
+  const isDelayExempt = (it: WbsItem) => isWbsDelayExemptStatus(statusName(it));
   const byParent = new Map<string | null, WbsItem[]>();
   const ids = new Set(items.map(i => i.id));
   for (const it of items) {
@@ -116,8 +121,9 @@ export function buildWbsRows(items: WbsItem[], levels: number, today: string, st
   const rows: WbsRow[] = [];
   let group = -1;
 
-  // 戻り値: その行から下にある「一番右の段の行」の進捗率の一覧と、そのうち取下でない行の数、下の行の数
-  const walk = (it: WbsItem, ancestors: string[]): { leaves: number[]; active: number; count: number } => {
+  // 戻り値: その行から下にある「一番右の段の行」の進捗率の一覧と、そのうち取下でない行の数、
+  // 取下でも保留でもない行の数（遅延の判定用）、下の行の数
+  const walk = (it: WbsItem, ancestors: string[]): { leaves: number[]; active: number; delayable: number; count: number } => {
     if (ancestors.length === 0) group++;
     const names: (string | null)[] = [null, null, null];
     ancestors.forEach((n, i) => { names[i] = n; });
@@ -132,19 +138,22 @@ export function buildWbsRows(items: WbsItem[], levels: number, today: string, st
 
     const leaves: number[] = isLeafLevel ? [it.progress] : [];
     let active = isLeafLevel && !isWithdrawn(it) ? 1 : 0;
+    let delayable = isLeafLevel && !isDelayExempt(it) ? 1 : 0;
     let count = 0;
     for (const child of byParent.get(it.id) ?? []) {
       const r = walk(child, [...ancestors, it.name]);
       count += 1 + r.count;
-      if (!isLeafLevel) { leaves.push(...r.leaves); active += r.active; }
+      if (!isLeafLevel) { leaves.push(...r.leaves); active += r.active; delayable += r.delayable; }
     }
     row.descendantCount = count;
     // 進捗率は取下の行も含めて出す（集計と同じ）。外すのは遅延の判定だけ
     row.progress = leaves.length ? Math.round(leaves.reduce((a, b) => a + b, 0) / leaves.length) : null;
     row.withdrawn = leaves.length > 0 && active === 0;
+    // 取下・保留の行（見出し行は配下がすべて取下か保留）は遅延にしない。
     // 進捗率が出せない行（下に行が無い左の段）は、遅延の判定をしない
-    row.delayed = !row.withdrawn && !!it.endDate && it.endDate < today && row.progress !== null && row.progress < 100;
-    return { leaves, active, count };
+    const delayExempt = leaves.length > 0 && delayable === 0;
+    row.delayed = !delayExempt && !!it.endDate && it.endDate < today && row.progress !== null && row.progress < 100;
+    return { leaves, active, delayable, count };
   };
 
   for (const top of byParent.get(null) ?? []) walk(top, []);
