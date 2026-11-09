@@ -2517,8 +2517,6 @@ export function TicketDetailPanel({
   };
   /** 未確認はオレンジの枠 */
   const ackBorder = (c: TicketComment, normal: string) => (isUnackedComment(c) ? "1.5px solid #F97316" : normal);
-  /** 確認済みは薄く表示する */
-  const ackOpacity = (c: TicketComment) => (isAckTarget(c) && !isUnackedComment(c) ? 0.55 : 1);
   const renderAckToggle = (c: TicketComment) => {
     if (!isAckTarget(c)) return null;
     if (isUnackedComment(c)) {
@@ -4311,7 +4309,7 @@ export function TicketDetailPanel({
                         {(repliesByParent.get(c.id) ?? []).map(reply => {
                           const isOwnReply = reply.userName === userName;
                           return (
-                            <div key={reply.id} id={`panel-comment-${reply.id}`} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)", opacity: ackOpacity(reply) }}>
+                            <div key={reply.id} id={`panel-comment-${reply.id}`} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                               <Avatar name={reply.userName} size="xs" />
                               <div style={{ flex: 1, minWidth: 0 }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
@@ -4533,7 +4531,7 @@ export function TicketDetailPanel({
                   <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
                     <Avatar name={c.userName} size="xs" />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div id={`panel-comment-${c.id}`} style={{ borderRadius: 8, opacity: ackOpacity(c) }}>
+                      <div id={`panel-comment-${c.id}`} style={{ borderRadius: 8 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
                           <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
                           <StatusBadge status={c.ticketStatus} />
@@ -4643,7 +4641,7 @@ export function TicketDetailPanel({
                       {(repliesByParent.get(c.id) ?? []).map(reply => {
                         const isOwnReply = reply.userName === userName;
                         return (
-                          <div key={reply.id} id={`panel-comment-${reply.id}`} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)", opacity: ackOpacity(reply) }}>
+                          <div key={reply.id} id={`panel-comment-${reply.id}`} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                             <Avatar name={reply.userName} size="xs" />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>

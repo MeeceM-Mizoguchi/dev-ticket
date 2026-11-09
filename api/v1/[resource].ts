@@ -1373,7 +1373,11 @@ async function handleCreateComment(sb: SupabaseClient, key: ApiKeyRow, body: any
 
   const actor = key.created_by || "API連携";
   const via = `AIからの確認（API連携（${esc(key.name)}））`;
-  const head = recipient ? `<p>@${esc(recipient)} ${via}</p>` : `<p>${via}</p>`;
+  // 先頭の「@起票者名」は、コメント欄で候補を選んだときと同じメンションの印で書く。
+  // 画面では緑のメンションの表示になり、「確認済み」チェックの対象になる（BRU25-006）
+  const head = recipient
+    ? `<p><span data-type="mention" class="mention" data-id="${esc(recipient)}">@${esc(recipient)}</span> ${via}</p>`
+    : `<p>${via}</p>`;
   const commentId = newCommentId();
   const { error: insertError } = await sb.from("ticket_comments").insert({
     id: commentId, ticket_id: row.id, user_name: actor,
