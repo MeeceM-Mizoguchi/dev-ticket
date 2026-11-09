@@ -6,7 +6,7 @@ import { BtnSecondary } from "./BtnSecondary";
 import { BtnSpinner } from "./PageLoader";
 
 export function ConfirmDialog({
-  message, onConfirm, onClose, title = "削除の確認", confirmLabel = "削除する", confirmColor = "#DC2626", hasWarningText = true, zIndex, extra,
+  message, onConfirm, onClose, title = "削除の確認", confirmLabel = "削除する", confirmColor = "#DC2626", hasWarningText = true, zIndex, extra, cancelLabel = "キャンセル",
 }: {
   message: string;
   onConfirm: () => void | Promise<void>;
@@ -19,6 +19,8 @@ export function ConfirmDialog({
   /** 本文の下に差し込む追加の入力（例: ファイルボックスの「Googleドライブ上のファイルも削除する」）。
    *  状態は呼び出し側が持つ。渡さなければ今まで通りの確認ダイアログ。 */
   extra?: ReactNode;
+  /** キャンセルボタンの文字（例: 「いいえ」）。既定は「キャンセル」 */
+  cancelLabel?: string;
 }) {
   const [loading, setLoading] = useState(false);
 
@@ -36,7 +38,7 @@ export function ConfirmDialog({
     <div style={zIndex ? { position: "relative", zIndex } : undefined}>
       <DialogShell title={title} size="sm" onClose={loading ? () => {} : onClose}
         footer={<>
-          <BtnSecondary onClick={onClose} disabled={loading}>キャンセル</BtnSecondary>
+          <BtnSecondary onClick={onClose} disabled={loading}>{cancelLabel}</BtnSecondary>
           <button type="button" onClick={handleConfirm} disabled={loading}
             style={{ padding: "9px 20px", background: loading ? "#9CA3AF" : confirmColor, color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: loading ? "not-allowed" : "pointer", boxShadow: loading ? "none" : `0 2px 8px ${confirmColor}4D`, display: "flex", alignItems: "center" }}>
             {loading && <BtnSpinner />}
