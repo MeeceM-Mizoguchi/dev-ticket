@@ -1992,9 +1992,18 @@ export function TicketDetailPanel({
     }
     const id = `CMT-${Date.now()}`;
     const row = { id, ticket_id: ticket.id, user_name: userName, content, ticket_status: (status as TicketStatus), comment_type: "comment" as CommentType, images, reply_to: parentComment.id };
+    // 返信したら、返信元が未確認なら確認済みにする（BRU25-008）。返信の投稿が成功した後にだけ呼ぶ。
+    // 失敗しても返信は成功として扱う（コンソールに出すだけ）
+    const ackParentOnReply = async () => {
+      if (!isUnackedComment(parentComment)) return;
+      const r = await setCommentAck(parentComment.id, true, userName);
+      if ("error" in r) { console.error("reply ack failed:", r.error); return; }
+      setComments(prev => prev.map(x => x.id === parentComment.id ? { ...x, resolvedAt: r.resolvedAt, resolvedBy: r.resolvedBy } : x));
+    };
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("ticket_comments").insert(row);
       if (error) { console.error("reply insert failed:", error); return; }
+      await ackParentOnReply();
       await loadCommentFiles(ticket.id);
       emitMine(); // 他タブの同一チケットへ返信を即時反映
       emitCommentAckChanged(); // 一覧の「💬 未確認」を増やす（BRU25-002）
@@ -2010,6 +2019,7 @@ export function TicketDetailPanel({
       }
     } else {
       setComments(prev => [...prev, { id, ticketId: ticket.id, userName, content, ticketStatus: (status as TicketStatus), commentType: "comment", images, createdAt: new Date().toISOString(), replyTo: parentComment.id }]);
+      await ackParentOnReply();
     }
   };
 
