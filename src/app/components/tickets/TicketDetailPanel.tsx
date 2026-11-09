@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
 // 🌟 修正: 取下ボタン用のアイコン (Ban) を追加
-import { X, Paperclip, ChevronDown, Trash2, ClipboardList, FileCode2, FileText, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, Link2, MoreHorizontal, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
+import { X, Paperclip, ChevronDown, Trash2, ClipboardList, FileCode2, FileText, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, Link2, MoreHorizontal, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck, RotateCcw } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, TicketAttachment, Priority, TicketStatus, CommentType, Skill } from "@/app/types";
 // ENHA2-034 担当者レコメンド（自動アサイン）
 import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
@@ -1514,6 +1514,105 @@ export function TicketDetailPanel({
     }
   };
 
+  // ── 未着手に戻す（BRU25-003） ──────────────────────────────
+  // ステータスを未着手に戻し、着手してから記録された実績（各工程の日時・実績工数・内訳・動作確認・
+  // 担当ごとの実績の修正値）を消す。コメント・PR・添付・担当者・レビュアー・予定は残す。
+  // 保留時間（holdHours.ts）は着手日時より後の記録だけを数えるので、再着手すれば古い保留の記録は混ざらない。
+  const [resetConfirm, setResetConfirm] = useState<null | { childIds: string[] }>(null);
+  const resettingRef = useRef(false);
+
+  /** 押したとき。子に戻せないもの（対応完了・保留中・取下）があれば理由を出して終わる */
+  const handleResetToTodo = () => {
+    if (!ticket) return;
+    // 子の読み込み前に押されると、子を残して親だけ戻してしまうので待ってもらう
+    if (!ticket.parentId && !childTicketsLoaded) { showAlert("子チケットを読み込み中です。少し待ってからもう一度押してください", "お待ちください"); return; }
+    const blocked = childTickets.filter(c => ["closed", "done", "released", "on-hold", "withdrawn"].includes(c.status));
+    if (blocked.length > 0) {
+      const label = (s: string) => (s === "on-hold" ? "保留中" : s === "withdrawn" ? "取下" : "対応完了");
+      showAlert(`子チケット ${blocked.map(c => `${c.wbs}（${label(c.status)}）`).join("・")} があるため、未着手に戻せません`, "戻せません");
+      return;
+    }
+    setResetConfirm({ childIds: childTickets.map(c => c.id) });
+  };
+
+  /**
+   * 列が無い（SQL 未適用の）環境でも更新全体を落とさないよう、
+   * 「列が無い」と返された列だけを外して送り直す（closed_at などは環境によって無い。BRU21-002 の前例）
+   */
+  const updateTicketDroppingMissing = async (id: string, patch: Record<string, unknown>) => {
+    let body = { ...patch };
+    for (let i = 0; i < 5; i++) {
+      const { error } = await supabase!.from("sprint_tickets").update(body).eq("id", id);
+      if (!error) return null;
+      if (!/column/i.test(error.message)) return error.message;
+      const missing = Object.keys(body).find(k => k !== "status" && k !== "progress" && error.message.includes(k));
+      if (!missing) return error.message;
+      const { [missing]: _drop, ...rest } = body;
+      body = rest;
+    }
+    return "更新に失敗しました";
+  };
+
+  const executeResetToTodo = async (childIds: string[]) => {
+    if (!ticket || !isSupabaseEnabled) return;
+    if (resettingRef.current) return; // BUG-05
+    resettingRef.current = true;
+    try {
+      const patch: Record<string, unknown> = {
+        status: "todo", progress: 0,
+        started_at: null, review_requested_at: null, review_approved_at: null,
+        stg_completed_at: null, uat_completed_at: null, released_at: null, closed_at: null,
+        actual_work_hours: null, actual_work_hours_breakdown: null, is_operation_verified: false,
+      };
+      const marker = "<p>未着手に戻しました（実績をクリアしました）</p>";
+
+      // 子を先に戻し、親は最後に戻す。途中で失敗しても親はそのままなので、もう一度押せば残りを戻せる
+      const done: string[] = [];
+      for (const id of [...childIds, ticket.id]) {
+        const err = await updateTicketDroppingMissing(id, patch);
+        if (err) {
+          const doneWbs = childTickets.filter(c => done.includes(c.id)).map(c => c.wbs);
+          showAlert(
+            `未着手に戻せませんでした: ${err}`
+            + (doneWbs.length > 0 ? `\n子チケット ${doneWbs.join("・")} は戻しました。もう一度「未着手に戻す」を押すと、残りを戻せます。` : ""),
+            "エラー",
+          );
+          void loadChildTickets(ticket.id);
+          onUpdated?.();
+          return;
+        }
+        done.push(id);
+      }
+
+      // 担当ごとの実績の修正値。列・テーブルが無い環境では何もしない
+      const { error: asgError } = await supabase!.from("ticket_assignments")
+        .update({ hours_override: null }).in("ticket_id", done);
+      if (asgError) console.warn("[reset-to-todo] ticket_assignments:", asgError.message);
+
+      // コメント欄の記録（子をまとめて戻したときは子それぞれにも残す）
+      if (childIds.length > 0) {
+        const base = Date.now();
+        const { error: cErr } = await supabase!.from("ticket_comments").insert(childIds.map((id, i) => ({
+          id: `CMT-${base}-${i}-${Math.random().toString(36).slice(2, 6)}`, ticket_id: id, user_name: userName,
+          content: marker, ticket_status: "todo", comment_type: "status_change", images: [],
+        })));
+        if (cErr) console.error("[reset-to-todo] child comments:", cErr.message);
+      }
+      await addComment(marker, "status_change", [], "todo");
+
+      setStatus("todo");
+      setProgress(0);
+      setActualWorkHours(null);
+      setIsOperationVerified(false);
+      await reloadTicketFields(ticket.id);
+      await loadChildTickets(ticket.id);
+      onUpdated?.();
+      syncSprint();
+    } finally {
+      resettingRef.current = false;
+    }
+  };
+
   // 子チケット本体を「対応中」に開始する実処理
   const startChildSelf = async () => {
     if (!ticket) return;
@@ -2467,6 +2566,22 @@ export function TicketDetailPanel({
           onClose={() => setShowWithdrawConfirm(false)}
         />
       )}
+      {/* 未着手に戻すの確認（BRU25-003）。子を持つ親は「子チケットも同時に戻しますか？」 */}
+      {resetConfirm && (
+        <ConfirmDialog
+          title="未着手に戻す"
+          message={resetConfirm.childIds.length > 0
+            ? `子チケットも同時に戻しますか？（${resetConfirm.childIds.length}件）\n親と子のステータスを未着手に戻し、実績（着手日・各工程の日時・実績工数）を消します。元に戻せません`
+            : "ステータスを未着手に戻し、実績（着手日・各工程の日時・実績工数）を消します。元に戻せません"}
+          confirmLabel={resetConfirm.childIds.length > 0 ? "はい" : "戻す"}
+          cancelLabel={resetConfirm.childIds.length > 0 ? "いいえ" : "キャンセル"}
+          confirmColor="#D97706"
+          hasWarningText={false}
+          zIndex={320}
+          onConfirm={() => executeResetToTodo(resetConfirm.childIds)}
+          onClose={() => setResetConfirm(null)}
+        />
+      )}
       {/* 🌟 追加(BRU4-059): 親未開始の子チケット着手時に、親も開始するか確認するモーダル */}
       {showParentStartConfirm && (
         <ConfirmDialog
@@ -2929,6 +3044,21 @@ export function TicketDetailPanel({
                     }}>
                     <Ban style={{ width: 11, height: 11 }} />
                     {status === "withdrawn" ? "取下解除" : "取下する"}
+                  </button>
+                )}
+                {/* 未着手に戻す（BRU25-003）。親は進行中〜リリース待ち、子は進行中のときだけ。担当者以外でも押せる */}
+                {canEdit && (isChildTicket
+                  ? status === "in-progress"
+                  : ["in-progress", "in-review", "review-done", "stg-test", "uat", "waiting-release"].includes(status)) && (
+                  <button onClick={handleResetToTodo}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 4,
+                      padding: "3px 10px", fontSize: 10, fontWeight: 700, borderRadius: 20, cursor: "pointer",
+                      border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", color: "#6B6458",
+                      transition: "all 0.15s"
+                    }}>
+                    <RotateCcw style={{ width: 11, height: 11 }} />
+                    未着手に戻す
                   </button>
                 )}
                 {/* リリース済みのみ動作確認ボタンを表示 */}
