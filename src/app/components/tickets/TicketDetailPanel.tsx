@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
 // 🌟 修正: 取下ボタン用のアイコン (Ban) を追加
-import { X, Paperclip, ChevronDown, Trash2, ClipboardList, FileCode2, FileText, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, Link2, MoreHorizontal, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck, RotateCcw } from "lucide-react";
+import { X, Paperclip, ChevronDown, Trash2, ClipboardList, FileCode2, FileText, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, Link2, MoreHorizontal, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck, RotateCcw, ArrowLeftRight } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, TicketAttachment, Priority, TicketStatus, CommentType, Skill } from "@/app/types";
 // ENHA2-034 担当者レコメンド（自動アサイン）
 import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
@@ -47,6 +47,7 @@ import { fetchSprintOrder, applySprintOrder } from "@/app/lib/sprintOrder";
 import { MdBulkCreateDialog } from "@/app/components/tickets/MdBulkCreateDialog";
 import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDialog";
 import { MoveToBacklogDialog } from "@/app/components/tickets/MoveToBacklogDialog";
+import { ReparentTicketDialog } from "@/app/components/tickets/ReparentTicketDialog";
 import { useTruncatedTip } from "@/app/components/shared/TruncatedText";
 import { TicketDetailLoadingOverlay } from "@/app/components/tickets/TicketDetailLoadingOverlay";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
@@ -369,6 +370,8 @@ export function TicketDetailPanel({
   // 🌟 追加(BRU4-059): 親未開始の子チケットを着手する際の「親も開始しますか？」確認モーダル
   const [showParentStartConfirm, setShowParentStartConfirm] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
+  // BRU25-005 子チケットの「親を変更」ダイアログ
+  const [showReparent, setShowReparent] = useState(false);
   // BRU24-001-3 バックログへ戻す。対象は開いた時点のチケットで固定する
   const [moveToBacklogIds, setMoveToBacklogIds] = useState<string[] | null>(null);
   const movedToBacklogRef = useRef(false);
@@ -2349,6 +2352,19 @@ export function TicketDetailPanel({
     }
   };
 
+  // BRU25-005 親を変更したあと。元・移した先のスプリントの完了判定を更新し、
+  // 一覧を読み直してから、スプリント移動と同じく移した先の行を強調表示してパネルを閉じる
+  const handleReparented = async (r: { newWbs: string; targetSprintId: string; oldSprintId: string }) => {
+    setShowReparent(false);
+    for (const sid of Array.from(new Set([r.oldSprintId, r.targetSprintId]))) {
+      void syncSprintStatusInDb(sid);
+      void syncProjectStatusBySprintId(sid);
+    }
+    await onUpdated?.();
+    onMoved?.(r.newWbs, r.targetSprintId);
+    onClose();
+  };
+
   const handleAddComment = async () => {
     if (postingCommentRef.current) return; // 連打ガード：送信が終わるまで2回目以降は捨てる
     if (isBlankRichText(commentText) || !ticket) return;
@@ -2645,6 +2661,19 @@ export function TicketDetailPanel({
         />
       )}
       {moveToBacklogDialog}
+
+      {showReparent && ticket.parentId && projectId && (
+        <ReparentTicketDialog
+          ticketId={ticket.id}
+          ticketWbs={ticket.wbs}
+          currentParentId={ticket.parentId}
+          currentParentWbs={breadcrumbParentTicket?.wbs ?? ticket.wbs.replace(/-\d+$/, "")}
+          projectId={projectId}
+          userName={userName}
+          onClose={() => setShowReparent(false)}
+          onMoved={handleReparented}
+        />
+      )}
 
       {showMoveModal && (
         <DialogShell
@@ -3059,6 +3088,19 @@ export function TicketDetailPanel({
                     }}>
                     <RotateCcw style={{ width: 11, height: 11 }} />
                     未着手に戻す
+                  </button>
+                )}
+                {/* 親を変更（BRU25-005）。子チケットで、編集できる人のときだけ */}
+                {canEdit && isChildTicket && isSupabaseEnabled && !!projectId && (
+                  <button onClick={() => setShowReparent(true)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 4,
+                      padding: "3px 10px", fontSize: 10, fontWeight: 700, borderRadius: 20, cursor: "pointer",
+                      border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", color: "#6B6458",
+                      transition: "all 0.15s"
+                    }}>
+                    <ArrowLeftRight style={{ width: 11, height: 11 }} />
+                    親を変更
                   </button>
                 )}
                 {/* リリース済みのみ動作確認ボタンを表示 */}
