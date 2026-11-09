@@ -460,7 +460,9 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
     '    "comments": [{ "author": "…", "createdAt": "…", "body": "…", "images": [], "replyTo": null }]',
     "  },",
     '  "parent": null,',
-    '  "children": [ { "wbs": "T-012-1", "…": "ticket と同じ形" } ]',
+    '  "children": [ { "wbs": "T-012-1", "…": "ticket と同じ形" } ],',
+    '  "linkedTickets": [ { "wbs": "T-005", "…": "ticket と同じ形" } ],',
+    '  "linkedTicketsMissing": []',
     "}",
     FENCE,
     "",
@@ -469,6 +471,8 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
     "- " + c("attachments") + " は、実装に必要なもの（仕様書・サンプルデータなど）を取得して読む。",
     "- **コメントも読む。**本文より後に決まったことが書かれていることがある。本文とコメントが食い違うときは新しいコメントを優先し、どちらを採ったかを最後に報告する。",
     "- " + c("commentsOmitted") + " が 0 でなければ、古いコメントが省かれている。その旨を報告に書く。",
+    "- " + c("linkedTickets") + " … 本文・コメントで参照されている関連チケット（同じプロジェクトのもの、10件まで）。**背景・決定事項として読み、関連チケットそのものは実装しない。**実装するチケットと食い違うときは、実装するチケットを優先する。",
+    "- どの関連チケットを参考にしたかを、最後の報告に書く。" + c("linkedTicketsMissing") + " が空でなければ（参照されているが見つからなかった WBS）、そのことも報告に書く。",
     "- " + c("401") + "（キーが無効）・" + c("403") + "（キーの権限不足）・" + c("404") + "（チケットが無い）が返ったら、**内容を変えて再試行せず**、エラー文をそのまま利用者に伝えて止まる。",
   );
 
@@ -839,7 +843,9 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
     '    "comments": [{ "author": "…", "createdAt": "…", "body": "…", "images": [], "replyTo": null }]',
     "  },",
     '  "parent": null,',
-    '  "children": [ { "wbs": "T-012-1", "…": "ticket と同じ形" } ]',
+    '  "children": [ { "wbs": "T-012-1", "…": "ticket と同じ形" } ],',
+    '  "linkedTickets": [ { "wbs": "T-005", "…": "ticket と同じ形" } ],',
+    '  "linkedTicketsMissing": []',
     "}",
     FENCE,
     "",
@@ -848,6 +854,8 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
     "- " + c("attachments") + " は、実装に必要なもの（仕様書・サンプルデータなど）を取得して読む。",
     "- **コメントも読む。**本文より後に決まったことが書かれていることがある。本文とコメントが食い違うときは新しいコメントを優先し、どちらを採ったかを最後に報告する。",
     "- " + c("commentsOmitted") + " が 0 でなければ、古いコメントが省かれている。その旨を報告に書く。",
+    "- " + c("linkedTickets") + " … 本文・コメントで参照されている関連チケット（同じプロジェクトのもの、10件まで）。**背景・決定事項として読み、関連チケットそのものは実装しない。**実装するチケットと食い違うときは、実装するチケットを優先する。",
+    "- どの関連チケットを参考にしたかを、最後の報告に書く。" + c("linkedTicketsMissing") + " が空でなければ（参照されているが見つからなかった WBS）、そのことも報告に書く。",
     "- " + c("401") + "（キーが無効）・" + c("403") + "（キーの権限不足）・" + c("404") + "（チケットが無い）が返ったら、**内容を変えて再試行せず**、エラー文をそのまま利用者に伝えて止まる。",
   );
 
