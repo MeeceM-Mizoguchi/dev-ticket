@@ -863,6 +863,43 @@ const DETAIL_COLS =
 const urlList = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((u): u is string => typeof u === "string" && !!u && !/^data:/i.test(u)) : [];
 
+// ── 関連チケット（BRU25-007） ──
+// 本文・コメントで参照されている同じプロジェクトのチケットも、linkedTickets として一緒に返す。
+// 拾うのは「#」から候補を選んだリンク（span class="ticket-mention" の data-id）と、
+// 貼り付けたアプリのチケットURL（/プロジェクトのslug/WBS）の2つ。手で打っただけの「#BRU25-002」は拾わない。
+/** 返す関連チケットの上限 */
+const MAX_LINKED_TICKETS = 10;
+/** 引きに行く WBS の上限（本文に大量のリンクがあっても問い合わせを膨らませない） */
+const MAX_LINKED_CANDIDATES = 50;
+/** 画面の判定（src/app/lib/appOrigin.ts の PRODUCTION_ORIGINS）と同じ本番のオリジン */
+const PRODUCTION_APP_ORIGINS = ["https://dv-ticket.com", "https://www.dv-ticket.com"];
+/** チケットのURLの WBS の形（src/app/lib/internalLink.ts の TICKET_SEGMENT_RE と同じ。使える文字は lookupTicket に合わせる） */
+const LINKED_WBS_RE = /^[A-Za-z0-9_-]+-\d+$/;
+
+/** HTML から、関連チケットとして参照されている WBS を出てきた順に拾う */
+export function extractLinkedWbs(html: string, projectSlug: string, appOrigins: string[]): string[] {
+  const out: string[] = [];
+  if (!html) return out;
+  const re = /<span\b([^>]*)>|https?:\/\/[^\s"'<>]+/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    if (m[1] !== undefined) {
+      const attrs = m[1];
+      if (!attrOf(attrs, "class").split(/\s+/).includes("ticket-mention")) continue;
+      const id = attrOf(attrs, "data-id").trim();
+      if (LINKED_WBS_RE.test(id)) out.push(id);
+      continue;
+    }
+    let url: URL;
+    try { url = new URL(decodeEntities(m[0])); } catch { continue; }
+    if (!appOrigins.includes(url.origin.toLowerCase())) continue;
+    const seg = url.pathname.split("/").filter(Boolean).map(s => { try { return decodeURIComponent(s); } catch { return s; } });
+    if (seg.length !== 2 || !projectSlug || seg[0].toLowerCase() !== projectSlug.toLowerCase()) continue;
+    if (LINKED_WBS_RE.test(seg[1])) out.push(seg[1]);
+  }
+  return out;
+}
+
 async function handleTicketDetail(sb: SupabaseClient, key: ApiKeyRow, query: any, res: any) {
   const str = (v: unknown) => (typeof v === "string" ? v.trim() : Array.isArray(v) ? String(v[0] ?? "").trim() : "");
   const found = await lookupTicket(sb, key, { wbs: str(query?.wbs), id: str(query?.id) }, DETAIL_COLS);
@@ -886,37 +923,81 @@ async function handleTicketDetail(sb: SupabaseClient, key: ApiKeyRow, query: any
   const all: any[] = [row, ...(parentRow ? [parentRow] : []), ...childRows];
   const ids = all.map(t => t.id as string);
 
-  // コメントは新しい順に引いて、チケットごとに上限で切ってから古い順へ戻す。
-  // 古い順のまま引くと、行数の上限に当たったとき「最近のやり取り」のほうが落ちる。
-  // status_change（ステータス変更の自動記録）は実装の材料にならないので返さない。
-  const [commentsRes, attachRes] = await Promise.all([
-    sb.from("ticket_comments").select("*").in("ticket_id", ids).neq("comment_type", "status_change")
-      .order("created_at", { ascending: false }).order("id", { ascending: false }).limit(1000),
-    sb.from("ticket_attachments").select("*").in("ticket_id", ids)
-      .order("created_at", { ascending: true }).order("id", { ascending: true }),
-  ]);
-  if (commentsRes.error) return res.status(500).json({ error: commentsRes.error.message });
-  // 添付は後から足したテーブル（add_ticket_attachments.sql）。無い環境では添付なしとして続ける
-  if (attachRes.error) console.error("[api/v1] attachments:", attachRes.error.message);
-
   const commentsByTicket = new Map<string, any[]>();
-  for (const c of (commentsRes.data ?? []) as any[]) {
-    const list = commentsByTicket.get(c.ticket_id) ?? [];
-    list.push(c);
-    commentsByTicket.set(c.ticket_id, list);
-  }
   const attachByTicket = new Map<string, any[]>();
-  for (const a of (attachRes.data ?? []) as any[]) {
-    const list = attachByTicket.get(a.ticket_id) ?? [];
-    list.push(a);
-    attachByTicket.set(a.ticket_id, list);
+  /** チケットのコメント・添付を引いて、上の Map に足す。失敗したらエラー文を返す */
+  const loadCommentsAndAttachments = async (ticketIds: string[]): Promise<string | null> => {
+    if (ticketIds.length === 0) return null;
+    // コメントは新しい順に引いて、チケットごとに上限で切ってから古い順へ戻す。
+    // 古い順のまま引くと、行数の上限に当たったとき「最近のやり取り」のほうが落ちる。
+    // status_change（ステータス変更の自動記録）は実装の材料にならないので返さない。
+    const [commentsRes, attachRes] = await Promise.all([
+      sb.from("ticket_comments").select("*").in("ticket_id", ticketIds).neq("comment_type", "status_change")
+        .order("created_at", { ascending: false }).order("id", { ascending: false }).limit(1000),
+      sb.from("ticket_attachments").select("*").in("ticket_id", ticketIds)
+        .order("created_at", { ascending: true }).order("id", { ascending: true }),
+    ]);
+    if (commentsRes.error) return commentsRes.error.message;
+    // 添付は後から足したテーブル（add_ticket_attachments.sql）。無い環境では添付なしとして続ける
+    if (attachRes.error) console.error("[api/v1] attachments:", attachRes.error.message);
+    for (const c of (commentsRes.data ?? []) as any[]) {
+      const list = commentsByTicket.get(c.ticket_id) ?? [];
+      list.push(c);
+      commentsByTicket.set(c.ticket_id, list);
+    }
+    for (const a of (attachRes.data ?? []) as any[]) {
+      const list = attachByTicket.get(a.ticket_id) ?? [];
+      list.push(a);
+      attachByTicket.set(a.ticket_id, list);
+    }
+    return null;
+  };
+  const loadError = await loadCommentsAndAttachments(ids);
+  if (loadError) return res.status(500).json({ error: loadError });
+
+  const origin = appPublicOrigin();
+  const slug = String(project?.slug ?? "");
+
+  // 関連チケット（BRU25-007）。応答に入るチケット（自分・親・子）の本文とコメントから拾い、
+  // 同じプロジェクトのスプリントの中から引く。関連チケットの中のリンクはたどらない（1段まで）
+  const appOrigins = Array.from(new Set([origin, ...PRODUCTION_APP_ORIGINS].filter(Boolean).map(o => o.toLowerCase())));
+  const ownWbs = new Set(all.map(t => String(t.wbs).toUpperCase()));
+  const candidates: string[] = [];
+  const seenWbs = new Set<string>();
+  for (const t of all) {
+    const htmls = [String(t.description ?? ""), ...(commentsByTicket.get(t.id) ?? []).map(c => String(c.content ?? ""))];
+    for (const html of htmls) {
+      for (const w of extractLinkedWbs(html, slug, appOrigins)) {
+        const key = w.toUpperCase();
+        if (ownWbs.has(key) || seenWbs.has(key)) continue;
+        seenWbs.add(key);
+        candidates.push(w);
+      }
+    }
   }
+  const lookupWbs = candidates.slice(0, MAX_LINKED_CANDIDATES);
+  let linkedRows: any[] = [];
+  let linkedMissing: string[] = [];
+  if (lookupWbs.length > 0) {
+    const { data: linkedData, error: linkedError } = await sb.from("sprint_tickets").select(DETAIL_COLS)
+      .in("sprint_id", found.sprints.map(s => s.id))
+      .in("wbs", Array.from(new Set(lookupWbs.flatMap(w => [w, w.toUpperCase()]))))
+      .order("wbs", { ascending: true }).order("id", { ascending: true }); // BUG-01
+    if (linkedError) return res.status(500).json({ error: linkedError.message });
+    const byWbs = new Map<string, any>();
+    for (const r of (linkedData ?? []) as any[]) {
+      const k = String(r.wbs).toUpperCase();
+      if (!byWbs.has(k)) byWbs.set(k, r);
+    }
+    linkedRows = lookupWbs.map(w => byWbs.get(w.toUpperCase())).filter(Boolean).slice(0, MAX_LINKED_TICKETS);
+    linkedMissing = lookupWbs.filter(w => !byWbs.has(w.toUpperCase()));
+  }
+  const linkedLoadError = await loadCommentsAndAttachments(linkedRows.map(t => t.id as string));
+  if (linkedLoadError) return res.status(500).json({ error: linkedLoadError });
 
   const sprintNameById = new Map(found.sprints.map(s => [s.id, s.name]));
   const categoryNameById = new Map(((categoryRows ?? []) as any[]).map(c => [c.id as string, c.name as string]));
-  const wbsById = new Map(all.map(t => [t.id as string, t.wbs as string]));
-  const origin = appPublicOrigin();
-  const slug = String(project?.slug ?? "");
+  const wbsById = new Map([...all, ...linkedRows].map(t => [t.id as string, t.wbs as string]));
 
   const toView = (t: any) => {
     const isChild = !!t.parent_id;
@@ -965,6 +1046,10 @@ async function handleTicketDetail(sb: SupabaseClient, key: ApiKeyRow, query: any
     ticket: toView(row),
     parent: parentRow ? toView(parentRow) : null,
     children: childRows.map(toView),
+    // 本文・コメントで参照されている関連チケット（背景・決定事項として読むためのもの。BRU25-007）
+    linkedTickets: linkedRows.map(toView),
+    // 参照されているが、このプロジェクトに見つからなかった WBS
+    linkedTicketsMissing: linkedMissing,
   });
 }
 
