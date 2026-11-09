@@ -7,6 +7,7 @@
 //   GET  /api/v1/ticket         … チケット1件の中身（本文・画像・添付・コメント・子チケット）
 //   POST /api/v1/ticket-status  … ステータスを前へ進める（進行中〜クローズ／子は進行中・対応完了）
 //   POST /api/v1/ticket-pull    … 外部で作ったプルリクエストをチケットへ紐づける
+//   POST /api/v1/ticket-comment … AIの確認の質問をコメントとして登録し、起票者へ知らせる（BRU25-001）
 //   GET  /api/v1/backlog        … バックログ項目の一覧（重複登録の防止用。BRU24-002）
 //   POST /api/v1/backlog        … バックログ項目の登録（親子1段まで／フォルダ指定可。BRU24-002）
 //
@@ -16,7 +17,7 @@
 // 下の3つは「AIがチケットを読み取って実装する」ためのもの。キーの権限（scope）で使える範囲が変わる:
 //   write … 登録のみ（context / tickets / backlog の POST）    ← これまでに発行されたキーはすべてこれ
 //   read  … 読み取りのみ（context / tickets の GET / ticket / backlog の GET）
-//   full  … すべて（ticket-status / ticket-pull はこの権限のみ）
+//   full  … すべて（ticket-status / ticket-pull / ticket-comment はこの権限のみ）
 //
 // 認証は Dev Ticket が発行する APIキー:
 //   Authorization: Bearer dvt_live_xxxxx
@@ -1315,6 +1316,116 @@ async function notifyAssignSlack(
   }
 }
 
+// ── POST /api/v1/ticket-comment（BRU25-001） ─────────────────
+//
+// 「AIで実装」で AI が仕様を確認したいとき、質問をそのチケットのコメントとして登録する。
+// 今までは質問がチャットにしか出ず、人がチケット詳細へ貼り直していた。
+// ふつうのコメント（comment_type = comment）として入れ、起票者へベルと Slack で知らせる。
+// 子チケットで起票者が空なら、親チケットの起票者へ知らせる。
+async function handleCreateComment(sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) {
+  const wbs = typeof body?.wbs === "string" ? body.wbs.trim() : "";
+  const id = typeof body?.id === "string" ? body.id.trim() : "";
+  const text = typeof body?.body === "string" ? body.body.trim() : "";
+  if (!text) return res.status(400).json({ error: "body（コメントの本文）は必須です" });
+  if (text.length > MAX_DESCRIPTION_LENGTH) {
+    return res.status(400).json({ error: `body が長すぎます（${MAX_DESCRIPTION_LENGTH}文字まで）` });
+  }
+
+  const found = await lookupTicket(sb, key, { wbs, id }, "id, wbs, title, status, parent_id, created_by");
+  if (!found.ok) return res.status(found.status).json({ error: found.error });
+  const row = found.row;
+  const warnings: string[] = [];
+
+  const { data: project } = await sb
+    .from("projects")
+    .select("slug, organization_id, slack_access_token, slack_channel, slack_notifications_enabled")
+    .eq("id", key.project_id).maybeSingle();
+
+  // プランのコメント件数の上限（画面と同じく comment_type = comment の件数で数える）
+  const orgId = (project?.organization_id as string | null | undefined) ?? key.organization_id;
+  if (orgId) {
+    const { data: org } = await sb.from("organizations").select("plan_id").eq("id", orgId).maybeSingle();
+    if (org?.plan_id) {
+      const { data: plan } = await sb
+        .from("plans").select("max_comments_per_ticket").eq("id", org.plan_id).maybeSingle();
+      const max = (plan?.max_comments_per_ticket as number | null | undefined) ?? null;
+      if (max !== null) {
+        const { count, error: countError } = await sb
+          .from("ticket_comments").select("id", { count: "exact", head: true })
+          .eq("ticket_id", row.id).eq("comment_type", "comment");
+        if (countError) return res.status(500).json({ error: countError.message });
+        if ((count ?? 0) >= max) {
+          return res.status(409).json({
+            error: `「${row.wbs}」のコメントがプランの上限（${max}件）に達しているため、登録できません`,
+          });
+        }
+      }
+    }
+  }
+
+  // 知らせる相手：起票者。子チケットで空なら親チケットの起票者
+  let recipient = String(row.created_by ?? "").trim();
+  if (!recipient && row.parent_id) {
+    const { data: parent } = await sb
+      .from("sprint_tickets").select("created_by").eq("id", row.parent_id).maybeSingle();
+    recipient = String(parent?.created_by ?? "").trim();
+  }
+
+  const actor = key.created_by || "API連携";
+  const via = `AIからの確認（API連携（${esc(key.name)}））`;
+  const head = recipient ? `<p>@${esc(recipient)} ${via}</p>` : `<p>${via}</p>`;
+  const commentId = newCommentId();
+  const { error: insertError } = await sb.from("ticket_comments").insert({
+    id: commentId, ticket_id: row.id, user_name: actor,
+    content: head + mdToHtml(text),
+    ticket_status: row.status, comment_type: "comment", images: [],
+  });
+  if (insertError) return res.status(500).json({ error: `コメントの登録に失敗しました: ${insertError.message}` });
+
+  const slug = String(project?.slug ?? "");
+  const origin = appPublicOrigin();
+  const url = origin && slug ? `${origin}/${encodeURIComponent(slug)}/${encodeURIComponent(row.wbs)}` : null;
+
+  // コメントは登録済みなので、通知の失敗で応答を落とさず warnings に入れる
+  if (!recipient) {
+    warnings.push("起票者が不明のため通知していません");
+  } else {
+    const title = `${actor}さん（AI）から確認の質問があります`;
+    const { error: notifyError } = await sb.from("notifications").insert({
+      user_name: recipient, type: "mention",
+      title,
+      body: `${row.wbs}: ${row.title}`,
+      ticket_id: row.id, ticket_wbs: row.wbs, ticket_title: row.title,
+      project_slug: slug || null, is_read: false,
+    });
+    if (notifyError) warnings.push(`起票者への通知に失敗しました: ${notifyError.message}`);
+
+    // Slack は notifyAssignSlack と同じ作り（プロジェクトで有効なときだけ。profiles.slack_member_id でメンション）
+    if (project?.slack_notifications_enabled && project?.slack_channel && project?.slack_access_token) {
+      try {
+        const { data: profile } = await sb
+          .from("profiles").select("slack_member_id").eq("name", recipient).maybeSingle();
+        const mention = profile?.slack_member_id ? `<@${profile.slack_member_id}>` : recipient;
+        const label = escapeSlackText(`${row.wbs}: ${row.title}`);
+        const link = url ? `<${url}|${label}>` : label;
+        const plain = text.replace(/\s+/g, " ").trim();
+        const excerpt = escapeSlackText(plain.length > 300 ? `${plain.slice(0, 300)}…` : plain);
+        const slackRes = await fetch("https://slack.com/api/chat.postMessage", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${project.slack_access_token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ channel: project.slack_channel, text: `*${escapeSlackText(title)}*\n${mention} ${link}\n${excerpt}` }),
+        });
+        const json = await slackRes.json() as { ok: boolean; error?: string };
+        if (!json.ok) warnings.push(`Slack への通知に失敗しました: ${json.error ?? "unknown"}`);
+      } catch (e) {
+        warnings.push(`Slack への通知に失敗しました: ${(e as Error)?.message ?? String(e)}`);
+      }
+    }
+  }
+
+  return res.status(201).json({ ok: true, wbs: row.wbs, commentId, url, warnings });
+}
+
 // ── POST /api/v1/tickets ─────────────────────────────────────
 async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) {
   const sprintId = typeof body?.sprintId === "string" ? body.sprintId.trim() : "";
@@ -1844,9 +1955,9 @@ export default async function handler(req: any, res: any) {
 
   const resource = String(req.query?.resource ?? "");
   if (resource !== "tickets" && resource !== "context" && resource !== "ticket" && resource !== "ticket-status"
-    && resource !== "ticket-pull" && resource !== "backlog") {
+    && resource !== "ticket-pull" && resource !== "ticket-comment" && resource !== "backlog") {
     return res.status(404).json({
-      error: `不明なエンドポイントです: /api/v1/${resource}（tickets / context / ticket / ticket-status / ticket-pull / backlog のいずれか）`,
+      error: `不明なエンドポイントです: /api/v1/${resource}（tickets / context / ticket / ticket-status / ticket-pull / ticket-comment / backlog のいずれか）`,
     });
   }
 
@@ -1904,6 +2015,22 @@ export default async function handler(req: any, res: any) {
     }
     try {
       return await handleLinkPull(sb, auth.key, pullBody, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+
+  if (resource === "ticket-comment") {
+    if (req.method !== "POST") return res.status(405).json({ error: "POST を使ってください" });
+    if (scope !== "full") return denied("コメントを登録", "権限が「すべて」");
+    let commentBody: any;
+    try {
+      commentBody = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body ?? {});
+    } catch {
+      return res.status(400).json({ error: "リクエストボディが JSON として読めません" });
+    }
+    try {
+      return await handleCreateComment(sb, auth.key, commentBody, res);
     } catch (e: any) {
       return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
     }
