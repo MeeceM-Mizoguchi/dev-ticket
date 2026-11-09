@@ -30,6 +30,7 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor, clipboardHasTable } from "@/app/components/shared/RichEditor";
 import { ImageLightbox, useImageLightbox } from "@/app/components/shared/ImageLightbox";
 import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory, mapSprint } from "@/app/lib/mappers";
+import { isAckTarget, isUnackedComment, setCommentAck, emitCommentAckChanged, LEGACY_RESOLVED_BY } from "@/app/lib/commentAck";
 import { FileAttachments } from "@/app/components/shared/FileAttachments";
 import {
   fetchTicketAttachments, uploadTicketAttachment, deleteTicketAttachment,
@@ -1873,6 +1874,7 @@ export function TicketDetailPanel({
       if (error) { console.error("comment insert failed:", error); return; }
       await loadCommentFiles(ticket.id);
       emitMine(); // 他タブの同一チケットへコメント追加/ステータス変更を即時反映
+      if (type === "comment") emitCommentAckChanged(); // 一覧の「💬 未確認」を増やす（BRU25-002）
       await notifyMentions(content, ticket, buildCommentAnchor(row.id));
     } else {
       setComments(prev => [...prev, { ...row, ticketId: ticket.id, userName, ticketStatus: ts, commentType: type, createdAt: new Date().toISOString() }]);
@@ -1893,6 +1895,7 @@ export function TicketDetailPanel({
       if (error) { console.error("reply insert failed:", error); return; }
       await loadCommentFiles(ticket.id);
       emitMine(); // 他タブの同一チケットへ返信を即時反映
+      emitCommentAckChanged(); // 一覧の「💬 未確認」を増やす（BRU25-002）
       await notifyMentions(content, ticket, buildCommentAnchor(id));
       if (parentComment.userName !== userName && projectSlug) {
         supabase!.from("notifications").insert({
@@ -2265,6 +2268,23 @@ export function TicketDetailPanel({
   const handleDeleteComment = async (id: string) => {
     if (isSupabaseEnabled) await supabase!.from("ticket_comments").delete().eq("id", id);
     setComments(prev => prev.filter(c => c.id !== id));
+    emitCommentAckChanged(); // 未確認のコメントを消したら、一覧の件数も減らす（BRU25-002）
+  };
+
+  // コメントの「確認済み」チェックの切り替え（BRU25-002）。誰でも付け外しできる。
+  // BUG-05: コメントごとに ref でガードする（同じレンダーで2回押されても1回だけ送る）
+  const ackBusyRef = useRef<Set<string>>(new Set());
+  const toggleCommentAck = async (c: TicketComment) => {
+    if (ackBusyRef.current.has(c.id)) return;
+    ackBusyRef.current.add(c.id);
+    try {
+      const r = await setCommentAck(c.id, c.resolvedAt === null, userName);
+      if ("error" in r) { showAlert(`確認済みの切り替えに失敗しました: ${r.error}`, "エラー"); return; }
+      setComments(prev => prev.map(x => x.id === c.id ? { ...x, resolvedAt: r.resolvedAt, resolvedBy: r.resolvedBy } : x));
+      emitMine(); // 他タブの同一チケットへ反映
+    } finally {
+      ackBusyRef.current.delete(c.id);
+    }
   };
 
   const handleEditComment = (c: TicketComment) => { setEditingId(c.id); setEditContent(c.content); setEditImages(c.images ?? []); };
@@ -2369,6 +2389,41 @@ export function TicketDetailPanel({
       topLevelComments.push(c);
     }
   }
+
+  // ── コメントの「確認済み」チェック（BRU25-002） ──
+  // 表示順（親 → その返信）で並べ、最初の未確認のコメントへ移動できるようにする
+  const unackedInOrder = topLevelComments
+    .flatMap(c => [c, ...(repliesByParent.get(c.id) ?? [])])
+    .filter(isUnackedComment);
+  const jumpToFirstUnacked = () => {
+    const first = unackedInOrder[0];
+    const el = first ? document.getElementById(`panel-comment-${first.id}`) : null;
+    if (el) pointToComment(el);
+  };
+  /** 未確認はオレンジの枠 */
+  const ackBorder = (c: TicketComment, normal: string) => (isUnackedComment(c) ? "1.5px solid #F97316" : normal);
+  /** 確認済みは薄く表示する */
+  const ackOpacity = (c: TicketComment) => (isAckTarget(c) && !isUnackedComment(c) ? 0.55 : 1);
+  const renderAckToggle = (c: TicketComment) => {
+    if (!isAckTarget(c)) return null;
+    if (isUnackedComment(c)) {
+      return (
+        <button onClick={() => void toggleCommentAck(c)} title="このコメントを確認済みにする"
+          style={{ padding: "2px 8px", borderRadius: 6, border: "1px solid rgba(249,115,22,0.45)", background: "#FFF7ED", color: "#C2410C", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" as const }}>
+          ☐ 確認済みにする
+        </button>
+      );
+    }
+    const who = c.resolvedBy === LEGACY_RESOLVED_BY
+      ? "既存のコメント"
+      : [c.resolvedBy, c.resolvedAt ? formatTs(c.resolvedAt) : ""].filter(Boolean).join("・");
+    return (
+      <button onClick={() => void toggleCommentAck(c)} title="チェックを外して未確認に戻す"
+        style={{ padding: "2px 6px", borderRadius: 6, border: "none", background: "transparent", color: "#059669", fontSize: 10, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const }}>
+        ✓ 確認済み{who ? `（${who}）` : ""}
+      </button>
+    );
+  };
 
   return (
     <>
@@ -3937,6 +3992,12 @@ export function TicketDetailPanel({
             {/* Comments */}
             <div>
               <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}>コメント ({comments.length})</p>
+              {unackedInOrder.length > 0 && (
+                <button onClick={jumpToFirstUnacked} title="最初の未確認のコメントへ移動"
+                  style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", marginBottom: 12, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(249,115,22,0.40)", background: "#FFF7ED", color: "#C2410C", fontSize: 11, fontWeight: 700, cursor: "pointer", textAlign: "left" as const }}>
+                  💬 未確認のコメントが{unackedInOrder.length}件あります
+                </button>
+              )}
 
               {topLevelComments.map(c => {
                 const isOwn = c.userName === userName;
@@ -4078,13 +4139,14 @@ export function TicketDetailPanel({
                         {(repliesByParent.get(c.id) ?? []).map(reply => {
                           const isOwnReply = reply.userName === userName;
                           return (
-                            <div key={reply.id} id={`panel-comment-${reply.id}`} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
+                            <div key={reply.id} id={`panel-comment-${reply.id}`} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)", opacity: ackOpacity(reply) }}>
                               <Avatar name={reply.userName} size="xs" />
                               <div style={{ flex: 1, minWidth: 0 }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
                                   <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{reply.userName}</span>
                                   <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(reply.createdAt)}</span>
-                                  <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                                  <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
+                                    {renderAckToggle(reply)}
                                     {isOwnReply && editingId !== reply.id && (
                                       <button onClick={() => handleEditComment(reply)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
                                         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
@@ -4179,7 +4241,7 @@ export function TicketDetailPanel({
                                       }
                                     }}
                                     data-comment-box
-                                    style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}
+                                    style={{ background: "#FFF", border: ackBorder(reply, "1px solid rgba(26,23,20,0.07)"), borderRadius: 8, padding: "10px 12px" }}
                                   >
                                     <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                                     {reply.images.length > 0 && (
@@ -4299,12 +4361,13 @@ export function TicketDetailPanel({
                   <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
                     <Avatar name={c.userName} size="xs" />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div id={`panel-comment-${c.id}`} style={{ borderRadius: 8 }}>
+                      <div id={`panel-comment-${c.id}`} style={{ borderRadius: 8, opacity: ackOpacity(c) }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
                           <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
                           <StatusBadge status={c.ticketStatus} />
                           <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
-                          <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
+                            {renderAckToggle(c)}
                             {isOwn && editingId !== c.id && (
                               <button onClick={() => handleEditComment(c)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
                                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
@@ -4383,7 +4446,7 @@ export function TicketDetailPanel({
                           </div>
                         ) : (
                           (c.content || c.images?.length > 0) && (
-                            <div data-comment-box style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: 0 }}>
+                            <div data-comment-box style={{ background: sysBg, border: ackBorder(c, `1px solid ${sysBorder}`), borderRadius: 8, padding: "10px 12px", marginBottom: 0 }}>
                               {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />}
                               {c.images?.length > 0 && (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
@@ -4408,13 +4471,14 @@ export function TicketDetailPanel({
                       {(repliesByParent.get(c.id) ?? []).map(reply => {
                         const isOwnReply = reply.userName === userName;
                         return (
-                          <div key={reply.id} id={`panel-comment-${reply.id}`} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
+                          <div key={reply.id} id={`panel-comment-${reply.id}`} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)", opacity: ackOpacity(reply) }}>
                             <Avatar name={reply.userName} size="xs" />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
                                 <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{reply.userName}</span>
                                 <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(reply.createdAt)}</span>
-                                <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
+                                  {renderAckToggle(reply)}
                                   {/* 1. 編集ボタン */}
                                   {isOwnReply && editingId !== reply.id && (
                                     <button onClick={() => handleEditComment(reply)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
@@ -4524,7 +4588,7 @@ export function TicketDetailPanel({
                                     }
                                   }}
                                   data-comment-box
-                                  style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}
+                                  style={{ background: "#FFF", border: ackBorder(reply, "1px solid rgba(26,23,20,0.07)"), borderRadius: 8, padding: "10px 12px" }}
                                 >
                                   <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                                   {reply.images.length > 0 && (

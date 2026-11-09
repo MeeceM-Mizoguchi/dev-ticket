@@ -24,6 +24,8 @@ import { PrMissingChip } from "@/app/components/github/PrMissingChip";
 import { ColumnFilter } from "@/app/components/shared/ColumnFilter";
 import { TicketAssigneeCell } from "@/app/components/tickets/TicketAssigneeCell";
 import { useAssigneeHistory } from "@/app/hooks/useAssigneeHistory";
+import { useUnackedCommentCounts } from "@/app/lib/commentAck";
+import { UnackedCommentChip } from "@/app/components/tickets/UnackedCommentChip";
 
 // 🌟 今日の日付（YYYY-MM-DD）を取得するヘルパー
 function getTodayString(): string {
@@ -161,9 +163,10 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
 
   // 担当を引き継いだチケットは、担当者セルに関わった人を全員（A / B / C）出す。
   // 引継ぎが無いチケットは Map に入らないので、セル側が今までどおり assignee だけを出す
-  const assigneeHistory = useAssigneeHistory(
-    useMemo(() => sprints.flatMap(sp => sp.tickets.map(t => t.id)), [sprints]),
-  );
+  const allTicketIds = useMemo(() => sprints.flatMap(sp => sp.tickets.map(t => t.id)), [sprints]);
+  const assigneeHistory = useAssigneeHistory(allTicketIds);
+  // 未確認のコメントの件数（BRU25-002）。一覧の定期更新（sprints が変わる）ときも取り直す
+  const unackedCounts = useUnackedCommentCounts(allTicketIds, sprints);
 
   const [filterCounts, setFilterCounts] = useState<Record<string, number>>({});
   const refreshFilterCount = (sprintId: string) => {
@@ -825,6 +828,11 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
                             <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
                             <TruncatedText text={t.title} style={{ fontSize: 12, fontWeight: 500, color: "#1A1714" }} />
                             {hasChildren && <span style={{ fontSize: 9, color: "#B0A9A4", flexShrink: 0 }}><GitBranch style={{ width: 9, height: 9, display: "inline" }} /> {children.length}</span>}
+                            {(() => {
+                              // 子の件数も親の行に足す（子を閉じていても気づけるように）
+                              const childUnacked = children.reduce((n, ch) => n + (unackedCounts.get(ch.id) ?? 0), 0);
+                              return <UnackedCommentChip count={(unackedCounts.get(t.id) ?? 0) + childUnacked} childCount={childUnacked} />;
+                            })()}
                             {needsPr && <PrMissingChip />}
                           </div>
                           <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(t.description) || "—"}</span>
@@ -884,6 +892,7 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
                               <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, paddingLeft: 4 }}>
                                 <div style={{ width: 1, height: 12, background: "rgba(26,23,20,0.15)", flexShrink: 0 }} />
                                 <TruncatedText text={child.title} style={{ fontSize: 11, fontWeight: 400, color: "#4B4744" }} />
+                                <UnackedCommentChip count={unackedCounts.get(child.id) ?? 0} compact />
                                 {childNeedsPr && <PrMissingChip compact />}
                               </div>
                               <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(child.description) || "—"}</span>

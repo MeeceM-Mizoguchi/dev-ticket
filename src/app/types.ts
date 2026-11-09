@@ -288,6 +288,13 @@ export interface TicketComment {
   id: string; ticketId: string; userName: string; content: string;
   ticketStatus: TicketStatus; images: string[]; createdAt: string;
   commentType: CommentType; replyTo?: string | null;
+  /**
+   * 「確認済み」にした日時（BRU25-002）。null = 未確認。
+   * undefined = 列が無い（SQL 未適用）ので、確認済みとして扱いチェックを出さない
+   */
+  resolvedAt?: string | null;
+  /** 「確認済み」にした人 */
+  resolvedBy?: string | null;
 }
 
 export interface TicketSourceFile {

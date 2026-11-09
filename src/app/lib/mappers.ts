@@ -95,7 +95,10 @@ export function mapSprint(r: any): Sprint {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapComment(r: any): TicketComment {
-  return { id: r.id, ticketId: r.ticket_id, userName: r.user_name, content: r.content, ticketStatus: r.ticket_status, images: (r.images || []) as string[], createdAt: r.created_at || "", commentType: (r.comment_type || "comment") as import("@/app/types").CommentType, replyTo: r.reply_to ?? null };
+  return { id: r.id, ticketId: r.ticket_id, userName: r.user_name, content: r.content, ticketStatus: r.ticket_status, images: (r.images || []) as string[], createdAt: r.created_at || "", commentType: (r.comment_type || "comment") as import("@/app/types").CommentType, replyTo: r.reply_to ?? null,
+    // 列が無い（SQL 未適用）ときは undefined のままにする（BRU25-002。commentAck.ts）
+    resolvedAt: "resolved_at" in r ? (r.resolved_at ?? null) : undefined,
+    resolvedBy: r.resolved_by ?? null };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
