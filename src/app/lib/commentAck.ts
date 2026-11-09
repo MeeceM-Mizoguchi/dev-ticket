@@ -1,6 +1,8 @@
 // コメントの「確認済み」チェック（BRU25-002）。
 //
-// 対象は comment_type = comment のコメント（文字を入力して書くコメントと返信。AI が API で登録したものを含む）だけ。
+// 対象は comment_type = comment のコメント（文字を入力して書くコメントと返信。AI が API で登録したものを含む）のうち、
+// 本文にメンションの印（「@」から候補を選んだときに入る class="mention" の span）があるものだけ（BRU25-006）。
+// メンションの無いコメントは誰宛てでもなく、誰がチェックを付けるのかが決まらないため。
 // ステータス変更・引継ぎ・レビューの記録は対象外。
 // ticket_comments.resolved_at が null なら未確認、値があれば確認済み。
 //
@@ -12,9 +14,12 @@ import { useEffect, useState } from "react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { TicketComment } from "@/app/types";
 
+/** 本文にメンションの印があるか。# のチケット・% のファイルなどの印は class が違うので当たらない */
+export const MENTION_MARK = 'class="mention"';
+
 /** チェックの対象のコメントか（列が無い環境では常に false） */
 export function isAckTarget(c: TicketComment): boolean {
-  return c.commentType === "comment" && c.resolvedAt !== undefined;
+  return c.commentType === "comment" && c.resolvedAt !== undefined && (c.content ?? "").includes(MENTION_MARK);
 }
 
 /** 未確認のコメントか */
@@ -65,6 +70,7 @@ export async function fetchUnackedCommentCounts(ticketIds: string[]): Promise<Ma
       .in("ticket_id", ticketIds.slice(i, i + CHUNK))
       .eq("comment_type", "comment")
       .is("resolved_at", null)
+      .like("content", `%${MENTION_MARK}%`) // メンション付きのコメントだけ数える（BRU25-006）
       // BUG-01
       .order("ticket_id", { ascending: true })
       .order("id", { ascending: true });
