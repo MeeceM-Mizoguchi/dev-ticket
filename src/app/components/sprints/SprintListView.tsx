@@ -151,7 +151,7 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
   /** 一括操作の「AIで実装」を出すか（チケット詳細の「AIで実装」と同じく、編集権限のある人だけ） */
   canAiImplement?: boolean;
 }) {
-  const { userId, userOrgId, userRole } = useAuth();
+  const { userId, userOrgId, userRole, userName } = useAuth();
   const { plan } = usePlan();
   const { showAlert } = useAlert();
 
@@ -166,7 +166,8 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
   const allTicketIds = useMemo(() => sprints.flatMap(sp => sp.tickets.map(t => t.id)), [sprints]);
   const assigneeHistory = useAssigneeHistory(allTicketIds);
   // 未確認のコメントの件数（BRU25-002）。一覧の定期更新（sprints が変わる）ときも取り直す
-  const unackedCounts = useUnackedCommentCounts(allTicketIds, sprints);
+  // ログイン中の人宛てのコメントだけを数える（BRU25-010）
+  const unackedCounts = useUnackedCommentCounts(allTicketIds, sprints, userName);
 
   const [filterCounts, setFilterCounts] = useState<Record<string, number>>({});
   const refreshFilterCount = (sprintId: string) => {
