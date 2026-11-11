@@ -718,7 +718,7 @@ function makeSuggestionPopup<T>(
 
 // ---- RichEditor -------------------------------------------------------------
 export function RichEditor({
-  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], wikiItems = [], minuteItems = [], fileItems = [], onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onFileClick, onImageUpload, onSubmit, style,
+  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], wikiItems = [], minuteItems = [], fileItems = [], onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onFileClick, onImageUpload, onSubmit, autoFocus = false, style,
 }: {
   value?: string; onChange?: (html: string) => void;
   placeholder?: string; minHeight?: number | string; maxHeight?: number | string; readOnly?: boolean; toolbar?: boolean;
@@ -737,6 +737,8 @@ export function RichEditor({
   onImageUpload?: (file: File) => Promise<string>;
   // ⌘(Mac) / Ctrl(Windows) + Enter で確定。渡した画面だけ有効になる（Enter 単体は改行のまま）
   onSubmit?: () => void;
+  // 表示されたときにエディタへフォーカスし、カーソルを末尾に置く（返信欄など。既定はフォーカスしない）
+  autoFocus?: boolean;
   style?: React.CSSProperties;
 }) {
   const idRef = useRef(`re-${Math.random().toString(36).slice(2, 8)}`);
@@ -1147,6 +1149,25 @@ export function RichEditor({
     // 「そのときエディタに入っていた内容」で保存が走ってしまう。必ず false を渡すこと。
     if (editor) editor.setEditable(!readOnly, false);
   }, [readOnly, editor]);
+
+  // autoFocus：エディタの用意ができてから（初期値の引用などが入った後で）末尾にカーソルを置く。
+  // 末尾なので、引用付きで開いた返信欄では引用の後ろの空の行に入る。
+  // 最後の行が改行（<br>）だけの空の行なら、改行の後ろ（1行下）ではなくその行の先頭に置く。
+  // 呼び出し側が自前でスクロールしている（返信欄までのスクロール BRU4-041）ので、ここではスクロールさせない。
+  // フォーカスは選択の変更だけで本文は変わらないため、onChange（自動保存）は走らない。
+  useEffect(() => {
+    if (!autoFocus || readOnly || !editor) return;
+    const raf = requestAnimationFrame(() => {
+      if (editor.isDestroyed) return;
+      const { doc } = editor.state;
+      const last = doc.lastChild;
+      let onlyBreaks = !!last?.isTextblock && last.childCount > 0;
+      last?.forEach(n => { if (n.type.name !== "hardBreak") onlyBreaks = false; });
+      const pos = onlyBreaks && last ? doc.content.size - last.nodeSize + 1 : "end";
+      editor.commands.focus(pos, { scrollIntoView: false });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [editor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 各種メンション（チケット / バックログ / Wiki / 議事録 / ファイル）のクリック統合ハンドラー
   useEffect(() => {
