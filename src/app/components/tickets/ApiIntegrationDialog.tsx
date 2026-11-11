@@ -5,6 +5,8 @@
 //
 // タブ:
 //   ・AIで実装 … AIにチケットを読み取らせて実装させる手順をコピーする（チケット詳細から開いたときだけ）
+//   ・AIで修正 … AIにチケットを読み取らせ、利用者が書き足した内容で項目を直させる手順をコピーする
+//                （チケット詳細から開いたときだけ。表示できる人は「AIで実装」と同じ。ENHA2-057）
 //   ・使い方   … AIに貼り付ける、チケットを登録するプロンプトをコピーする（毎フェーズ使う）
 //   ・組み込み … 外部のシステムから API を叩くサンプル（登録・読み取り・ステータス更新・PR紐づけ）
 //   ・APIキー … キーの発行・失効・棚卸し（年に数回しか使わない）
@@ -28,10 +30,10 @@ import { useToast } from "@/app/contexts/ToastContext";
 import {
   listApiKeys, createApiKey, revealApiKey, revokeApiKey, deleteApiKey,
   isActiveKey, keyStatus, maskedKey, formatRelative, formatDay,
-  API_KEY_SCOPES, scopeLabel, canCreateTickets, canReadTickets, canUpdateStatus,
+  API_KEY_SCOPES, scopeLabel, canCreateTickets, canReadTickets, canUpdateStatus, canUpdateTickets,
   type ApiKeyRow, type ApiKeyScope,
 } from "@/app/lib/apiKeys";
-import { buildApiSetupPrompt, buildBacklogApiPrompt } from "@/app/lib/apiKeyPrompt";
+import { buildApiSetupPrompt, buildBacklogApiPrompt, buildTicketUpdatePrompt } from "@/app/lib/apiKeyPrompt";
 import {
   buildApiSample, buildKeySetupSnippet, SAMPLE_LANGS, SAMPLE_KINDS, API_LIMITS,
   buildBacklogApiSample, BACKLOG_SAMPLE_KINDS,
@@ -74,7 +76,273 @@ function SectionNote({ children }: { children: React.ReactNode }) {
   return <p style={{ fontSize: 11.5, color: "#9E9690", lineHeight: 1.7 }}>{children}</p>;
 }
 
-type DialogTab = "implement" | "usage" | "embed" | "keys";
+type DialogTab = "implement" | "update" | "usage" | "embed" | "keys";
+
+/** 「AIで修正」タブから発行するキーの名前と期限。修正のAPIは権限「すべて」のキーだけが使える */
+const UPDATE_KEY_NAME = "AIで修正用";
+const UPDATE_KEY_DAYS = 90;
+
+/**
+ * 「AIで修正」タブの本体（ENHA2-057）。使うキーを選んで手順をコピーし、AIに貼ったあと直したい内容を書き足してもらう。
+ * AI はチケットを読み取り（GET /api/v1/ticket）、頼まれた項目だけを POST /api/v1/ticket-update で直す。
+ * キーの読み込み・復号・その場での発行は「AIで実装」（AiImplementPanel）と同じ作り。
+ */
+function AiUpdatePanel({ ticket, projectId, projectName, keysRevision, onKeyIssued }: {
+  ticket: { wbs: string; title: string; parentId?: string | null };
+  projectId: string;
+  projectName: string;
+  keysRevision: number;
+  onKeyIssued: (row: ApiKeyRow) => void;
+}) {
+  const { userRole } = useAuth();
+  const { toast } = useToast();
+  const canManage = userRole === "admin" || userRole === "owner";
+
+  const [loading, setLoading] = useState(true);
+  const [keys, setKeys] = useState<ApiKeyRow[]>([]);
+  const [selectedKeyId, setSelectedKeyId] = useState("");
+  const [revealedKey, setRevealedKey] = useState<string | null>(null);
+  const [revealing, setRevealing] = useState(false);
+  const [revealError, setRevealError] = useState<string | null>(null);
+  // どのキーの復号を済ませた（または実行中）か。発行直後のキーは平文が手元にあるので復号を省く
+  const revealedForRef = useRef("");
+  const [issuing, setIssuing] = useState(false);
+  const issuingRef = useRef(false);
+  const [issueError, setIssueError] = useState<string | null>(null);
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [manualCopyText, setManualCopyText] = useState<string | null>(null);
+
+  const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
+  const today = useMemo(() => {
+    const now = new Date();
+    return `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")}`;
+  }, []);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled || !projectId) { setLoading(false); return; }
+    let cancelled = false;
+    void listApiKeys(projectId).then(rows => {
+      if (cancelled) return;
+      // 修正のAPIは「すべて」のキーだけが使えるので、それ以外は選ばせない
+      const usable = rows.filter(k => isActiveKey(k) && canUpdateTickets(k));
+      setKeys(usable);
+      setSelectedKeyId(prev => (prev && usable.some(k => k.id === prev) ? prev : (usable[0]?.id ?? "")));
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [projectId, keysRevision]);
+
+  useEffect(() => {
+    if (!selectedKeyId) { revealedForRef.current = ""; setRevealedKey(null); setRevealError(null); return; }
+    if (revealedForRef.current === selectedKeyId) return;
+    revealedForRef.current = selectedKeyId;
+    let cancelled = false;
+    let done = false;
+    setRevealing(true);
+    // 前のキーの平文を残したままにすると、復号中に押されたとき別のキー入りでコピーされる
+    setRevealedKey(null);
+    setRevealError(null);
+    void revealApiKey(selectedKeyId).then(result => {
+      done = true;
+      if (cancelled) return;
+      setRevealing(false);
+      if (result.ok) { setRevealedKey(result.plainKey); return; }
+      setRevealError(result.needsReissue
+        ? "このキーは以前の方式で発行されているため、手順書へ埋め込めません。新しく発行し直してください。"
+        : result.error);
+    });
+    return () => {
+      cancelled = true;
+      if (!done && revealedForRef.current === selectedKeyId) revealedForRef.current = "";
+    };
+  }, [selectedKeyId]);
+
+  const handleQuickIssue = async () => {
+    // BUG-05: state だけだと同じレンダーのハンドラが2回走ったとき両方すり抜け、キーが2本発行される
+    if (issuingRef.current) return;
+    issuingRef.current = true;
+    setIssuing(true);
+    setIssueError(null);
+    try {
+      const result = await createApiKey({ name: UPDATE_KEY_NAME, projectId, expiresInDays: UPDATE_KEY_DAYS, scope: "full" });
+      if (!result.ok) { setIssueError(result.error); return; }
+      revealedForRef.current = result.result.row.id;
+      setRevealedKey(result.result.plainKey);
+      setRevealing(false);
+      setRevealError(null);
+      setKeys(prev => [result.result.row, ...prev]);
+      setSelectedKeyId(result.result.row.id);
+      onKeyIssued(result.result.row);
+      toast(`APIキー「${UPDATE_KEY_NAME}」を発行しました`);
+    } finally {
+      issuingRef.current = false;
+      setIssuing(false);
+    }
+  };
+
+  const selectedKey = keys.find(k => k.id === selectedKeyId) ?? null;
+  const prompt = useMemo(() => buildTicketUpdatePrompt({
+    baseUrl, projectName, wbs: ticket.wbs, title: ticket.title, isChild: !!ticket.parentId, today,
+    plainKey: revealedKey ?? undefined,
+  }), [baseUrl, projectName, ticket.wbs, ticket.title, ticket.parentId, today, revealedKey]);
+  const keyEmbedded = !!revealedKey;
+  // キーを1本も見られない人（管理者以外。RLS で一覧が空になる）は、キー欄を空にした手順をコピーできる
+  const blockedReason: string | null =
+    loading || revealing ? "キーを読み込んでいます…"
+      : selectedKey && !revealedKey ? (revealError ?? "キーを読み込めませんでした")
+        : null;
+
+  const handleCopy = async () => {
+    const ok = await copyToClipboard(prompt);
+    if (ok) {
+      toast(keyEmbedded ? "手順をコピーしました（APIキー入り）。AIに貼り、直したい内容を書き足してください" : "手順をコピーしました。AIに貼り、直したい内容を書き足してください");
+      setManualCopyText(null);
+    } else {
+      setManualCopyText(prompt);
+      toast("自動コピーできませんでした。下のテキストを手動でコピーしてください", "error");
+    }
+  };
+
+  const sectionTitle: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 7 };
+  const issueButton = canManage && (
+    <button type="button" onClick={() => void handleQuickIssue()} disabled={issuing}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 14px", fontSize: 12, fontWeight: 700,
+        color: GREEN, background: "#FFFFFF", border: `1px solid ${GREEN}55`, borderRadius: 9,
+        cursor: issuing ? "not-allowed" : "pointer", opacity: issuing ? 0.6 : 1,
+      }}>
+      {issuing ? <Loader2 className="animate-spin" style={{ width: 13, height: 13 }} /> : <KeyRound style={{ width: 13, height: 13 }} />}
+      {issuing ? "発行中…" : `権限「すべて」のキーを発行する（${UPDATE_KEY_DAYS}日間有効）`}
+    </button>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 17 }}>
+      <p style={{ fontSize: 12.5, color: "#4B4640", lineHeight: 1.8 }}>
+        手順をコピーしてAIに貼り、<strong>そのあとに直したい内容を書き足してください</strong>
+        （例：「期限日を11/25にして、優先度を高に」「本文の受入条件に〜を足して」）。
+        AIがこのチケットを読み取り、頼んだ項目だけを直します。変えた内容はコメント欄に履歴として残ります。
+      </p>
+
+      {/* AIに貼ったあとの書き方。コピーした文章の末尾が「直したい内容」の見出しになっている */}
+      <div style={{ padding: "12px 14px", background: "#F5F3FF", border: `1px solid ${PURPLE}22`, borderRadius: 10 }}>
+        <p style={{ fontSize: 11.5, fontWeight: 800, color: "#1A1714", marginBottom: 5 }}>AIでできること</p>
+        <ul style={{ margin: 0, paddingLeft: 17, fontSize: 11.5, color: "#4B4640", lineHeight: 1.85 }}>
+          <li>タイトル・本文・ラベル・優先度・分類・担当者・開始日・期限日・PR不要を直す（担当者を変えても通知は送りません）</li>
+          <li>ステータスを画面のボタンと同じく変える（保留・取下・未着手に戻すも可）。レビュー中にしてレビュアーを指定すると、レビュアーに通知が届きます</li>
+          <li>画面で誰かが直したあとの古い内容では上書きしません</li>
+        </ul>
+        <p style={{ fontSize: 10.5, color: "#9E9690", marginTop: 6, lineHeight: 1.7 }}>
+          画像・添付ファイルの追加、スプリントの移動、親の変更、削除はできません。画面から操作してください。
+        </p>
+      </div>
+
+      <div>
+        <p style={sectionTitle}>使用するAPIキー（権限「すべて」のキーだけ使えます）</p>
+        {loading ? (
+          <p style={{ fontSize: 11.5, color: "#9E9690", display: "flex", alignItems: "center", gap: 6 }}>
+            <Loader2 className="animate-spin" style={{ width: 13, height: 13, color: GREEN }} />APIキーを読み込んでいます…
+          </p>
+        ) : keys.length === 0 ? (
+          <div style={{ padding: "12px 14px", background: "#FFFBEB", border: "1px solid rgba(217,119,6,0.22)", borderRadius: 10 }}>
+            <p style={{ fontSize: 12, fontWeight: 700, color: "#92400E" }}>
+              {canManage ? "権限が「すべて」のAPIキーがまだありません" : "APIキーは管理者だけが参照できます"}
+            </p>
+            <p style={{ fontSize: 11.5, color: "#6B6458", marginTop: 5, lineHeight: 1.8 }}>
+              {canManage
+                ? "チケットの修正は、権限が「すべて」のキーだけが使えます。"
+                : "キーの欄を空にした手順がコピーされます。AIに貼り付けたあと、管理者から受け取った権限が「すべて」のキーに置き換えてください。"}
+            </p>
+            {canManage && <div style={{ marginTop: 10 }}>{issueButton}</div>}
+            {issueError && <p style={{ fontSize: 11.5, color: "#DC2626", marginTop: 8, lineHeight: 1.7 }}>{issueError}</p>}
+          </div>
+        ) : (
+          <div>
+            <select
+              value={selectedKeyId}
+              onChange={e => setSelectedKeyId(e.target.value)}
+              style={{
+                width: "100%", padding: "10px 12px", fontSize: 12.5, color: "#1A1714",
+                background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.14)", borderRadius: 9, cursor: "pointer",
+              }}>
+              {keys.map(k => (
+                <option key={k.id} value={k.id}>
+                  {maskedKey(k.keyPrefix)}（{k.name}） ／ 権限: {scopeLabel(k.scope)}
+                </option>
+              ))}
+            </select>
+            <p style={{ fontSize: 10.5, marginTop: 6, lineHeight: 1.7, color: revealError ? "#DC2626" : keyEmbedded ? GREEN : "#B0A9A4", display: "flex", alignItems: "flex-start", gap: 5 }}>
+              {revealing
+                ? <><Loader2 className="animate-spin" style={{ width: 12, height: 12, color: GREEN, flexShrink: 0, marginTop: 2 }} />キーを読み込んでいます…</>
+                : revealError ? `⚠ ${revealError}`
+                  : keyEmbedded ? "✅ 選択中のキーを埋め込んだ状態でコピーされます。APIキーを別に貼る必要はありません。"
+                    : "キーを読み込めませんでした。"}
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <button type="button" onClick={() => void handleCopy()} disabled={!!blockedReason}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6, padding: "10px 18px",
+            fontSize: 12.5, fontWeight: 700, color: "#FFFFFF", background: GREEN, border: "none", borderRadius: 9,
+            cursor: blockedReason ? "not-allowed" : "pointer", opacity: blockedReason ? 0.45 : 1, whiteSpace: "nowrap",
+          }}>
+          <Copy style={{ width: 13, height: 13 }} />
+          {keyEmbedded ? "手順をコピー（APIキー入り）" : "手順をコピー"}
+        </button>
+        {blockedReason && !revealError && (
+          <p style={{ fontSize: 11, color: "#9E9690", marginTop: 7, lineHeight: 1.7 }}>{blockedReason}</p>
+        )}
+      </div>
+
+      <div style={{ padding: "12px 14px", background: "#F0FDF4", border: `1px solid ${GREEN}22`, borderRadius: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+          <Terminal style={{ width: 14, height: 14, color: GREEN, flexShrink: 0 }} />
+          <p style={{ fontSize: 12, fontWeight: 800, color: "#1A1714" }}>貼り付け先：コマンドを実行できるAI</p>
+        </div>
+        <p style={{ fontSize: 11.5, color: "#4B4640", lineHeight: 1.85 }}>
+          <strong>Claude Code</strong>・<strong>Cursor</strong>・<strong>Gemini CLI</strong> などに貼り付けてください。
+          ブラウザ版のAI（Claude.ai・ChatGPT など）は外部へ通信できないため動きません。
+        </p>
+      </div>
+
+      <div>
+        <button type="button" onClick={() => setPromptOpen(v => !v)}
+          style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11.5, fontWeight: 600, color: GREEN }}>
+          {promptOpen ? <ChevronDown style={{ width: 13, height: 13 }} /> : <ChevronRight style={{ width: 13, height: 13 }} />}
+          手順の中身を表示
+        </button>
+        {promptOpen && (
+          <pre style={{
+            marginTop: 8, padding: "12px 14px", maxHeight: 280, overflow: "auto",
+            background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9,
+            fontSize: 10.5, lineHeight: 1.65, fontFamily: "var(--font-mono)",
+            color: "#4B4640", whiteSpace: "pre-wrap", wordBreak: "break-word",
+          }}>{revealedKey ? prompt.split(revealedKey).join(`${maskedKey(selectedKey?.keyPrefix ?? "")}（コピー時は実際のキーが入ります）`) : prompt}</pre>
+        )}
+      </div>
+
+      {manualCopyText && (
+        <div>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "#D97706", marginBottom: 5 }}>下のテキストを選択してコピーしてください</p>
+          <textarea
+            readOnly
+            value={manualCopyText}
+            onFocus={e => e.currentTarget.select()}
+            autoFocus
+            style={{
+              width: "100%", height: 140, padding: "10px 12px", fontSize: 11,
+              fontFamily: "var(--font-mono)", border: "1px solid rgba(26,23,20,0.14)",
+              borderRadius: 9, color: "#4B4640", resize: "vertical",
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function ApiIntegrationDialog({
   sprintId, sprintName, projectId, projectName, parentTicket, implementTicket, backlog, zIndexBase = 300, onClose,
@@ -111,6 +379,8 @@ export function ApiIntegrationDialog({
   const tabs = useMemo(() => {
     const list: [DialogTab, string][] = [];
     if (implementTicket) list.push(["implement", "AIで実装"]);
+    // 「AIで修正」を出せる人は「AIで実装」と同じ（ENHA2-057）
+    if (implementTicket) list.push(["update", "AIで修正"]);
     if (!implementTicket || parentTicket) list.push(["usage", parentTicket ? "AIで子チケット登録" : "AIから使う"]);
     if (!implementTicket || canManage) {
       list.push(["embed", "システムに組み込む"]);
@@ -611,6 +881,7 @@ export function ApiIntegrationDialog({
         { m: "GET", path: "/api/v1/tickets", desc: "既存チケットを一覧する（子を足す親を探す）" },
         { m: "GET", path: "/api/v1/context", desc: "スプリント・担当者・分類の候補を取得する" },
         { m: "GET", path: "/api/v1/ticket?wbs=…", desc: "チケット1件の本文・画像・コメント・子チケットを読み取る（権限: 読み取りのみ／すべて）" },
+        { m: "POST", path: "/api/v1/ticket-update", desc: "既存チケットの項目を修正する（権限: すべて）" },
         { m: "POST", path: "/api/v1/ticket-status", desc: "ステータスを前へ進める（権限: すべて）" },
         { m: "POST", path: "/api/v1/ticket-pull", desc: "作成したPRをチケットへ紐づける（権限: すべて）" },
         { m: "POST", path: "/api/github/ticket-pull-create", desc: "Dev Ticket の bot 名義でPRを作り、チケットへ紐づける（権限: すべて）" },
@@ -919,7 +1190,7 @@ export function ApiIntegrationDialog({
             </select>
             <p style={{ fontSize: 10.5, color: formScope === "full" ? "#D97706" : "#B0A9A4", marginTop: 5, lineHeight: 1.7 }}>
               {formScope === "full"
-                ? "AIにチケットを読み取らせて実装し、ステータスも進めさせる場合に選びます。このキーが漏れると、チケットの中身を読まれ、ステータスを変更されます。"
+                ? "AIにチケットを読み取らせて実装し、ステータスも進めさせる場合や、既存チケットを修正させる場合に選びます。このキーが漏れると、チケットの中身を読まれ、書き換えられます。"
                 : formScope === "read"
                   ? "AIにチケットを読み取らせて実装する場合に選びます。チケットの登録とステータスの更新はできません。"
                   : "チケットを登録するだけの場合に選びます。チケットの中身の読み取りとステータスの更新はできません。"}
@@ -1029,6 +1300,7 @@ export function ApiIntegrationDialog({
 
   // ── 描画 ──────────────────────────────────────────────────────
   const showImplement = !!implementTicket && tab === "implement" && !issuedKey;
+  const showUpdate = !!implementTicket && tab === "update" && !issuedKey;
 
   return (
     <>
@@ -1104,7 +1376,19 @@ export function ApiIntegrationDialog({
               />
             </div>
           )}
-          {!showImplement && (loadError
+          {/* 「AIで修正」もキーの読み込みを自分で持つ。タブを切り替えても選んだキーが残るよう、隠すだけにする */}
+          {implementTicket && projectId && (
+            <div style={{ display: showUpdate ? "block" : "none" }}>
+              <AiUpdatePanel
+                ticket={{ wbs: implementTicket.wbs, title: implementTicket.title, parentId: implementTicket.parentId }}
+                projectId={projectId}
+                projectName={projectName}
+                keysRevision={keysRevision}
+                onKeyIssued={handleImplementKeyIssued}
+              />
+            </div>
+          )}
+          {!showImplement && !showUpdate && (loadError
             ? <p style={{ fontSize: 12, color: "#DC2626" }}>{loadError}</p>
             : loading
               ? (

@@ -6,6 +6,7 @@
 //   POST /api/v1/tickets        … チケットの登録（親子1階層まで／既存チケットへの子の追加も可）
 //   GET  /api/v1/ticket         … チケット1件の中身（本文・画像・添付・コメント・子チケット）
 //   POST /api/v1/ticket-status  … ステータスを前へ進める（進行中〜クローズ／子は進行中・対応完了）
+//   POST /api/v1/ticket-update  … 既存チケットの項目（タイトル・本文・担当者・日付・ステータスなど）を画面と同じく直す（ENHA2-057）
 //   POST /api/v1/ticket-pull    … 外部で作ったプルリクエストをチケットへ紐づける
 //   POST /api/v1/ticket-comment … AIの確認の質問をコメントとして登録し、起票者へ知らせる（BRU25-001）
 //   GET  /api/v1/backlog        … バックログ項目の一覧（重複登録の防止用。BRU24-002）
@@ -17,7 +18,7 @@
 // 下の3つは「AIがチケットを読み取って実装する」ためのもの。キーの権限（scope）で使える範囲が変わる:
 //   write … 登録のみ（context / tickets / backlog の POST）    ← これまでに発行されたキーはすべてこれ
 //   read  … 読み取りのみ（context / tickets の GET / ticket / backlog の GET）
-//   full  … すべて（ticket-status / ticket-pull / ticket-comment はこの権限のみ）
+//   full  … すべて（ticket-status / ticket-update / ticket-pull / ticket-comment はこの権限のみ）
 //
 // 認証は Dev Ticket が発行する APIキー:
 //   Authorization: Bearer dvt_live_xxxxx
@@ -857,8 +858,16 @@ async function lookupTicket(
 // 人が画面からコピーして貼り直していた内容を、これ1つで渡せるようにしている。
 //
 // 画像と添付は public バケットの URL をそのまま返す（認証なしで GET できる）。
+//
+// 本文はAIが読みやすいテキスト（description）のほかに、保存されているHTML（descriptionHtml）も返す。
+// POST /api/v1/ticket-update で本文を直すときは、descriptionHtml を直して送り返すと
+// 画像・表・メンションが消えない（Markdown の変換は画像と表に対応していないため。ENHA2-057）。
+// 修正できる項目の今の値（labels・releaseDate など）と、409 の判定に使う updatedAt もここで返す。
+// 列はすべて本番DBにあることを確かめてある（closed_at は本番に無いので読まない）。
 const DETAIL_COLS =
-  "id, wbs, title, status, priority, assignee, start_date, due_date, estimated_hours, description, images, category_id, sprint_id, parent_id";
+  "id, wbs, title, status, priority, assignee, start_date, due_date, estimated_hours, description, images, category_id, sprint_id, parent_id"
+  + ", prefixes, pr_link_waived, reviewer_name, review_round, release_date, is_release_date_undecided"
+  + ", is_operation_verified, actual_work_hours, actual_work_hours_breakdown, updated_at";
 
 const urlList = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((u): u is string => typeof u === "string" && !!u && !/^data:/i.test(u)) : [];
@@ -1038,6 +1047,26 @@ async function handleTicketDetail(sb: SupabaseClient, key: ApiKeyRow, query: any
       comments,
       // 上限で落としたコメントの件数（古いほうから落ちる）
       commentsOmitted: Math.max(0, allComments.length - comments.length),
+      // ── ここから下は POST /api/v1/ticket-update で直すときに使う今の値（ENHA2-057） ──
+      // 保存されている本文のHTML（そのまま）。直すときはこれを直して descriptionHtml で送り返す
+      descriptionHtml: String(t.description ?? ""),
+      // 読んだ時点の更新日時。修正するときに updatedAt として送り返す（画面で直されていたら 409）
+      updatedAt: t.updated_at ?? null,
+      labels: Array.isArray(t.prefixes) ? t.prefixes.filter((p: unknown) => typeof p === "string") : [],
+      prLinkWaived: t.pr_link_waived === true,
+      // 本文の下の画像欄の画像だけ（images は本文に貼られた画像も含む）。外す・並べ替えるときに使う
+      attachedImages: Array.isArray(t.images) ? t.images.filter((u: unknown) => typeof u === "string" && !!u) : [],
+      reviewer: t.reviewer_name || null,
+      reviewRound: t.review_round ?? 0,
+      releaseDate: t.release_date ?? null,
+      releaseDateUndecided: t.is_release_date_undecided === true,
+      operationVerified: t.is_operation_verified === true,
+      // 手入力・完了時に計測した実績工数。null は未入力（画面は各工程の日時から計算する）
+      actualHours: t.actual_work_hours ?? null,
+      // 親チケットの工程ごとの実績（着手→レビュー依頼／レビュー依頼→承認／承認→STG／STG→UAT／UAT→リリース）
+      actualHoursBreakdown: Array.isArray(t.actual_work_hours_breakdown)
+        ? t.actual_work_hours_breakdown.map((v: unknown) => Number(v) || 0)
+        : null,
     };
   };
 
@@ -1513,6 +1542,862 @@ async function handleCreateComment(sb: SupabaseClient, key: ApiKeyRow, body: any
   }
 
   return res.status(201).json({ ok: true, wbs: row.wbs, commentId, url, warnings });
+}
+
+// ── 本文のHTMLを安全な形にする（ENHA2-057） ─────────────────
+//
+// ticket-update の descriptionHtml は、AI や外部のシステムが書いたHTMLをそのまま保存するため、
+// 保存の前に「許可したタグと属性だけを残す」形で組み立て直す。
+// 残すのは RichEditor（tiptap）が出すもの（段落・見出し・リスト・表・画像・リンク・コード・
+// メンションの span・Mermaid の div など）。script・iframe・on〜属性・javascript: のリンクなどは落とす。
+// サーバーには DOM が無く、このファイルは外部のライブラリを持たない作りなので（冒頭の注記）、自前で字句を読む。
+
+/** 中身ごと捨てるタグ（中の文字も表示させない） */
+const HTML_DROP_WITH_CONTENT = new Set([
+  "script", "style", "iframe", "object", "embed", "noscript", "template", "textarea", "select", "button",
+  "svg", "math", "frame", "frameset", "noembed", "noframes", "xmp", "title", "head", "applet",
+  "audio", "video", "canvas",
+]);
+
+/** 残すタグと、タグごとに残す属性（class・style・title・data-* はどのタグでも残す） */
+const HTML_ALLOWED_TAGS: Record<string, string[]> = {
+  p: [], br: [], hr: [], div: [], span: [],
+  strong: [], b: [], em: [], i: [], s: [], del: [], strike: [], u: [], sub: [], sup: [], mark: [],
+  code: [], pre: [], blockquote: [],
+  h1: [], h2: [], h3: [], h4: [], h5: [], h6: [],
+  ul: [], ol: ["start", "type"], li: [],
+  a: ["href", "target", "rel"],
+  img: ["src", "alt", "width", "height"],
+  table: [], thead: [], tbody: [], tfoot: [], tr: [], colgroup: [],
+  td: ["colspan", "rowspan", "colwidth"], th: ["colspan", "rowspan", "colwidth"], col: ["span", "width"],
+};
+const HTML_GLOBAL_ATTRS = new Set(["class", "style", "title"]);
+const HTML_VOID_TAGS = new Set(["br", "hr", "img", "col"]);
+
+// 属性の値に引用符の中身として > を含められるよう、引用符の中は丸ごと読み飛ばす
+const HTML_TAG_RE = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/g;
+const HTML_ATTR_RE = /([^\s"'>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+
+const escHtmlText = (s: string) => s
+  .replace(/&(?!(?:[a-zA-Z][a-zA-Z0-9]{1,31}|#\d{1,7}|#x[0-9a-fA-F]{1,6});)/g, "&amp;")
+  .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/**
+ * href / src に入れてよい URL か。http(s)・mailto・tel・相対パス・# だけを通す。
+ * 画像の src に限り、data:image（png / gif / jpeg / webp）も通す（古い本文に埋め込みの画像があるため）。
+ * 判定は空白・制御文字を除いた形で行う（"java\tscript:" のようなすり抜けを防ぐ）。
+ */
+function safeHtmlUrl(raw: string, allowDataImage: boolean): string | null {
+  const v = raw.trim();
+  const probe = v.replace(/[\u0000- \u007f-\u009f]+/g, "").toLowerCase();
+  if (/^(https?:|mailto:|tel:)/.test(probe)) return v;
+  if (allowDataImage && /^data:image\/(png|gif|jpe?g|webp);base64,/.test(probe)) return v;
+  if (/^[a-z][a-z0-9+.-]*:/.test(probe)) return null;
+  return v;
+}
+
+/** style 属性から、スクリプトや外部読み込みにつながる宣言を落とす。落とした宣言の数も返す */
+function safeHtmlStyle(raw: string): { style: string; dropped: number } {
+  const decls = raw.replace(/\/\*[\s\S]*?\*\//g, "").split(";").map(d => d.trim()).filter(Boolean);
+  const kept = decls.filter(d => {
+    const i = d.indexOf(":");
+    if (i <= 0) return false;
+    const prop = d.slice(0, i).trim().toLowerCase();
+    const val = d.slice(i + 1).toLowerCase();
+    if (!/^-?[a-z][a-z-]*$/.test(prop) || prop === "behavior" || prop === "-moz-binding") return false;
+    return !/expression|javascript:|vbscript:|url\s*\(|@import|[\\<>]/.test(val);
+  });
+  return { style: kept.join("; "), dropped: decls.length - kept.length };
+}
+
+function cleanHtmlAttrs(tag: string, raw: string, onRemoved: () => void): string {
+  const allowed = HTML_ALLOWED_TAGS[tag] ?? [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let hasTarget = false;
+  HTML_ATTR_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = HTML_ATTR_RE.exec(raw)) !== null) {
+    const name = m[1].toLowerCase();
+    if (name === "/") continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const value = decodeEntities(m[2] ?? m[3] ?? m[4] ?? "");
+    if (!HTML_GLOBAL_ATTRS.has(name) && !allowed.includes(name) && !/^data-[a-z0-9-]+$/.test(name)) {
+      onRemoved();
+      continue;
+    }
+    let v: string | null = value;
+    if (name === "style") {
+      const cleaned = safeHtmlStyle(value);
+      if (cleaned.dropped > 0) onRemoved();
+      v = cleaned.style;
+      if (!v) continue;
+    } else if (name === "href" || name === "src") {
+      v = safeHtmlUrl(value, tag === "img" && name === "src");
+      if (v === null) { onRemoved(); continue; }
+    } else if (name === "target") {
+      if (value !== "_blank") { onRemoved(); continue; }
+      hasTarget = true;
+    } else if (name === "rel") {
+      continue; // target と一緒に付け直す
+    }
+    out.push(`${name}="${esc(v)}"`);
+  }
+  // 別タブで開くリンクは、開いた先から元の画面を操作されないようにする（RichEditor と同じ値）
+  if (tag === "a" && hasTarget) out.push(`rel="noopener noreferrer"`);
+  return out.length > 0 ? ` ${out.join(" ")}` : "";
+}
+
+// export しているのは検証用（mdToHtml と同じ理由）。
+/** 許可したタグ・属性だけを残したHTMLと、取り除いた箇所の数を返す */
+export function sanitizeHtml(html: string): { html: string; removed: number } {
+  let removed = 0;
+  const onRemoved = () => { removed++; };
+  // コメント・CDATA・<!DOCTYPE>・<?xml?> は表示に関係しないので捨てる
+  const s = html.split("\u0000").join("")
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, "")
+    .replace(/<!\[CDATA\[[\s\S]*?(?:\]\]>|$)/g, "")
+    .replace(/<[!?][^>]*>?/g, "");
+
+  const out: string[] = [];
+  let last = 0;
+  /** 中身ごと捨てているタグ。閉じタグが来るまで、間の文字もタグも捨てる */
+  let skipping: string | null = null;
+  HTML_TAG_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = HTML_TAG_RE.exec(s)) !== null) {
+    const text = s.slice(last, m.index);
+    last = HTML_TAG_RE.lastIndex;
+    const closing = m[1] === "/";
+    const name = m[2].toLowerCase();
+    if (skipping) {
+      if (closing && name === skipping) skipping = null;
+      continue;
+    }
+    out.push(escHtmlText(text));
+    if (HTML_DROP_WITH_CONTENT.has(name)) {
+      onRemoved();
+      if (!closing && !/\/\s*$/.test(m[3])) skipping = name;
+      continue;
+    }
+    if (!HTML_ALLOWED_TAGS[name]) {
+      // 表示に要らない枠（html・body・font など）は、タグだけ外して中の文字は残す
+      onRemoved();
+      continue;
+    }
+    if (closing) {
+      if (!HTML_VOID_TAGS.has(name)) out.push(`</${name}>`);
+      continue;
+    }
+    out.push(`<${name}${cleanHtmlAttrs(name, m[3], onRemoved)}>`);
+  }
+  // 閉じられないまま終わった script などの後ろは捨てる
+  if (!skipping) out.push(escHtmlText(s.slice(last)));
+  return { html: out.join(""), removed };
+}
+
+// ── POST /api/v1/ticket-update（ENHA2-057） ──────────────────
+//
+// 外部のAI・システムが、既存チケットの項目をチケット詳細の画面と同じように直すためのもの。
+// 決まりごと:
+//   ・送った項目だけを変える。送らなかった項目は update に含めない（列ごと送らない。BRU21-002 の再発防止）
+//   ・updatedAt（GET /api/v1/ticket で読んだ値）が今の値と違えば、画面で誰かが直したということなので 409 で返す
+//   ・メンバーにいない担当者・登録されていない分類など、解決できない値はその項目だけ変えずに warnings に理由を返す
+//   ・担当者を変えても通知しない（担当の期間 ticket_assignments は DB のトリガーで切り替わる）。
+//     通知するのはレビュー中にしたときのレビュアーへの依頼だけ（画面のレビュー依頼と同じ）
+//   ・ステータスは画面のボタンと同じ動き（TicketDetailPanel の handleStatusAction / handleReviewRequest /
+//     handleToggleHold / handleToggleWithdraw / executeResetToTodo / 子の着手・完了）に合わせる。
+//     画面の今の動き（保留解除でリリース待ちが「対応完了」に戻る、レビューを取り下げてもレビュー依頼日が残る）もそのまま
+//   ・変えた内容は、コメント欄に履歴を1件だけ残す
+//   ⚠️ 画面の動きを変えたら、ここも合わせること（apiKeyPrompt.ts / apiSamples.ts の説明も）
+
+/** 送ってよいキー。これ以外は無視して warnings に出す */
+const UPDATE_KEYS = new Set([
+  "wbs", "id", "updatedAt", "title", "labels", "priority", "prLinkWaived", "category", "assignee",
+  "startDate", "dueDate", "description", "descriptionHtml", "attachedImages", "actualHours", "actualHoursBreakdown",
+  "releaseDate", "releaseDateUndecided", "operationVerified", "status", "reviewer",
+]);
+/** 本文のHTMLの上限。古い本文には画像が data: のまま埋め込まれているものがあり、Markdown より大きくなる */
+const MAX_DESCRIPTION_HTML_LENGTH = 2_000_000;
+const MAX_LABELS = 3;
+/** 親チケットの工程ごとの実績の数（着手→レビュー依頼／レビュー依頼→承認／承認→STG／STG→UAT／UAT→リリース） */
+const ACTUAL_BREAKDOWN_SEGMENTS = 5;
+
+type UpdateStatusOp =
+  | { kind: "set"; target: string }
+  | { kind: "hold" } | { kind: "unhold" } | { kind: "withdraw" } | { kind: "unwithdraw" } | { kind: "reset" };
+
+const UPDATE_STATUS_BY_LABEL: Record<string, UpdateStatusOp> = {
+  "未着手": { kind: "reset" }, todo: { kind: "reset" }, "未着手に戻す": { kind: "reset" },
+  "進行中": { kind: "set", target: "in-progress" }, "対応中": { kind: "set", target: "in-progress" }, inprogress: { kind: "set", target: "in-progress" },
+  "レビュー中": { kind: "set", target: "in-review" }, inreview: { kind: "set", target: "in-review" },
+  "レビュー完了": { kind: "set", target: "review-done" }, reviewdone: { kind: "set", target: "review-done" },
+  "stg完了": { kind: "set", target: "stg-test" }, stg: { kind: "set", target: "stg-test" },
+  "uat完了": { kind: "set", target: "uat" }, uat: { kind: "set", target: "uat" },
+  "リリース待ち": { kind: "set", target: "waiting-release" }, waitingrelease: { kind: "set", target: "waiting-release" },
+  "クローズ": { kind: "set", target: "released" }, released: { kind: "set", target: "released" },
+  "対応完了": { kind: "set", target: "closed" }, "完了": { kind: "set", target: "closed" }, closed: { kind: "set", target: "closed" },
+  "保留": { kind: "hold" }, "保留中": { kind: "hold" }, "保留する": { kind: "hold" }, onhold: { kind: "hold" },
+  "保留解除": { kind: "unhold" }, "保留を解除": { kind: "unhold" },
+  "取下": { kind: "withdraw" }, "取下げ": { kind: "withdraw" }, "取り下げ": { kind: "withdraw" }, "取下する": { kind: "withdraw" }, withdrawn: { kind: "withdraw" },
+  "取下解除": { kind: "unwithdraw" }, "取下げ解除": { kind: "unwithdraw" }, "取り下げ解除": { kind: "unwithdraw" },
+};
+const UPDATE_STATUS_LIST_TEXT =
+  "未着手 / 進行中 / レビュー中 / レビュー完了 / STG完了 / UAT完了 / リリース待ち / クローズ（親）／ 未着手 / 進行中 / 対応完了（子）／ 保留 / 保留解除 / 取下 / 取下解除";
+
+/** 保留・取下を解除するとき、残しておいた進捗率から元のステータスを決める（TicketDetailPanel の getStatusFromProgress と同じ） */
+function statusFromProgress(progress: number): string {
+  if (progress >= 100) return "done";
+  if (progress >= 90) return "uat";
+  if (progress >= 70) return "stg-test";
+  if (progress >= 50) return "review-done";
+  if (progress >= 30) return "in-review";
+  if (progress > 0) return "in-progress";
+  return "todo";
+}
+
+/** 保留の開始・終了の文言（src/app/lib/holdHours.ts と同じ。保留時間の集計がこの文字で探すので変えない） */
+const HOLD_START_MARKER = "チケットを保留にしました";
+const HOLD_END_MARKER = "保留を解除しました";
+
+/**
+ * 親チケットのステータスを変えたときのマイルストーンの書き方（useProject.ts の recordMilestoneFromTicketStatus と同じ）。
+ * 先の工程に記録があれば（後ろへ戻したとき）それより後ろを消し、無ければ行き先の工程まで空いているところを今の時刻で埋める。
+ */
+function milestonePatchFor(row: any, status: string, now: string): Record<string, string | null> {
+  const col = MILESTONE_BY_STATUS[status] ?? (status === "done" || status === "closed" ? "released_at" : undefined);
+  if (!col) return {};
+  const idx = MILESTONE_COLUMNS.indexOf(col);
+  const patch: Record<string, string | null> = {};
+  const movedBackward = MILESTONE_COLUMNS.slice(idx + 1).some(c => !!row[c]);
+  if (movedBackward) {
+    for (const c of MILESTONE_COLUMNS.slice(idx + 1)) patch[c] = null;
+  } else {
+    for (const c of MILESTONE_COLUMNS.slice(0, idx + 1)) if (!row[c]) patch[c] = now;
+  }
+  return patch;
+}
+
+/** 開始日・期限日から見積工数を出す（TicketDetailPanel の handleDate と同じ「日数×8時間」） */
+function estimatedHoursFromDates(start: string | null, due: string | null): number {
+  if (!start || !due) return 0;
+  const days = Math.max(0, Math.round((new Date(due).getTime() - new Date(start).getTime()) / 86400000) + 1);
+  return days * 8;
+}
+
+/** 履歴に書く日付（"2026-11-20" → "11/20"。画面の formatDate と同じ） */
+const historyDate = (d: string | null | undefined) => (d ? d.slice(5).replace("-", "/") : "未設定");
+const historyText = (v: string | null | undefined) => (v ? `「${v}」` : "未設定");
+
+// export しているのは検証用（mdToHtml と同じ理由。DB の代わりを渡して動きを確かめられるようにするため）。
+export async function handleUpdateTicket(sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const has = (k: string) => Object.prototype.hasOwnProperty.call(b, k) && b[k] !== undefined;
+  const wbs = typeof b.wbs === "string" ? b.wbs.trim() : "";
+  const id = typeof b.id === "string" ? b.id.trim() : "";
+  const updatedAt = typeof b.updatedAt === "string" ? b.updatedAt.trim() : "";
+  if (!updatedAt) {
+    return res.status(400).json({
+      error: "updatedAt は必須です。GET /api/v1/ticket で読んだ ticket.updatedAt をそのまま送ってください（読んでから送るまでに画面で直されていないかを確かめるため）",
+    });
+  }
+
+  const warnings: string[] = [];
+  for (const k of Object.keys(b)) {
+    if (UPDATE_KEYS.has(k)) continue;
+    warnings.push(k === "estimatedHours"
+      ? "estimatedHours は直接は変えられません（開始日・期限日から「日数×8時間」で自動で計算されます）。無視しました"
+      : `「${k}」は修正できない項目のため無視しました`);
+  }
+
+  const found = await lookupTicket(sb, key, { wbs, id },
+    "id, wbs, title, status, progress, priority, assignee, start_date, due_date, description, images, category_id, sprint_id, parent_id"
+    + ", prefixes, pr_link_waived, reviewer_name, review_round, release_date, is_release_date_undecided, is_operation_verified"
+    + `, actual_work_hours, actual_work_hours_breakdown, updated_at, ${MILESTONE_COLUMNS.join(", ")}`);
+  if (!found.ok) return res.status(found.status).json({ error: found.error });
+  const row = found.row;
+  const isChild = !!row.parent_id;
+  const current = String(row.status ?? "todo");
+
+  // ── 読んでから今までに、画面で直されていないか（比較は DB に任せる。時刻の文字の形の違いで誤判定しないため）
+  const conflict = () => res.status(409).json({
+    error: `「${row.wbs}」は、読み取ったあとに画面などで更新されています。上書きしないよう、修正を取りやめました。もう一度 GET /api/v1/ticket で読み直し、最新の内容に対して直してください`,
+    updatedAt: row.updated_at ?? null,
+  });
+  const { data: same, error: sameError } = await sb
+    .from("sprint_tickets").select("id").eq("id", row.id).eq("updated_at", updatedAt).maybeSingle();
+  if (sameError) return res.status(400).json({ error: `updatedAt「${updatedAt}」を日時として読めません: ${sameError.message}` });
+  if (!same) return conflict();
+
+  const [{ data: project }, { data: categoryRows }] = await Promise.all([
+    sb.from("projects")
+      .select("slug, members, deploy_check_mode, slack_access_token, slack_channel, slack_notifications_enabled")
+      .eq("id", key.project_id).maybeSingle(),
+    sb.from("ticket_categories").select("id, name").eq("project_id", key.project_id),
+  ]);
+  const members = Array.isArray(project?.members) ? (project!.members as string[]) : [];
+  const categories = (categoryRows ?? []) as { id: string; name: string }[];
+
+  const patch: Record<string, unknown> = {};
+  /** 履歴に書く変更の内容（「期限日 11/20 → 11/25」の形） */
+  const changes: string[] = [];
+  const given = (v: unknown) => v !== null && v !== "";
+
+  // ── タイトル ──
+  if (has("title")) {
+    const title = typeof b.title === "string" ? b.title.trim() : "";
+    if (!title) return res.status(400).json({ error: "title は空にできません" });
+    if (title.length > MAX_TITLE_LENGTH) return res.status(400).json({ error: `title が長すぎます（${MAX_TITLE_LENGTH}文字まで）` });
+    if (title !== row.title) { patch.title = title; changes.push(`タイトル ${historyText(row.title)} → ${historyText(title)}`); }
+  }
+
+  // ── ラベル（3つまで・重複なし。画面の addPrefix と同じ） ──
+  if (has("labels")) {
+    if (b.labels !== null && !Array.isArray(b.labels)) {
+      return res.status(400).json({ error: "labels は文字列の配列で指定してください（外すときは []）" });
+    }
+    const raw = ((b.labels ?? []) as unknown[]).filter((v): v is string => typeof v === "string").map(v => v.trim()).filter(Boolean);
+    const labels = [...new Set(raw)];
+    if (labels.length < raw.length) warnings.push("labels の重複を1つにまとめました");
+    if (labels.length > MAX_LABELS) return res.status(400).json({ error: `labels は${MAX_LABELS}つまでです（${labels.length}つ送られました）` });
+    const prev: string[] = Array.isArray(row.prefixes) ? row.prefixes : [];
+    if (labels.join("\u0000") !== prev.join("\u0000")) {
+      patch.prefixes = labels;
+      changes.push(`ラベル ${prev.length ? prev.join("・") : "なし"} → ${labels.length ? labels.join("・") : "なし"}`);
+    }
+  }
+
+  // ── 優先度 ──
+  if (has("priority")) {
+    const mapped = typeof b.priority === "string" ? PRIORITY_BY_LABEL[normalizeValue(b.priority)] : undefined;
+    if (!mapped) warnings.push(`優先度「${String(b.priority)}」は候補（${PRIORITY_LABELS.join(" / ")}）にないため変えていません`);
+    else if (mapped !== row.priority) {
+      patch.priority = mapped;
+      changes.push(`優先度 ${PRIORITY_LABEL_BY_VALUE[row.priority] ?? row.priority} → ${PRIORITY_LABEL_BY_VALUE[mapped]}`);
+    }
+  }
+
+  // ── PR不要 ──
+  if (has("prLinkWaived")) {
+    if (typeof b.prLinkWaived !== "boolean") warnings.push(`prLinkWaived「${String(b.prLinkWaived)}」は true / false ではないため変えていません`);
+    else if (b.prLinkWaived !== (row.pr_link_waived === true)) {
+      patch.pr_link_waived = b.prLinkWaived;
+      changes.push(`PR不要 ${row.pr_link_waived ? "あり" : "なし"} → ${b.prLinkWaived ? "あり" : "なし"}`);
+    }
+  }
+
+  // ── 分類（登録済みの分類から選ぶ。新しい分類は作らない） ──
+  if (has("category")) {
+    const nameOf = (cid: string | null) => categories.find(c => c.id === cid)?.name ?? null;
+    if (!given(b.category)) {
+      if (row.category_id) { patch.category_id = null; changes.push(`分類 ${historyText(nameOf(row.category_id))} → 分類なし`); }
+    } else {
+      const raw = String(b.category).trim();
+      const matched = categories.find(c => c.name === raw) ?? categories.find(c => normalizeValue(c.name) === normalizeValue(raw));
+      if (!matched) warnings.push(`分類「${raw}」はこのプロジェクトに登録されていないため変えていません（新しい分類は作りません）`);
+      else if (matched.id !== row.category_id) {
+        patch.category_id = matched.id;
+        changes.push(`分類 ${row.category_id ? historyText(nameOf(row.category_id)) : "分類なし"} → ${historyText(matched.name)}`);
+      }
+    }
+  }
+
+  // ── 担当者（プロジェクトのメンバーから選ぶ。通知は送らない） ──
+  if (has("assignee")) {
+    let next: string | null = null;
+    if (!given(b.assignee)) next = "";
+    else {
+      next = matchByName(String(b.assignee), members);
+      if (next === null) warnings.push(`担当者「${String(b.assignee)}」はプロジェクトのメンバーに見つからないため変えていません`);
+    }
+    if (next !== null && next !== (row.assignee ?? "")) {
+      // 画面（applyAssignee）と同じく assignees も揃える
+      patch.assignee = next;
+      patch.assignees = next ? [next] : [];
+      changes.push(`担当者 ${row.assignee ? historyText(row.assignee) : "未割り当て"} → ${next ? historyText(next) : "未割り当て"}`);
+    }
+  }
+
+  // ── 開始日・期限日（見積工数は「日数×8時間」で計算し直す） ──
+  const readDateField = (k: "startDate" | "dueDate", label: string): string | null | undefined => {
+    if (!has(k)) return undefined;
+    if (!given(b[k])) return null;
+    const d = typeof b[k] === "string" ? parseDate(b[k] as string) : null;
+    if (!d || !isRealDate(d)) { warnings.push(`${label}「${String(b[k])}」を日付として読めないため変えていません`); return undefined; }
+    return d;
+  };
+  const nextStart = readDateField("startDate", "開始日");
+  const nextDue = readDateField("dueDate", "期限日");
+  if ((nextStart !== undefined && nextStart !== (row.start_date ?? null)) || (nextDue !== undefined && nextDue !== (row.due_date ?? null))) {
+    const s = nextStart !== undefined ? nextStart : (row.start_date ?? null);
+    const d = nextDue !== undefined ? nextDue : (row.due_date ?? null);
+    if (nextStart !== undefined && nextStart !== (row.start_date ?? null)) {
+      patch.start_date = nextStart;
+      changes.push(`開始日 ${historyDate(row.start_date)} → ${historyDate(nextStart)}`);
+    }
+    if (nextDue !== undefined && nextDue !== (row.due_date ?? null)) {
+      patch.due_date = nextDue;
+      changes.push(`期限日 ${historyDate(row.due_date)} → ${historyDate(nextDue)}`);
+    }
+    if (s && d && d < s) warnings.push("期限日が開始日より前です");
+    patch.estimated_hours = estimatedHoursFromDates(s, d);
+  }
+
+  // ── 本文（丸ごと置き換え。HTML は安全な形にしてから保存） ──
+  if (has("description") && has("descriptionHtml")) {
+    return res.status(400).json({ error: "description（Markdown）と descriptionHtml（HTML）は、どちらか一方だけを送ってください" });
+  }
+  if (has("description") || has("descriptionHtml")) {
+    const isHtml = has("descriptionHtml");
+    const raw = isHtml ? b.descriptionHtml : b.description;
+    if (raw !== null && typeof raw !== "string") {
+      return res.status(400).json({ error: `${isHtml ? "descriptionHtml" : "description"} は文字列で指定してください` });
+    }
+    const text = (raw ?? "") as string;
+    const max = isHtml ? MAX_DESCRIPTION_HTML_LENGTH : MAX_DESCRIPTION_LENGTH;
+    if (text.length > max) return res.status(400).json({ error: `${isHtml ? "descriptionHtml" : "description"} が長すぎます（${max}文字まで）` });
+    let html = "";
+    if (text.trim()) {
+      if (isHtml) {
+        const cleaned = sanitizeHtml(text);
+        html = cleaned.html;
+        if (cleaned.removed > 0) warnings.push(`本文のHTMLから、保存できないタグ・属性を ${cleaned.removed} か所取り除きました（script・on〜属性・javascript: のリンクなど）`);
+      } else {
+        html = mdToHtml(text);
+      }
+    }
+    const next = html.trim() ? html : null;
+    if ((next ?? "") !== String(row.description ?? "")) {
+      patch.description = next;
+      changes.push(next ? "本文を更新" : "本文を空にしました");
+    }
+  }
+
+  // ── 本文の下の画像（今あるURLを外す・並べ替えるだけ。新しいURLは足さない） ──
+  if (has("attachedImages")) {
+    if (b.attachedImages !== null && !Array.isArray(b.attachedImages)) {
+      return res.status(400).json({ error: "attachedImages は URL の配列で指定してください（全部外すときは []）" });
+    }
+    const prev: string[] = Array.isArray(row.images) ? row.images.filter((u: unknown) => typeof u === "string") : [];
+    const asked = [...new Set(((b.attachedImages ?? []) as unknown[]).filter((u): u is string => typeof u === "string").map(u => u.trim()))];
+    const kept = asked.filter(u => prev.includes(u));
+    if (kept.length < asked.length) {
+      warnings.push(`attachedImages の新しいURL ${asked.length - kept.length}件は追加していません（APIから画像は追加できません。外す・並べ替えるだけです）`);
+    }
+    if (kept.join("\u0000") !== prev.join("\u0000")) {
+      patch.images = kept;
+      changes.push(kept.length === prev.length ? "本文の下の画像を並べ替えました" : `本文の下の画像 ${prev.length}枚 → ${kept.length}枚`);
+    }
+  }
+
+  // ── 実績工数（子は時間、親は合計と工程ごとの内訳） ──
+  const readHours = (v: unknown): number | null => {
+    const h = parseHours(v);
+    return h === null || h < 0 ? null : Math.round(h * 10) / 10;
+  };
+  let actualPatch: Record<string, unknown> = {};
+  if (has("actualHoursBreakdown") && isChild) {
+    warnings.push("actualHoursBreakdown は親チケットだけのため無視しました（子チケットは actualHours だけです）");
+  }
+  if (isChild && has("actualHours")) {
+    // 空（null）にすると、画面は着手〜完了の時刻からの自動計測に戻る（画面の子の実績工数の「空欄で保存」と同じ）
+    if (b.actualHours === null || b.actualHours === "") actualPatch.actual_work_hours = null;
+    else {
+      const h = readHours(b.actualHours);
+      if (h === null) warnings.push(`実績工数「${String(b.actualHours)}」を0以上の数値として読めないため変えていません`);
+      else actualPatch.actual_work_hours = h;
+    }
+  } else if (!isChild && (has("actualHours") || has("actualHoursBreakdown"))) {
+    let total: number | null = null;
+    if (has("actualHoursBreakdown")) {
+      const list = Array.isArray(b.actualHoursBreakdown) ? b.actualHoursBreakdown : null;
+      const parsed = list ? list.map(readHours) : [];
+      if (!list || list.length !== ACTUAL_BREAKDOWN_SEGMENTS || parsed.some(v => v === null)) {
+        warnings.push(`actualHoursBreakdown は0以上の数値${ACTUAL_BREAKDOWN_SEGMENTS}つの配列（着手→レビュー依頼／レビュー依頼→承認／承認→STG／STG→UAT／UAT→リリース）で送ってください。変えていません`);
+      } else {
+        actualPatch.actual_work_hours_breakdown = (parsed as number[]).map(v => String(v));
+        total = Math.round((parsed as number[]).reduce((a, v) => a + v, 0) * 10) / 10;
+      }
+    }
+    if (has("actualHours")) {
+      const h = b.actualHours === null || b.actualHours === "" ? null : readHours(b.actualHours);
+      if (h === null) warnings.push(`実績工数「${String(b.actualHours)}」を0以上の数値として読めないため変えていません（親チケットの実績工数は空にできません）`);
+      else if (total !== null && Math.abs(total - h) > 0.05) warnings.push(`actualHours（${h}）が内訳の合計（${total}）と違うため、合計に合わせました`);
+      else if (total === null) total = h;
+    }
+    if (total !== null) actualPatch.actual_work_hours = total;
+  }
+  const actualChanged = ("actual_work_hours" in actualPatch && actualPatch.actual_work_hours !== (row.actual_work_hours ?? null))
+    || ("actual_work_hours_breakdown" in actualPatch
+      && JSON.stringify(actualPatch.actual_work_hours_breakdown) !== JSON.stringify(row.actual_work_hours_breakdown ?? null));
+  if (!actualChanged) actualPatch = {};
+
+  // ── ステータス ──
+  let statusOp: UpdateStatusOp | null = null;
+  if (has("status")) {
+    statusOp = typeof b.status === "string" ? UPDATE_STATUS_BY_LABEL[normalizeValue(b.status)] ?? null : null;
+    if (!statusOp) {
+      return res.status(400).json({ error: `status「${String(b.status)}」は指定できません。指定できるのは ${UPDATE_STATUS_LIST_TEXT} です` });
+    }
+  }
+  if (has("reviewer") && !(statusOp?.kind === "set" && statusOp.target === "in-review")) {
+    warnings.push("reviewer は status を「レビュー中」にするときだけ使います。無視しました");
+  }
+
+  const now = new Date().toISOString();
+  const statusPatch: Record<string, unknown> = {};
+  /** 履歴の先頭に置くステータスの変化の文 */
+  let statusText: string | null = null;
+  let nextStatus = current;
+  /** レビュー依頼を送るとき（画面の handleReviewRequest と同じ通知をする） */
+  let reviewRequest: { reviewer: string; round: number } | null = null;
+  /** 未着手に戻すとき、一緒に戻す子チケット */
+  let resetChildIds: string[] = [];
+  let startParent = false;
+
+  const labelOf = (s: string) => statusLabelFor(s, isChild);
+  const isTerminal = isChild ? current === "closed" : current === "released";
+
+  if (statusOp?.kind === "hold") {
+    if (current !== "on-hold") {
+      if (isTerminal && current !== "withdrawn") return res.status(409).json({ error: `「${row.wbs}」は${labelOf(current)}のため、保留にできません` });
+      // 進捗率は残す（保留解除のときに元のステータスへ戻すため。画面と同じ）
+      statusPatch.status = "on-hold";
+      nextStatus = "on-hold";
+      statusText = HOLD_START_MARKER;
+    }
+  } else if (statusOp?.kind === "withdraw") {
+    if (current !== "withdrawn") {
+      if (isTerminal && current !== "on-hold") return res.status(409).json({ error: `「${row.wbs}」は${labelOf(current)}のため、取下にできません` });
+      statusPatch.status = "withdrawn";
+      nextStatus = "withdrawn";
+      statusText = "チケットを取下げました";
+    }
+  } else if (statusOp?.kind === "unhold" || statusOp?.kind === "unwithdraw") {
+    const from = statusOp.kind === "unhold" ? "on-hold" : "withdrawn";
+    if (current !== from) {
+      return res.status(409).json({ error: `「${row.wbs}」は${labelOf(current)}です。${statusOp.kind === "unhold" ? "保留解除" : "取下解除"}は${labelOf(from)}のときだけできます` });
+    }
+    const restored = statusFromProgress(Number(row.progress) || 0);
+    statusPatch.status = restored;
+    statusPatch.progress = STATUS_PROGRESS[restored] ?? 0;
+    if (!isChild) Object.assign(statusPatch, milestonePatchFor(row, restored, now));
+    nextStatus = restored;
+    statusText = statusOp.kind === "unhold"
+      ? `${HOLD_END_MARKER}（ステータスを「${labelOf(restored)}」に戻しました）`
+      : `取下げを解除し、ステータスを「${labelOf(restored)}」に戻しました`;
+  } else if (statusOp?.kind === "reset") {
+    if (current !== "todo") {
+      const resettable = isChild
+        ? current === "in-progress"
+        : ["in-progress", "in-review", "review-done", "stg-test", "uat", "waiting-release"].includes(current);
+      if (!resettable) {
+        return res.status(409).json({
+          error: `「${row.wbs}」は${labelOf(current)}のため、未着手に戻せません（未着手に戻せるのは ${isChild ? "進行中" : "進行中〜リリース待ち"} のときだけです）`,
+        });
+      }
+      if (!isChild) {
+        const { data: childRows, error: childError } = await sb
+          .from("sprint_tickets").select("id, wbs, status").eq("parent_id", row.id)
+          .order("wbs", { ascending: true }).order("id", { ascending: true });
+        if (childError) return res.status(500).json({ error: childError.message });
+        const children = ((childRows ?? []) as any[]).sort((x, y) => compareWbs(x.wbs, y.wbs));
+        const blocked = children.filter(c => ["closed", "done", "released", "on-hold", "withdrawn"].includes(c.status));
+        if (blocked.length > 0) {
+          const why = (s: string) => (s === "on-hold" ? "保留中" : s === "withdrawn" ? "取下" : "対応完了");
+          return res.status(409).json({
+            error: `子チケット ${blocked.map(c => `${c.wbs}（${why(c.status)}）`).join("・")} があるため、未着手に戻せません`,
+          });
+        }
+        resetChildIds = children.map(c => c.id as string);
+      }
+      // 着手してから記録された実績を消す（画面の executeResetToTodo と同じ。closed_at は本番DBに無いので書かない）
+      Object.assign(statusPatch, {
+        status: "todo", progress: 0,
+        started_at: null, review_requested_at: null, review_approved_at: null,
+        stg_completed_at: null, uat_completed_at: null, released_at: null,
+        actual_work_hours: null, actual_work_hours_breakdown: null, is_operation_verified: false,
+      });
+      if (Object.keys(actualPatch).length > 0) {
+        warnings.push("未着手に戻すと実績がクリアされるため、actualHours・actualHoursBreakdown は反映していません");
+        actualPatch = {};
+      }
+      nextStatus = "todo";
+      statusText = "未着手に戻しました（実績をクリアしました）";
+    }
+  } else if (statusOp?.kind === "set") {
+    let target = statusOp.target;
+    if (current === "on-hold" || current === "withdrawn") {
+      return res.status(409).json({
+        error: `「${row.wbs}」は${labelOf(current)}のため、ステータスを変えられません。先に「${current === "on-hold" ? "保留解除" : "取下解除"}」を送ってください`,
+      });
+    }
+    if (isChild && target !== "in-progress" && target !== "closed") {
+      return res.status(400).json({ error: `「${row.wbs}」は子チケットです。子チケットに指定できるのは 未着手 / 進行中 / 対応完了 / 保留 / 保留解除 / 取下 / 取下解除 です` });
+    }
+    if (!isChild && target === "closed") {
+      return res.status(400).json({ error: `「${row.wbs}」は親チケットです。「対応完了」にできるのは子チケットだけです（親は「クローズ」を指定します）` });
+    }
+    // 本番反映の確認が gate のプロジェクトは、クローズの代わりにリリース待ちにとどめる（ticket-status と同じ）
+    if (target === "released" && project?.deploy_check_mode === "gate") {
+      target = "waiting-release";
+      warnings.push("このプロジェクトは本番への反映を確認してからクローズにする設定のため、「リリース待ち」にしました。本番への反映を確認できたら自動でクローズになります");
+    }
+
+    const fromRank = STATUS_RANK[current] ?? 0;
+    const toRank = STATUS_RANK[target] ?? 0;
+    // レビュー完了〜UAT完了からレビュー中へは、画面の「再レビュー依頼」と同じく依頼し直す
+    const reReview = !isChild && target === "in-review" && fromRank > toRank;
+
+    if (target !== current || reReview) {
+      if (isChild) {
+        if (toRank < fromRank) {
+          return res.status(409).json({ error: `「${row.wbs}」は${labelOf(current)}のため「${labelOf(target)}」に戻せません（子チケットを戻せるのは「未着手」だけです）` });
+        }
+        // 子は着手と完了の時刻だけを持つ（画面の startChildSelf / handleChildComplete と同じ）
+        if (target === "in-progress") statusPatch.started_at = now;
+        if (target === "closed") statusPatch.released_at = now;
+        startParent = target === "in-progress";
+      } else {
+        // 子チケットが必要なところまで終わっているか（画面の validateParentStatusChange と同じ。取下の子は数えない）。
+        // 前へ段を飛ばすときは、飛ばした段で一番厳しい条件を使う（画面は1段ずつしか進めないため）
+        const minChildRank = toRank > fromRank ? requiredChildRank(target) : (PARENT_STATUS_MIN_CHILD_RANK[target] ?? 0);
+        if (minChildRank > 0) {
+          const { data: childRows, error: childError } = await sb
+            .from("sprint_tickets").select("wbs, status").eq("parent_id", row.id);
+          if (childError) return res.status(500).json({ error: childError.message });
+          const blocking = ((childRows ?? []) as any[])
+            .filter(c => c.status !== "withdrawn" && (STATUS_RANK[c.status] ?? 0) < minChildRank)
+            .sort((x, y) => compareWbs(x.wbs, y.wbs));
+          if (blocking.length > 0) {
+            return res.status(409).json({
+              error: `子チケット ${blocking.length}件（${blocking.map(c => c.wbs).join(" / ")}）が対応完了していないため「${labelOf(target)}」にできません`,
+            });
+          }
+        }
+        // レビュー中からの戻し（修正依頼・レビューの取り下げ）は、画面と同じくマイルストーンに触らない
+        const isReviewWithdraw = current === "in-review" && target === "in-progress";
+        if (!isReviewWithdraw) Object.assign(statusPatch, milestonePatchFor(row, target, now));
+      }
+
+      // レビュー中にするときは、画面のレビュー依頼と同じくレビュアー・回数を書き、レビュアーへ知らせる
+      if (target === "in-review") {
+        let reviewer: string | null = null;
+        if (has("reviewer") && given(b.reviewer)) {
+          // 画面で選べる人（プロジェクトのメンバーのうち、管理者・オーナー・PM・レビュー権限のある人。担当者自身も選べる）
+          const { data: profileRows } = await sb.from("profiles").select("name, role, permissions")
+            .or(key.organization_id ? `organization_id.eq.${key.organization_id},role.eq.owner` : "role.eq.owner");
+          const eligible = ((profileRows ?? []) as any[])
+            .filter(p => p.role === "admin" || p.role === "owner" || p.role === "project-manager" || p.permissions?.canReview === true)
+            .map(p => String(p.name))
+            .filter(n => members.length === 0 || members.includes(n));
+          const candidates = [...new Set([...(key.created_by ? [key.created_by] : []), ...eligible])];
+          reviewer = matchByName(String(b.reviewer), candidates);
+          if (!reviewer) {
+            return res.status(400).json({
+              error: `レビュアー「${String(b.reviewer)}」は指定できません。指定できるのは ${candidates.length ? candidates.join(" / ") : "（候補なし）"} です`,
+            });
+          }
+        } else if (row.reviewer_name) {
+          reviewer = String(row.reviewer_name);
+        }
+        if (reviewer) {
+          const round = (Number(row.review_round) || 0) + 1;
+          statusPatch.reviewer_name = reviewer;
+          statusPatch.review_round = round;
+          reviewRequest = { reviewer, round };
+        } else {
+          warnings.push("レビュアーが指定されていないため、レビュー依頼の通知はしていません（reviewer で指定すると、画面のレビュー依頼と同じく通知します）");
+        }
+      }
+
+      statusPatch.status = target;
+      statusPatch.progress = STATUS_PROGRESS[target] ?? 0;
+      nextStatus = target;
+      statusText = `ステータス ${labelOf(current)} → ${labelOf(target)}`;
+    } else if (target === "in-review" && has("reviewer")) {
+      warnings.push(`すでに「${labelOf(current)}」のため、レビュー依頼は送っていません`);
+    }
+  }
+
+  // ── リリース予定日・未定（リリース待ちのときだけ。ステータスを変えたあとの値で判定する） ──
+  if (has("releaseDate") || has("releaseDateUndecided")) {
+    if (nextStatus !== "waiting-release") {
+      warnings.push("releaseDate・releaseDateUndecided は、リリース待ちのときだけ変えられます。無視しました");
+    } else if (b.releaseDateUndecided === true) {
+      if (has("releaseDate") && given(b.releaseDate)) {
+        return res.status(400).json({ error: "releaseDate と releaseDateUndecided: true は一緒に送れません（どちらか一方にしてください）" });
+      }
+      if (!row.is_release_date_undecided || row.release_date) {
+        patch.release_date = null;
+        patch.is_release_date_undecided = true;
+        changes.push(`リリース予定日 ${row.is_release_date_undecided ? "未定" : historyDate(row.release_date)} → 未定`);
+      }
+    } else if (has("releaseDate")) {
+      const d = given(b.releaseDate) && typeof b.releaseDate === "string" ? parseDate(b.releaseDate) : null;
+      if (!d || !isRealDate(d)) warnings.push(`リリース予定日「${String(b.releaseDate)}」を日付として読めないため変えていません`);
+      else if (d !== row.release_date || row.is_release_date_undecided) {
+        patch.release_date = d;
+        patch.is_release_date_undecided = false;
+        changes.push(`リリース予定日 ${row.is_release_date_undecided ? "未定" : historyDate(row.release_date)} → ${historyDate(d)}`);
+      }
+    } else if (b.releaseDateUndecided === false && row.is_release_date_undecided) {
+      patch.is_release_date_undecided = false;
+      changes.push("リリース予定日 未定 → 未設定");
+    } else if (typeof b.releaseDateUndecided !== "boolean") {
+      warnings.push(`releaseDateUndecided「${String(b.releaseDateUndecided)}」は true / false ではないため変えていません`);
+    }
+  }
+
+  // ── 動作確認済み（親がリリース済みのときだけ） ──
+  if (has("operationVerified")) {
+    if (isChild || nextStatus !== "released") {
+      warnings.push("operationVerified は、親チケットがクローズ（リリース済み）のときだけ切り替えられます。無視しました");
+    } else if (typeof b.operationVerified !== "boolean") {
+      warnings.push(`operationVerified「${String(b.operationVerified)}」は true / false ではないため変えていません`);
+    } else if (b.operationVerified !== (row.is_operation_verified === true) && !("is_operation_verified" in statusPatch)) {
+      patch.is_operation_verified = b.operationVerified;
+      changes.push(`動作確認 ${row.is_operation_verified ? "済み" : "未"} → ${b.operationVerified ? "済み" : "未"}`);
+    }
+  }
+
+  if (Object.keys(actualPatch).length > 0) {
+    Object.assign(patch, actualPatch);
+    if ("actual_work_hours" in actualPatch && actualPatch.actual_work_hours !== (row.actual_work_hours ?? null)) {
+      changes.push(`実績工数 ${row.actual_work_hours ?? "未入力"}${row.actual_work_hours != null ? "h" : ""} → ${actualPatch.actual_work_hours ?? "自動計測"}${actualPatch.actual_work_hours != null ? "h" : ""}`);
+    } else {
+      changes.push("実績工数の内訳を更新");
+    }
+  }
+
+  // ステータスの変更は項目の変更より後に重ねる（未着手に戻すときの実績のクリアを優先するため）
+  Object.assign(patch, statusPatch);
+
+  if (Object.keys(patch).length === 0) {
+    return res.status(200).json({
+      ok: true, changed: false, wbs: row.wbs, status: labelOf(current), changes: [],
+      updatedAt: row.updated_at ?? null, message: "変わる項目が無いため、何も変えていません", warnings,
+    });
+  }
+
+  // 条件に updatedAt を入れておく。上の確認から書くまでの間に画面で直されたら、上書きせずに 409 にする
+  const { data: updatedRows, error: updateError } = await sb
+    .from("sprint_tickets").update(patch).eq("id", row.id).eq("updated_at", updatedAt).select("id, updated_at");
+  if (updateError) return res.status(500).json({ error: `チケットの更新に失敗しました: ${updateError.message}` });
+  if (!updatedRows || updatedRows.length === 0) return conflict();
+  const newUpdatedAt = (updatedRows[0] as any).updated_at ?? null;
+
+  const actor = key.created_by || "API連携";
+  const via = `API連携（${esc(key.name)}）`;
+  const comments: Record<string, unknown>[] = [];
+
+  // ── 未着手に戻したとき：子チケットも戻す（親を先に書いたので、子の失敗は warnings に出す） ──
+  if (resetChildIds.length > 0) {
+    const childPatch = { ...statusPatch };
+    const { error: childResetError } = await sb.from("sprint_tickets").update(childPatch).in("id", resetChildIds);
+    if (childResetError) {
+      warnings.push(`子チケットを未着手に戻せませんでした: ${childResetError.message}。画面の「未着手に戻す」でやり直してください`);
+    } else {
+      for (const cid of resetChildIds) {
+        comments.push({
+          id: newCommentId(), ticket_id: cid, user_name: actor,
+          content: `<p>未着手に戻しました（実績をクリアしました）（${via}）</p>`,
+          ticket_status: "todo", comment_type: "status_change", images: [],
+        });
+      }
+    }
+  }
+  if (statusOp?.kind === "reset" && statusText) {
+    // 担当ごとの実績の修正値も消す（テーブル・列が無い環境では何もしない）
+    const { error: asgError } = await sb.from("ticket_assignments")
+      .update({ hours_override: null }).in("ticket_id", [row.id, ...resetChildIds]);
+    if (asgError) console.warn("[api/v1] ticket-update reset ticket_assignments:", asgError.message);
+  }
+
+  // ── 子に着手したとき親が未着手なら、親も進行中にする（ticket-status と同じ） ──
+  let parentStarted: string | null = null;
+  if (startParent) {
+    const { data: parent } = await sb
+      .from("sprint_tickets").select("id, wbs, status, started_at").eq("id", row.parent_id).maybeSingle();
+    if (parent && parent.status === "todo") {
+      const parentPatch: Record<string, unknown> = { status: "in-progress", progress: STATUS_PROGRESS["in-progress"] };
+      if (!parent.started_at) parentPatch.started_at = now;
+      const { data: parentUpdated, error: parentError } = await sb
+        .from("sprint_tickets").update(parentPatch).eq("id", parent.id).eq("status", "todo").select("id");
+      if (parentError) warnings.push(`親チケット「${parent.wbs}」を進行中にできませんでした: ${parentError.message}`);
+      else if (parentUpdated && parentUpdated.length > 0) {
+        parentStarted = parent.wbs as string;
+        comments.push({
+          id: newCommentId(), ticket_id: parent.id, user_name: actor,
+          content: `<p>子チケット着手に伴い、ステータスを「進行中」に変更しました（${via}）</p>`,
+          ticket_status: "in-progress", comment_type: "status_change", images: [],
+        });
+      }
+    }
+  }
+
+  // ── コメント欄の履歴（1件）。レビュー依頼のときは画面と同じ review_request として残す ──
+  const parts = [...(statusText ? [statusText] : []), ...changes].map(esc);
+  const historyBody = `<p>${via}：${parts.join("、")}</p>`;
+  comments.unshift({
+    id: newCommentId(), ticket_id: row.id, user_name: actor,
+    content: reviewRequest
+      ? `<p><strong>@${esc(reviewRequest.reviewer)}</strong> にレビュー依頼を送信しました（第${reviewRequest.round}回）</p>${historyBody}`
+      : historyBody,
+    ticket_status: nextStatus,
+    comment_type: reviewRequest ? "review_request" : "status_change",
+    images: [],
+  });
+  const { error: commentError } = await sb.from("ticket_comments").insert(comments);
+  if (commentError) warnings.push(`コメント欄への履歴の記録に失敗しました: ${commentError.message}`);
+
+  // ── レビュアーへの通知（画面の handleReviewRequest と同じ。ベルと Slack） ──
+  if (reviewRequest) {
+    const slug = String(project?.slug ?? "");
+    const title = String(patch.title ?? row.title);
+    const notifyTitle = `${actor}さんからレビュー依頼が届きました`;
+    const notifyBody = `${row.wbs}: ${title}（第${reviewRequest.round}回）`;
+    const { error: notifyError } = await sb.from("notifications").insert({
+      user_name: reviewRequest.reviewer, type: "review_request",
+      title: notifyTitle, body: notifyBody,
+      ticket_id: row.id, ticket_wbs: row.wbs, ticket_title: title,
+      project_slug: slug || null, is_read: false,
+    });
+    if (notifyError) warnings.push(`レビュアーへの通知に失敗しました: ${notifyError.message}`);
+    if (project?.slack_notifications_enabled && project?.slack_channel && project?.slack_access_token) {
+      try {
+        const { data: profile } = await sb
+          .from("profiles").select("slack_member_id").eq("name", reviewRequest.reviewer).maybeSingle();
+        const mention = profile?.slack_member_id ? `<@${profile.slack_member_id}>` : reviewRequest.reviewer;
+        const origin = appPublicOrigin();
+        const url = origin && slug ? `${origin}/${encodeURIComponent(slug)}/${encodeURIComponent(row.wbs)}` : null;
+        const label = escapeSlackText(notifyBody);
+        const slackRes = await fetch("https://slack.com/api/chat.postMessage", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${project.slack_access_token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channel: project.slack_channel,
+            text: `*${escapeSlackText(notifyTitle)}*\n${mention} ${url ? `<${url}|${label}>` : label}`,
+          }),
+        });
+        const json = await slackRes.json() as { ok: boolean; error?: string };
+        if (!json.ok) warnings.push(`Slack への通知に失敗しました: ${json.error ?? "unknown"}`);
+      } catch (e) {
+        warnings.push(`Slack への通知に失敗しました: ${(e as Error)?.message ?? String(e)}`);
+      }
+    }
+  }
+
+  return res.status(200).json({
+    ok: true, changed: true, wbs: row.wbs,
+    status: labelOf(nextStatus),
+    changes: [...(statusText ? [statusText] : []), ...changes],
+    reviewRequestedTo: reviewRequest?.reviewer ?? null,
+    parentStarted,
+    updatedAt: newUpdatedAt,
+    warnings,
+  });
 }
 
 // ── POST /api/v1/tickets ─────────────────────────────────────
@@ -2044,9 +2929,9 @@ export default async function handler(req: any, res: any) {
 
   const resource = String(req.query?.resource ?? "");
   if (resource !== "tickets" && resource !== "context" && resource !== "ticket" && resource !== "ticket-status"
-    && resource !== "ticket-pull" && resource !== "ticket-comment" && resource !== "backlog") {
+    && resource !== "ticket-update" && resource !== "ticket-pull" && resource !== "ticket-comment" && resource !== "backlog") {
     return res.status(404).json({
-      error: `不明なエンドポイントです: /api/v1/${resource}（tickets / context / ticket / ticket-status / ticket-pull / ticket-comment / backlog のいずれか）`,
+      error: `不明なエンドポイントです: /api/v1/${resource}（tickets / context / ticket / ticket-status / ticket-update / ticket-pull / ticket-comment / backlog のいずれか）`,
     });
   }
 
@@ -2088,6 +2973,22 @@ export default async function handler(req: any, res: any) {
     }
     try {
       return await handleUpdateStatus(sb, auth.key, statusBody, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+
+  if (resource === "ticket-update") {
+    if (req.method !== "POST") return res.status(405).json({ error: "POST を使ってください" });
+    if (scope !== "full") return denied("チケットを修正", "権限が「すべて」");
+    let updateBody: any;
+    try {
+      updateBody = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body ?? {});
+    } catch {
+      return res.status(400).json({ error: "リクエストボディが JSON として読めません" });
+    }
+    try {
+      return await handleUpdateTicket(sb, auth.key, updateBody, res);
     } catch (e: any) {
       return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
     }
