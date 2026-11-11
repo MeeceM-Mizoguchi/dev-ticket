@@ -4,7 +4,7 @@
 // AI に渡す手順書（apiKeyPrompt.ts / apiImplementPrompt.ts）とは読者が違う。あちらは AI 向けの仕様書、
 // こちらは人間が自分のコードへ写すためのもの。
 //
-// サンプルは6種類（登録・読み取り・ステータス更新・PR紐づけ・PR作成・マージ）。読み取り以降は、
+// サンプルは7種類（登録・読み取り・修正・ステータス更新・PR紐づけ・PR作成・マージ）。読み取り以降は、
 // AI を通さずに外部のシステムからも同じ API を使えることを見せるためのもの。
 // PR作成・マージ（BRU21-001）は api/github/[resource].ts にあり、PRとマージコミットが Dev Ticket の bot 名義になる。
 //
@@ -22,7 +22,7 @@ export const SAMPLE_LANGS: { id: SampleLang; label: string }[] = [
 ];
 
 /** サンプルの種類（どの API を叩くか） */
-export type SampleKind = "create" | "read" | "status" | "pull" | "pull-create" | "merge";
+export type SampleKind = "create" | "read" | "update" | "status" | "pull" | "pull-create" | "merge";
 
 /**
  * 種類ごとの説明。画面ではサンプルの上に「必要な権限」と注意を出す。
@@ -40,6 +40,18 @@ export const SAMPLE_KINDS: { id: SampleKind; label: string; endpoint: string; pe
     notes: [
       "チケット1件の本文・画像・添付・コメントを返します。親を指定すると子チケット全部、子を指定すると親も一緒に返ります",
       "画像と添付の URL は認証なしで取得できます",
+    ],
+  },
+  {
+    id: "update", label: "修正", endpoint: "POST /api/v1/ticket-update",
+    permission: "すべて",
+    notes: [
+      "送った項目だけを変えます。送らなかった項目は今のまま残ります",
+      "updatedAt（読み取りで返る ticket.updatedAt）が必須です。読んだあとに画面で直されていたら 409 になり、上書きしません",
+      "本文は descriptionHtml（読み取りで返るHTML）を直して送ると、画像・表・メンションが残ります。危ないタグ・属性は取り除いて保存します",
+      "メンバーにいない担当者・登録されていない分類は変えずに warnings に理由を返します。担当者を変えても通知は送りません",
+      "ステータスは画面のボタンと同じ動きです。レビュー中にして reviewer を指定すると、レビュアーに依頼の通知が届きます",
+      "変えた内容は、チケットのコメント欄に履歴として1件残ります",
     ],
   },
   {
@@ -326,7 +338,9 @@ curl "${c.baseUrl}/api/v1/ticket?wbs=${wbs}" \\
 #     "wbs": "${wbs}", "title": "…", "status": "進行中", "priority": "高", "assignee": "…",
 #     "url": "…（Dev Ticket 上のチケットのURL）",
 #     "description": "本文（Markdown 風のテキスト）",
-#     "images": ["https://…"], "attachments": [], "comments": []
+#     "images": ["https://…"], "attachments": [], "comments": [],
+#     "descriptionHtml": "<p>保存されている本文のHTML</p>", "updatedAt": "…（修正するときに送り返す）",
+#     "labels": [], "attachedImages": [], "releaseDate": null, "operationVerified": false
 #   },
 #   "parent": null,
 #   "children": [ { "wbs": "${wbs}-1", "…": "ticket と同じ形" } ]
@@ -398,6 +412,146 @@ ticket = data["ticket"]
 print(ticket["wbs"], ticket["status"], ticket["title"])
 for child in data["children"]:
     print("  ", child["wbs"], child["status"], child["title"])`;
+}
+
+// ── 修正（POST /api/v1/ticket-update。ENHA2-057） ────────────────
+
+const UPDATE_RULES = [
+  "送った項目だけを変える（送らなかった項目は今のまま）。updatedAt は必須",
+  "・updatedAt は GET /api/v1/ticket で読んだ ticket.updatedAt。読んだあとに画面で直されていたら 409（上書きしない）",
+  "・本文は descriptionHtml（読み取りで返るHTML）を直して送ると、画像・表・メンションが残る",
+  "・担当者・分類が見つからないときは、その項目を変えずに warnings に理由が入る（担当者を変えても通知は送らない）",
+  "・見積工数は開始日・期限日から「日数×8時間」で自動で計算し直す（estimatedHours は送れない）",
+  "・status は画面のボタンと同じ動き。レビュー中にして reviewer を指定すると、レビュアーへ通知が届く",
+];
+
+function updateCurlSample(c: SampleContext, key: string, wbs: string): string {
+  return `# 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+#
+${commentLines("#", UPDATE_RULES)}
+
+# ① 今の値を読む（応答の ticket.updatedAt を控える）
+curl "${c.baseUrl}/api/v1/ticket?wbs=${wbs}" \\
+  -H "Authorization: Bearer ${key}"
+
+# ② 変える項目だけを送る
+curl -X POST ${c.baseUrl}/api/v1/ticket-update \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "wbs": "${wbs}",
+    "updatedAt": "<①の ticket.updatedAt>",
+    "dueDate": "2026/11/25",
+    "priority": "高",
+    "assignee": "山田太郎"
+  }'
+
+# 応答の例
+# { "ok": true, "changed": true, "wbs": "${wbs}", "status": "進行中",
+#   "changes": ["優先度 中 → 高", "担当者 未割り当て → 「山田太郎」", "期限日 11/20 → 11/25"],
+#   "updatedAt": "…", "warnings": [] }
+# 409: 読んだあとに画面で直されている（①からやり直す）
+#
+# Windows で日本語が化けて 400 になるときは、本文を UTF-8 のファイルに保存して
+# -d の代わりに --data-binary @body.json で送る`;
+}
+
+function updateJsSample(c: SampleContext, wbs: string): string {
+  return `// 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+//
+${commentLines("//", UPDATE_RULES)}
+const API_KEY = process.env.DEV_TICKET_API_KEY;
+const headers = { "Authorization": \`Bearer \${API_KEY}\`, "Content-Type": "application/json" };
+
+async function getTicket(wbs) {
+  const res = await fetch(\`${c.baseUrl}/api/v1/ticket?\${new URLSearchParams({ wbs })}\`, { headers });
+  const json = await res.json();
+  if (!res.ok) throw new Error(\`\${res.status}: \${json.error}\`);
+  return json.ticket;
+}
+
+async function updateTicket(wbs, updatedAt, fields) {
+  const res = await fetch("${c.baseUrl}/api/v1/ticket-update", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ wbs, updatedAt, ...fields }),
+  });
+  const json = await res.json();
+  if (res.status === 409) {
+    // 読んだあとに画面などで直されている。上書きしないので、読み直してから判断する
+    console.warn(json.error);
+    return null;
+  }
+  if (!res.ok) {
+    // 400:入力の誤り 401:キーが無効 403:キーの権限不足 404:チケットが無い 429:リクエスト過多
+    throw new Error(\`\${res.status}: \${json.error}\`);
+  }
+  // 担当者・分類が見つからなかった項目などは、変えずにここへ理由が入る
+  if (json.warnings?.length) console.warn(json.warnings);
+  return json; // { ok, changed, wbs, status, changes, updatedAt, warnings }
+}
+
+// ── ここから下が「自分のシステム」で使う部分 ──
+// 例: 自社の工程表で期限を延ばしたら、Dev Ticket の期限日と優先度も合わせる
+const ticket = await getTicket("${wbs}");
+await updateTicket(ticket.wbs, ticket.updatedAt, { dueDate: "2026/11/25", priority: "高" });
+
+// 例: 本文の一部だけを直す（HTML のまま直すと、画像・表・メンションが残る）
+const latest = await getTicket("${wbs}");
+await updateTicket(latest.wbs, latest.updatedAt, {
+  descriptionHtml: latest.descriptionHtml.replace("確認中", "確認済み"),
+});`;
+}
+
+function updatePythonSample(c: SampleContext, wbs: string): string {
+  return `# 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+#
+${commentLines("#", UPDATE_RULES)}
+import os
+import requests
+
+API_KEY = os.environ["DEV_TICKET_API_KEY"]
+BASE_URL = "${c.baseUrl}"
+HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+
+
+def get_ticket(wbs):
+    res = requests.get(f"{BASE_URL}/api/v1/ticket", headers=HEADERS, params={"wbs": wbs}, timeout=30)
+    body = res.json()
+    if not res.ok:
+        raise RuntimeError(f"{res.status_code}: {body.get('error')}")
+    return body["ticket"]
+
+
+def update_ticket(wbs, updated_at, **fields):
+    res = requests.post(
+        f"{BASE_URL}/api/v1/ticket-update",
+        headers=HEADERS,
+        json={"wbs": wbs, "updatedAt": updated_at, **fields},
+        timeout=30,
+    )
+    body = res.json()
+    if res.status_code == 409:
+        # 読んだあとに画面などで直されている。上書きしないので、読み直してから判断する
+        print("更新されていたため取りやめました:", body.get("error"))
+        return None
+    if not res.ok:
+        # 400:入力の誤り 401:キーが無効 403:キーの権限不足 404:チケットが無い 429:リクエスト過多
+        raise RuntimeError(f"{res.status_code}: {body.get('error')}")
+    # 担当者・分類が見つからなかった項目などは、変えずにここへ理由が入る
+    for w in body.get("warnings", []):
+        print("警告:", w)
+    return body  # {"ok", "changed", "wbs", "status", "changes", "updatedAt", "warnings"}
+
+
+# ── ここから下が「自分のシステム」で使う部分 ──
+# 例: 自社の工程表で期限を延ばしたら、Dev Ticket の期限日と優先度も合わせる
+ticket = get_ticket("${wbs}")
+update_ticket(ticket["wbs"], ticket["updatedAt"], dueDate="2026/11/25", priority="高")
+
+# 例: レビュアーを指定してレビュー中にする（レビュアーに依頼の通知が届く）
+latest = get_ticket("${wbs}")
+update_ticket(latest["wbs"], latest["updatedAt"], status="レビュー中", reviewer="山田太郎")`;
 }
 
 // ── ステータス更新（POST /api/v1/ticket-status） ──────────────────
@@ -827,6 +981,9 @@ export function buildApiSample(lang: SampleLang, ctx: SampleContext, kind: Sampl
   const wbs = ctx.wbs ?? "T-012";
   if (kind === "read") {
     return lang === "js" ? readJsSample(ctx, wbs) : lang === "python" ? readPythonSample(ctx, wbs) : readCurlSample(ctx, key, wbs);
+  }
+  if (kind === "update") {
+    return lang === "js" ? updateJsSample(ctx, wbs) : lang === "python" ? updatePythonSample(ctx, wbs) : updateCurlSample(ctx, key, wbs);
   }
   if (kind === "status") {
     return lang === "js" ? statusJsSample(ctx, wbs) : lang === "python" ? statusPythonSample(ctx, wbs) : statusCurlSample(ctx, key, wbs);

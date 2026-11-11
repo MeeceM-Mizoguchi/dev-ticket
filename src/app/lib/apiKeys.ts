@@ -22,7 +22,7 @@ export type ApiKeyScope = "write" | "read" | "full";
 
 /** プルダウンに出す順。AIに実装させる用途が主なので「すべて」を先頭に置く */
 export const API_KEY_SCOPES: { value: ApiKeyScope; label: string; description: string }[] = [
-  { value: "full", label: "すべて", description: "チケットの登録・読み取り・ステータスの更新" },
+  { value: "full", label: "すべて", description: "チケットの登録・読み取り・修正・ステータスの更新" },
   { value: "read", label: "読み取りのみ", description: "チケットの本文・画像・コメント・子チケットの読み取り" },
   { value: "write", label: "登録のみ", description: "チケットの登録（これまでのキーと同じ）" },
 ];
@@ -37,6 +37,8 @@ export const canReadTickets = (k: ApiKeyRow) => k.scope !== "write";
 export const canCreateTickets = (k: ApiKeyRow) => k.scope !== "read";
 /** ステータスを更新（POST /api/v1/ticket-status）できるキーか */
 export const canUpdateStatus = (k: ApiKeyRow) => k.scope === "full";
+/** 既存チケットを修正（POST /api/v1/ticket-update。ENHA2-057）できるキーか */
+export const canUpdateTickets = (k: ApiKeyRow) => k.scope === "full";
 
 export interface ApiKeyRow {
   id: string;
