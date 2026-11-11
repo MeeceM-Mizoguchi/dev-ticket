@@ -30,7 +30,7 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor, clipboardHasTable } from "@/app/components/shared/RichEditor";
 import { ImageLightbox, useImageLightbox } from "@/app/components/shared/ImageLightbox";
 import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory, mapSprint } from "@/app/lib/mappers";
-import { isAckTarget, isUnackedComment, setCommentAck, emitCommentAckChanged, LEGACY_RESOLVED_BY } from "@/app/lib/commentAck";
+import { isAckTarget, isUnackedComment, isUnackedForMe, setCommentAck, emitCommentAckChanged, LEGACY_RESOLVED_BY } from "@/app/lib/commentAck";
 import { FileAttachments } from "@/app/components/shared/FileAttachments";
 import {
   fetchTicketAttachments, uploadTicketAttachment, deleteTicketAttachment,
@@ -2517,19 +2517,22 @@ export function TicketDetailPanel({
 
   // ── コメントの「確認済み」チェック（BRU25-002） ──
   // 表示順（親 → その返信）で並べ、最初の未確認のコメントへ移動できるようにする
+  // 件数・オレンジの枠・「☐ 確認済みにする」は、ログイン中の人宛ての未確認のコメントだけに出す（BRU25-010）
   const unackedInOrder = topLevelComments
     .flatMap(c => [c, ...(repliesByParent.get(c.id) ?? [])])
-    .filter(isUnackedComment);
+    .filter(c => isUnackedForMe(c, userName));
   const jumpToFirstUnacked = () => {
     const first = unackedInOrder[0];
     const el = first ? document.getElementById(`panel-comment-${first.id}`) : null;
     if (el) pointToComment(el);
   };
-  /** 未確認はオレンジの枠 */
-  const ackBorder = (c: TicketComment, normal: string) => (isUnackedComment(c) ? "1.5px solid #F97316" : normal);
+  /** 自分宛ての未確認はオレンジの枠 */
+  const ackBorder = (c: TicketComment, normal: string) => (isUnackedForMe(c, userName) ? "1.5px solid #F97316" : normal);
   const renderAckToggle = (c: TicketComment) => {
     if (!isAckTarget(c)) return null;
     if (isUnackedComment(c)) {
+      // 自分宛てではない未確認のコメントには何も出さない（BRU25-010）
+      if (!isUnackedForMe(c, userName)) return null;
       return (
         <button onClick={() => void toggleCommentAck(c)} title="このコメントを確認済みにする"
           style={{ padding: "2px 8px", borderRadius: 6, border: "1px solid rgba(249,115,22,0.45)", background: "#FFF7ED", color: "#C2410C", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" as const }}>
