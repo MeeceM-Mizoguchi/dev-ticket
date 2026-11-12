@@ -17,6 +17,10 @@ const KEY_PREFIX = "dvt_live_";
 const RATE_LIMIT = 60;
 const RATE_WINDOW_SEC = 60;
 
+/** BRU25-012 アーカイブ済みのプロジェクトのキーで呼ばれたときのメッセージ */
+export const PROJECT_ARCHIVED_API_MESSAGE =
+  "このプロジェクトはアーカイブされています。プロジェクト一覧の『アーカイブ』から戻すと、APIキーをまた使えます。";
+
 // ── キーの権限 ────────────────────────────────────────────────
 export type KeyScope = "write" | "read" | "full";
 export const SCOPE_LABEL: Record<KeyScope, string> = { write: "登録のみ", read: "読み取りのみ", full: "すべて" };
@@ -70,6 +74,19 @@ export async function authenticateApiKey(sb: SupabaseClient, req: any): Promise<
   if (key.revoked_at) return { ok: false, status: 401, error: "このAPIキーは失効しています" };
   if (key.expires_at && new Date(key.expires_at).getTime() < Date.now()) {
     return { ok: false, status: 401, error: "このAPIキーは有効期限が切れています" };
+  }
+
+  // BRU25-012 アーカイブ済みのプロジェクトのキーは、どのAPIも通さない（キー自体は失効させない）。
+  // キーの無効（401）と区別するため 403 にする。
+  // archived_at 列は後から足したもの（add_project_archive.sql）。名指しすると未適用の環境で
+  // 全キーが通らなくなるため * で引き、引けなければ「アーカイブされていない」として扱う。
+  const { data: keyProject } = await sb
+    .from("projects")
+    .select("*")
+    .eq("id", key.project_id)
+    .maybeSingle();
+  if (keyProject && (keyProject as { archived_at?: string | null }).archived_at) {
+    return { ok: false, status: 403, error: PROJECT_ARCHIVED_API_MESSAGE };
   }
 
   // レート制限（last_used_at の更新もここで行われる）

@@ -29,6 +29,7 @@ import { WbsMasterSchedulePage } from "@/app/pages/WbsMasterSchedulePage";
 import { GithubPage } from "@/app/pages/GithubPage";
 import { OrganizationPage } from "@/app/pages/OrganizationPage";
 import { AnnouncementSettingsPage } from "@/app/pages/AnnouncementSettingsPage";
+import { ProjectArchiveGuard } from "@/app/components/projects/ProjectArchiveGuard";
 
 // 保護下(ログイン後)ページの単一定義。
 export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
@@ -97,7 +98,14 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   // 「打ち間違えた」のかが分からないため、理由とURLを出す 404 を描画する。
   // 保護シェル配下に置いてあるので、サイドバー付きのまま表示される。
   { path: "*", element: <RouteNotFoundPage /> },
-];
+].map(withProjectArchiveGuard);
+
+// BRU25-012 /:projectSlug で始まる経路（プロジェクトの中の全画面）を、アーカイブの確認で包む。
+// 1か所で包むので、経路を足しても各画面に判定を足す必要は無い。
+function withProjectArchiveGuard(r: { path: string; element: ReactElement }): { path: string; element: ReactElement } {
+  if (!r.path.startsWith("/:projectSlug")) return r;
+  return { path: r.path, element: <ProjectArchiveGuard>{r.element}</ProjectArchiveGuard> };
+}
 
 export function ProtectedRoutes({ location }: { location?: string }) {
   const current = useLocation();

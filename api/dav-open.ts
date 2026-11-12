@@ -165,6 +165,16 @@ export default async function handler(req: any, res: any) {
   let sb: SupabaseClient;
   try { sb = admin(); } catch { res.statusCode = 500; return res.end("Not configured"); }
 
+  // BRU25-012 アーカイブ済みのプロジェクトのファイルは、開くことも保存することもできない。
+  // アーカイブ前に発行したURL（トークン）でも、リクエストのたびにここで断る（署名の形は変えない）。
+  // archived_at は後から足した列なので * で読み、引けなければ「アーカイブされていない」として扱う。
+  {
+    const { data: proj } = await sb.from("projects").select("*").eq("id", payload.p).maybeSingle();
+    if ((proj as { archived_at?: string | null } | null)?.archived_at) {
+      res.statusCode = 403; return res.end("This project is archived");
+    }
+  }
+
   // Office は本体と同じ場所に "~$名前.xlsx"（誰が開いているかの目印）を読み書きする。
   // これを素通しすると目印ファイルの中身で本体を上書きしてしまうので受け流す。
   //

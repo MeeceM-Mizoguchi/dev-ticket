@@ -386,6 +386,12 @@ export interface Project {
   deployCheckKey?: string | null;
   deployCheckMode?: GithubDeployCheckMode;
   requireChecksMode?: GithubRequireChecksMode;
+  // BRU25-012 アーカイブ。null なら「アーカイブされていない」。ステータスとは別に持つ
+  // （手動設定OFFのプロジェクトはステータスがチケットから再計算されるため）。
+  // 列が無い環境（add_project_archive.sql 未適用）でも null になる。
+  archivedAt?: string | null;
+  /** アーカイブした人の表示名 */
+  archivedBy?: string | null;
 }
 export interface Client {
   id: string; name: string; industry: string; email: string;
