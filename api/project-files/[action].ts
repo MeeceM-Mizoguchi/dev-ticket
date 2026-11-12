@@ -3,6 +3,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import { canSeeFile, fileDeleteBlocker, isFileOwner } from "../_lib/fileAccess.js";
 import { fileQuotaBlocker, getFileQuota } from "../_lib/fileQuota.js";
+import { waitUntil } from "@vercel/functions";
+import { extractStoredFileText } from "../_lib/fileText.js";
+import { latestVersions } from "../_lib/fileVersions.js";
 
 // ENHA2-035 ファイルボックス
 // project-files バケットは非公開。クライアントは storage を直接叩かず、
@@ -27,6 +30,11 @@ import { fileQuotaBlocker, getFileQuota } from "../_lib/fileQuota.js";
 //   POST /api/project-files/set-visibility { fileId, visibility }  → { aclId }
 //   POST /api/project-files/share-add   { fileId, memberIds }     → { ok: true }
 //   POST /api/project-files/share-remove { fileId, memberId }     → { ok: true }
+//   POST /api/project-files/extract-text-backfill { projectId }    → { processed, failed, remaining, total }
+//     … ENHA2-056 既存のファイルの文字をまとめて取り出す（管理者・オーナーだけ。1回で時間の許す分だけ進める）
+//
+// ENHA2-056 アップロードの登録（register）・版を戻す（restore-version）のあとは、応答を返してから裏で
+// ファイルの中の文字を取り出して project_file_texts に保存する（waitUntil。アップロードの速さ・成否は変えない）。
 //
 // 限定公開（project_files.acl_id）のファイルは、所有者・共有先・オーナーにしか見せない。
 // ここは service_role で RLS が効かないので、ファイルを引くアクションは必ず canSeeFile を通すこと
@@ -277,6 +285,8 @@ export default async function handler(req: any, res: any) {
       await sb.storage.from(BUCKET).remove([path]);
       return res.status(500).json({ error: error.message });
     }
+    // ENHA2-056 中の文字は、応答を返したあとに裏で取り出す（失敗してもアップロードは成功のまま）
+    if (inserted?.id) waitUntil(extractStoredFileText(sb, String(inserted.id)));
     // 改名した場合があるので、実際に登録した名前を返す
     return res.json({ file: inserted, fileName });
   }
@@ -463,6 +473,8 @@ export default async function handler(req: any, res: any) {
       await sb.storage.from(BUCKET).remove([path]);
       return res.status(500).json({ error: insErr?.message ?? "Insert failed" });
     }
+    // ENHA2-056 戻した版も新しい版なので、中の文字を取り出し直す（裏で）
+    waitUntil(extractStoredFileText(sb, String(inserted.id)));
     return res.json({ file: inserted, restoredFrom: src.version });
   }
 
@@ -661,6 +673,53 @@ export default async function handler(req: any, res: any) {
       .delete().eq("acl_id", aclId).eq("profile_id", memberId);
     if (error) return res.status(500).json({ error: error.message });
     return res.json({ ok: true });
+  }
+
+  // ── ENHA2-056 既存のファイルの文字をまとめて取り出す ──────────
+  // 管理者・オーナーだけ。まだ取り出していない最新の版を、時間の許す分だけ取り出す。
+  // remaining が 0 になるまで、画面（高度検索の「既存ファイルの文字を取り出す」）が繰り返し呼ぶ。
+  // Googleドライブ上のファイルは対象外（開いた人の権限でしか読めないため、開いたときに取り出す）。
+  if (action === "extract-text-backfill") {
+    const projectId = String(body.projectId ?? "");
+    if (!projectId) return res.status(400).json({ error: "projectId is required" });
+    if (profile.role !== "admin" && profile.role !== "owner") {
+      return res.status(403).json({ error: "既存のファイルの文字の取り出しは、管理者だけが行えます" });
+    }
+    if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
+
+    type Row = { id: string; parent_id: string | null; file_name: string; version: number; is_folder: boolean; external_provider: string | null; file_path: string | null };
+    const all: Row[] = [];
+    for (let from = 0; from < 50_000; from += 1000) {
+      const { data, error } = await sb.from("project_files")
+        .select("id, parent_id, file_name, version, is_folder, external_provider, file_path")
+        .eq("project_id", projectId).order("id", { ascending: true }).range(from, from + 999);
+      if (error) return res.status(500).json({ error: error.message });
+      all.push(...((data ?? []) as Row[]));
+      if ((data ?? []).length < 1000) break;
+    }
+    const targets = latestVersions(all.filter(r => !r.is_folder && r.external_provider !== "google" && r.file_path));
+    const done = new Set<string>();
+    for (let i = 0; i < targets.length; i += 150) {
+      const ids = targets.slice(i, i + 150).map(t => t.id);
+      const { data, error } = await sb.from("project_file_texts").select("file_id").in("file_id", ids);
+      if (error) {
+        return res.status(503).json({ error: "文字を保存するテーブル（supabase/add_project_file_texts.sql）が、まだデータベースに作られていません。管理者に SQL の適用を依頼してください" });
+      }
+      for (const r of data ?? []) done.add(String((r as { file_id: string }).file_id));
+    }
+    const pending = targets.filter(t => !done.has(t.id)).sort((a, b) => (a.id < b.id ? -1 : 1));
+
+    // 関数の実行時間（vercel.json の maxDuration）に収まるよう、時間を見ながら1件ずつ進める
+    const started = Date.now();
+    const budgetMs = 45_000;
+    let processed = 0, failed = 0;
+    for (const t of pending) {
+      if (Date.now() - started > budgetMs) break;
+      const r = await extractStoredFileText(sb, t.id);
+      processed++;
+      if (!r.ok) failed++;
+    }
+    return res.json({ processed, failed, remaining: pending.length - processed, total: targets.length });
   }
 
   return res.status(404).json({ error: "Unknown action" });

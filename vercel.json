@@ -10,6 +10,12 @@
     },
     "api/google/[action].ts": {
       "maxDuration": 300
+    },
+    "api/project-files/[action].ts": {
+      "maxDuration": 60
+    },
+    "api/dav-open.ts": {
+      "maxDuration": 60
     }
   },
   "rewrites": [

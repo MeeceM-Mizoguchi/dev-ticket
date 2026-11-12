@@ -5,6 +5,7 @@ import {
   canSeeFile, fileDeleteBlocker, isFileOwner, seesFileRow, sharedAclIds,
 } from "../_lib/fileAccess.js";
 import { fileQuotaBlocker } from "../_lib/fileQuota.js";
+import { googleExportPlan, textFromGoogleExport, saveFileText } from "../_lib/fileText.js";
 
 // Googleドライブ連携（ファイルボックス）
 // 設計: docs/google-drive-integration-design.md
@@ -46,6 +47,7 @@ import { fileQuotaBlocker } from "../_lib/fileQuota.js";
 //   POST /api/google/sync-permissions { projectId }                       → { granted, failed }
 //   POST /api/google/grant-self       {}                                  → { granted, failed }
 //   POST /api/google/ensure-access    { fileId }                          → { ok, cached?, skipped?, reason? }
+//   POST /api/google/extract-text     { fileId }                          → { ok, skipped?, error? }（ENHA2-056 高度検索）
 //   POST /api/google/resolve-folder   { folderId }                        → { id, name, driveId }
 //   POST /api/google/test-connection  { folderId }                        → { ok } / 400
 
@@ -2350,6 +2352,46 @@ export default async function handler(req: any, res: any) {
     //
     // 付けられなかったときも 200 で返す（ok=false）。共有ドライブのメンバーなど、
     // 付与しなくても開ける人がいるので、画面は理由を伝えつつそのまま開く。
+    // ── ENHA2-056 Googleのファイルの中の文字を取り出す（高度検索の対象にする） ──
+    // ファイルボックスでGoogleのファイルを開いたときに、画面が結果を待たずに呼ぶ。
+    // Google側で書き換えられても Dev Ticket は気づけないので、開くたびに開いた人の権限で取り出し直す。
+    // 開いた人が読めない（drive.file の範囲外・権限が無い）ファイルは飛ばし、前に取り出した文字は残す。
+    if (action === "extract-text") {
+      const fileId = String(body.fileId ?? "");
+      if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
+      const { data: file } = await sb.from("project_files")
+        .select("id, project_id, file_name, file_type, version, external_id, external_provider, owner_id, acl_id")
+        .eq("id", fileId).maybeSingle();
+      if (!file) return res.status(404).json({ error: "File not found" });
+      if (!(await isMember(sb, String(file.project_id), profile))) return res.status(403).json({ error: "Forbidden" });
+      if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
+      if (file.external_provider !== "google" || !file.external_id) {
+        return res.status(400).json({ error: "Googleファイルではありません" });
+      }
+      const plan = googleExportPlan(String(file.file_type ?? ""));
+      if (!plan) return res.json({ ok: false, skipped: "unsupported" });
+
+      let token: string;
+      try {
+        token = await getAccessToken(sb, profile.id);
+      } catch (e) {
+        if (e instanceof HttpError && e.status === 428) return res.json({ ok: false, skipped: "not-linked" });
+        throw e;
+      }
+      const exported = await fetch(
+        `${DRIVE_API}/files/${encodeURIComponent(String(file.external_id))}/export?mimeType=${encodeURIComponent(plan.mime)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!exported.ok) return res.json({ ok: false, skipped: "unreadable", status: exported.status });
+      const result = await textFromGoogleExport(plan.kind, Buffer.from(await exported.arrayBuffer()));
+      const saveError = await saveFileText(sb, {
+        id: String(file.id), project_id: String(file.project_id), file_name: String(file.file_name),
+        version: (file.version as number | null) ?? null,
+      }, result, "google");
+      if (saveError) return res.status(503).json({ error: `文字を保存できませんでした（supabase/add_project_file_texts.sql が未適用の可能性があります）: ${saveError}` });
+      return res.json(result.ok ? { ok: true } : { ok: false, error: result.error });
+    }
+
     if (action === "ensure-access") {
       const fileId = String(body.fileId ?? "");
       if (!fileId) return res.status(400).json({ error: "fileId が必要です" });

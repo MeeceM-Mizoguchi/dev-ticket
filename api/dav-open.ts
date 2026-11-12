@@ -3,6 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import { canSeeFile, fileActorById } from "./_lib/fileAccess.js";
 import { fileQuotaBlocker } from "./_lib/fileQuota.js";
+import { waitUntil } from "@vercel/functions";
+import { extractStoredFileText } from "./_lib/fileText.js";
 
 // ENHA2-035 ファイルボックス: WebDAV エンドポイント（実装本体）
 //
@@ -379,6 +381,9 @@ ${body}
       await sb.storage.from(BUCKET).remove([path]);
       res.statusCode = 500; return res.end(insErr?.message ?? "Insert failed");
     }
+
+    // ENHA2-056 新しい版の中の文字を、応答を返したあとに裏で取り出す（Office の保存は待たせない）
+    waitUntil(extractStoredFileText(sb, String(inserted.id)));
 
     davHeaders();
     // 保存で作った新しい版の ETag / Last-Modified を必ず返す。

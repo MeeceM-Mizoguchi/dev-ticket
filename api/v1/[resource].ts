@@ -13,7 +13,7 @@
 //   POST /api/v1/backlog        … バックログ項目の登録（親子1段まで／フォルダ指定可。BRU24-002）
 //   POST /api/v1/research-start / research-result / research-fail
 //                               … 高度検索：AI が調査の開始・結果・失敗を伝える（ENHA2-055-1。本体は api/_lib/research.ts）
-//   GET  /api/v1/search / minutes / wiki / backlog-item
+//   GET  /api/v1/search / minutes / wiki / backlog-item / file-text
 //                               … 高度検索：横断検索と、議事録・Wiki・バックログ1件の本文（ENHA2-055-2。本体は api/_lib/researchSearch.ts）
 //
 // PRの作成とマージを bot 名義で行うAPI（ticket-pull-create / ticket-merge）は、GitHub App の
@@ -2939,6 +2939,8 @@ const DOC_HANDLERS: Record<string, (sb: SupabaseClient, key: ApiKeyRow, query: a
   minutes: docHandlers.handleMinutes,
   wiki: docHandlers.handleWiki,
   "backlog-item": docHandlers.handleBacklogItem,
+  // ENHA2-056 ファイルボックスの1ファイルの文字
+  "file-text": docHandlers.handleFileText,
 };
 
 const KNOWN_RESOURCES = [

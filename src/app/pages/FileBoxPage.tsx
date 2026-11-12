@@ -40,7 +40,7 @@ import {
 import {
   openGoogleFile, openGoogleFileEnsuringAccess, ensureGoogleAccess, renameGoogleFile, setGoogleLinkShare, syncGoogleNames,
   convertExistingFile, exportGoogleToOffice, startGoogleOAuth, DRAWIO_OPEN_HINT, officeOnDriveHint, trashGoogleFiles,
-  syncGoogleFileAcl,
+  syncGoogleFileAcl, requestGoogleTextExtract,
   type GoogleDriveProjectConfig, type GoogleDriveMode, type TrashResult,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
@@ -540,6 +540,8 @@ export function FileBoxPage() {
     // Googleファイルは、紐づけの有無が分かるまで待つ（未紐づけなら先に確認を出すため。BRU17-028）
     if (newest && isGoogleFile(newest) && googleLinked === null) return;
     if (newest && isGoogleFile(newest)) {
+      // ENHA2-056 開いた人の権限で、中の文字を取り出し直す（高度検索の対象にする。結果は待たない）
+      requestGoogleTextExtract(newest.id);
       // Googleファイルはビューアを持たない。共有リンクで来たら、そのタブのまま Google へ送る。
       //
       // ★ window.open（別タブ）を使ってはいけない。ここはページ読み込み後の処理で、
@@ -890,6 +892,8 @@ export function FileBoxPage() {
       return;
     }
     if (!file.externalUrl) { toast("このファイルのURLが見つかりません", "error"); return; }
+    // ENHA2-056 開いた人の権限で、中の文字を取り出し直す（高度検索の対象にする。結果は待たず、開く動きを遅くしない）
+    requestGoogleTextExtract(file.id);
     const opened = (r: { opened: boolean; warning?: string }) => {
       if (!r.opened) { toast("別タブを開けませんでした。ブラウザのポップアップの設定を確認してください", "error"); return; }
       if (r.warning) toast(r.warning, "error");

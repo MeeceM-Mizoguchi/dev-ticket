@@ -15,10 +15,12 @@ export const RESEARCH_STATUS_META: Record<ResearchStatus, { label: string; color
   cancelled: { label: "キャンセル", color: "#9E9690", bg: "#F3F1EE" },
 };
 
-export type ResearchSourceKind = "minutes" | "wiki" | "ticket" | "comment" | "backlog";
+export type ResearchSourceKind = "minutes" | "wiki" | "ticket" | "comment" | "backlog" | "file";
 
 export const RESEARCH_SOURCE_KIND_LABEL: Record<string, string> = {
   minutes: "議事録", wiki: "Wiki", ticket: "チケット", comment: "コメント", backlog: "バックログ",
+  // ENHA2-056 ファイルボックスのファイル
+  file: "ファイル",
 };
 
 export interface ResearchSource {

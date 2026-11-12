@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/supabase";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { ProjectFile } from "@/app/types";
 import { stageProjectFile, registerStagedFile, type GoogleAppKind, type GoogleCreateKind, type SendOptions } from "@/app/lib/projectFiles";
 import { openPendingTab } from "@/app/lib/pendingTab";
@@ -390,6 +390,27 @@ export function ensureGoogleAccess(fileId: string): Promise<EnsureAccessResult> 
     .finally(() => { accessInFlight.delete(fileId); });
   accessInFlight.set(fileId, p);
   return p;
+}
+
+/**
+ * ENHA2-056 Googleのファイルを開いたときに、中の文字の取り出しをサーバーへ頼む（高度検索の対象にする）。
+ * 結果は待たない（開く動きを遅くしない）。失敗しても何も出さない。
+ * 共有リンクから開くときは同じタブのまま Google へ移るので、移っても途切れないよう keepalive で送る。
+ */
+export function requestGoogleTextExtract(fileId: string): void {
+  if (!isSupabaseEnabled || !fileId) return;
+  void (async () => {
+    try {
+      const { data: { session } } = await supabase!.auth.getSession();
+      if (!session?.access_token) return;
+      await fetch("/api/google/extract-text", {
+        method: "POST",
+        keepalive: true,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ fileId }),
+      });
+    } catch { /* 取り出せなくても、ファイルを開く動きには関係しない */ }
+  })();
 }
 
 /**
