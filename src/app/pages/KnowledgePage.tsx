@@ -42,7 +42,7 @@ import {
   type WikiImportInput,
 } from "@/app/lib/knowledge/knowledgeService";
 import { downloadBlob } from "@/app/lib/articleExport/download";
-import { warmup, onModelDownload, getUnavailableReason } from "@/app/lib/knowledge/embed";
+import { warmup, onModelDownload, getModelDownloadProgress, getUnavailableReason } from "@/app/lib/knowledge/embed";
 import { outlineFromMarkdown, flattenOutline, resolveSection, type OutlineNode } from "@/app/lib/knowledge/outline";
 import { submitOnModEnter } from "@/app/lib/submitKey";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
@@ -392,7 +392,11 @@ export function KnowledgePage() {
   // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
   useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
+  // 先読みはログイン後に裏で始まっている（BRU25-011 KnowledgeModelPreloader）。
+  // ここでの warmup() は、先読みが動かなかった場合の保険（何度呼んでも読み込みは1回だけ）。
+  // 開いた時点の進み具合を先に受け取ってから購読し、0%から出直さないようにする。
   useEffect(() => {
+    setModelProgress(getModelDownloadProgress());
     warmup();
     return onModelDownload((_f, p) => setModelProgress(p));
   }, []);
