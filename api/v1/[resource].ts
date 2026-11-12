@@ -13,6 +13,8 @@
 //   POST /api/v1/backlog        … バックログ項目の登録（親子1段まで／フォルダ指定可。BRU24-002）
 //   POST /api/v1/research-start / research-result / research-fail
 //                               … 高度検索：AI が調査の開始・結果・失敗を伝える（ENHA2-055-1。本体は api/_lib/research.ts）
+//   GET  /api/v1/search / minutes / wiki / backlog-item
+//                               … 高度検索：横断検索と、議事録・Wiki・バックログ1件の本文（ENHA2-055-2。本体は api/_lib/researchSearch.ts）
 //
 // PRの作成とマージを bot 名義で行うAPI（ticket-pull-create / ticket-merge）は、GitHub App の
 // ヘルパーがある api/github/[resource].ts 側に置いている（BRU21-001）。「AIで実装」の手順書はそちらを使う。
@@ -48,6 +50,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { authenticateApiKey, SCOPE_LABEL, type ApiKeyRow } from "../_lib/apiKeyAuth.js";
 import { handleResearchStart, handleResearchResult, handleResearchFail } from "../_lib/research.js";
+import { createDocHandlers } from "../_lib/researchSearch.js";
 
 // ── 定数 ──────────────────────────────────────────────────────
 // キーの形式・権限（scope）・レート制限は api/_lib/apiKeyAuth.ts にある（api/github と共用。BRU21-001）
@@ -2929,9 +2932,18 @@ const RESEARCH_HANDLERS: Record<string, (sb: SupabaseClient, key: ApiKeyRow, bod
   "research-fail": handleResearchFail,
 };
 
+// 高度検索の読み取り（ENHA2-055-2）。本文のテキスト化と画面のオリジンは、このファイルのものを渡してそろえる
+const docHandlers = createDocHandlers({ htmlToText, appOrigin: appPublicOrigin });
+const DOC_HANDLERS: Record<string, (sb: SupabaseClient, key: ApiKeyRow, query: any, res: any) => Promise<any>> = {
+  search: docHandlers.handleSearch,
+  minutes: docHandlers.handleMinutes,
+  wiki: docHandlers.handleWiki,
+  "backlog-item": docHandlers.handleBacklogItem,
+};
+
 const KNOWN_RESOURCES = [
   "tickets", "context", "ticket", "ticket-status", "ticket-update", "ticket-pull", "ticket-comment", "backlog",
-  ...Object.keys(RESEARCH_HANDLERS),
+  ...Object.keys(RESEARCH_HANDLERS), ...Object.keys(DOC_HANDLERS),
 ];
 
 export default async function handler(req: any, res: any) {
@@ -3036,6 +3048,17 @@ export default async function handler(req: any, res: any) {
     }
     try {
       return await handleCreateComment(sb, auth.key, commentBody, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+
+  const docHandler = DOC_HANDLERS[resource];
+  if (docHandler) {
+    if (req.method !== "GET") return res.status(405).json({ error: "GET を使ってください" });
+    if (scope === "write") return denied("高度検索で読み取り", "権限が「読み取りのみ」または「すべて」");
+    try {
+      return await docHandler(sb, auth.key, req.query ?? {}, res);
     } catch (e: any) {
       return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
     }
