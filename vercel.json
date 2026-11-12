@@ -16,6 +16,9 @@
     },
     "api/dav-open.ts": {
       "maxDuration": 60
+    },
+    "api/research/[action].ts": {
+      "maxDuration": 60
     }
   },
   "rewrites": [

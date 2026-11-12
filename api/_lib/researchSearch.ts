@@ -56,10 +56,10 @@ interface FileMeta {
  * プロジェクトのファイルのうち、キーを発行した人が見てよい「最新の版」だけを返す。
  * フォルダの行は名前をたどるために byId に入れる。
  */
-async function loadVisibleFiles(sb: SupabaseClient, key: ApiKeyRow, owner: KeyOwner): Promise<{ latest: FileMeta[]; byId: Map<string, FileMeta>; error: string | null }> {
+export async function loadVisibleFiles(sb: SupabaseClient, projectId: string, owner: KeyOwner): Promise<{ latest: FileMeta[]; byId: Map<string, FileMeta>; error: string | null }> {
   const res = await fetchAllRows<FileMeta>((from, to) => sb.from("project_files")
     .select("id, parent_id, file_name, version, is_folder, owner_id, acl_id, created_at, external_provider")
-    .eq("project_id", key.project_id).order("id", { ascending: true }).range(from, to));
+    .eq("project_id", projectId).order("id", { ascending: true }).range(from, to));
   if (res.error) return { latest: [], byId: new Map(), error: res.error };
   const byId = new Map(res.rows.map(r => [String(r.id), r]));
   const actor = { id: owner.id, role: owner.role };
@@ -69,7 +69,7 @@ async function loadVisibleFiles(sb: SupabaseClient, key: ApiKeyRow, owner: KeyOw
 }
 
 /** フォルダの名前を「親 / 子」の形でつなぐ（ファイルボックスは file_name がフォルダ名） */
-function fileFolderPath(byId: Map<string, FileMeta>, parentId: string | null): string | null {
+export function fileFolderPath(byId: Map<string, FileMeta>, parentId: string | null): string | null {
   const names: string[] = [];
   let cur = parentId ? byId.get(String(parentId)) : undefined;
   for (let depth = 0; cur && depth < 50; depth++) {
@@ -94,16 +94,16 @@ const TICKET_ID_CHUNK = 150;
 /** PostgREST が1回に返す行の上限（既定 1000）に合わせて、ページを分けて引く */
 const PAGE = 1000;
 
-const BACKLOG_STATUS_LABEL: Record<string, string> = {
+export const BACKLOG_STATUS_LABEL: Record<string, string> = {
   open: "未対応", "in-progress": "対応中", converted: "チケット化済", archived: "アーカイブ",
 };
-const PRIORITY_LABEL: Record<string, string> = { high: "高", medium: "中", low: "低" };
+export const PRIORITY_LABEL: Record<string, string> = { high: "高", medium: "中", low: "低" };
 
 const str = (v: unknown) => (typeof v === "string" ? v.trim() : Array.isArray(v) ? String(v[0] ?? "").trim() : "");
 
 // ── 見られる範囲 ──────────────────────────────────────────────
 type Level = "none" | "view" | "edit";
-interface Access {
+export interface Access {
   owner: KeyOwner;
   slug: string;
   perms: { wiki: Level; minutes: Level; backlog: Level };
@@ -112,26 +112,30 @@ interface Access {
 async function resolveAccess(sb: SupabaseClient, key: ApiKeyRow): Promise<{ ok: true; access: Access } | { ok: false; status: number; error: string }> {
   const ownerRes = await resolveKeyOwner(sb, key);
   if (!ownerRes.ok) return ownerRes;
-  const owner = ownerRes.owner;
-  const { data: project } = await sb.from("projects").select("slug").eq("id", key.project_id).maybeSingle();
+  return { ok: true, access: await accessForOwner(sb, key.project_id, ownerRes.owner) };
+}
+
+/**
+ * その人がプロジェクトで見られる種類（Wiki・議事録・バックログ）を決める。
+ * APIキーの発行者（resolveAccess）と、画面からログイン中の人（BRU25-015 の資料ファイル）で同じ判定を使う。
+ */
+export async function accessForOwner(sb: SupabaseClient, projectId: string, owner: KeyOwner): Promise<Access> {
+  const { data: project } = await sb.from("projects").select("slug").eq("id", projectId).maybeSingle();
   const slug = String(project?.slug ?? "");
   if (owner.role === "owner" || owner.role === "admin") {
-    return { ok: true, access: { owner, slug, perms: { wiki: "edit", minutes: "edit", backlog: "edit" } } };
+    return { owner, slug, perms: { wiki: "edit", minutes: "edit", backlog: "edit" } };
   }
   const { data: perm } = await sb.from("project_member_permissions").select("permissions")
-    .eq("project_id", key.project_id).eq("member_id", owner.id).maybeSingle();
+    .eq("project_id", projectId).eq("member_id", owner.id).maybeSingle();
   const p = (perm?.permissions ?? {}) as Record<string, unknown>;
   const lv = (v: unknown): Level => (v === "view" || v === "edit" ? v : "none");
-  return {
-    ok: true,
-    access: { owner, slug, perms: { wiki: lv(p.wikiPermission), minutes: lv(p.minutesPermission), backlog: lv(p.backlogPermission) } },
-  };
+  return { owner, slug, perms: { wiki: lv(p.wikiPermission), minutes: lv(p.minutesPermission), backlog: lv(p.backlogPermission) } };
 }
 
 interface MinuteMeta { id: string; parent_id: string | null; is_folder: boolean; title: string; visibility?: string; owner_id?: string | null }
 
 /** 全行をページに分けて引く（PostgREST の1回あたりの上限を超えても取りこぼさない） */
-async function fetchAllRows<T>(build: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }>, max = 20_000): Promise<{ rows: T[]; error: string | null }> {
+export async function fetchAllRows<T>(build: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }>, max = 20_000): Promise<{ rows: T[]; error: string | null }> {
   const out: T[] = [];
   for (let from = 0; from < max; from += PAGE) {
     const { data, error } = await build(from, from + PAGE - 1);
@@ -147,16 +151,16 @@ async function fetchAllRows<T>(build: (from: number, to: number) => PromiseLike<
  * 議事録の行（フォルダを含む）と、キーを発行した人が見られない行の ID を返す。
  * 判定は can_view_meeting_minute と同じ（その行と上のフォルダすべてが見られるときだけ見られる）。
  */
-async function loadMinuteVisibility(sb: SupabaseClient, key: ApiKeyRow, owner: KeyOwner): Promise<{ byId: Map<string, MinuteMeta>; hidden: Set<string>; error: string | null }> {
+export async function loadMinuteVisibility(sb: SupabaseClient, projectId: string, owner: KeyOwner): Promise<{ byId: Map<string, MinuteMeta>; hidden: Set<string>; error: string | null }> {
   const base = "id, parent_id, is_folder, title";
   let res = await fetchAllRows<MinuteMeta>((from, to) => sb.from("meeting_minutes").select(`${base}, visibility, owner_id`)
-    .eq("project_id", key.project_id).order("id", { ascending: true }).range(from, to));
+    .eq("project_id", projectId).order("id", { ascending: true }).range(from, to));
   let hasVisibility = true;
   if (res.error) {
     // 公開範囲の列が無い（add_minutes_client_notes_visibility.sql 未適用）環境は、全員に公開として扱う
     hasVisibility = false;
     res = await fetchAllRows<MinuteMeta>((from, to) => sb.from("meeting_minutes").select(base)
-      .eq("project_id", key.project_id).order("id", { ascending: true }).range(from, to));
+      .eq("project_id", projectId).order("id", { ascending: true }).range(from, to));
     if (res.error) return { byId: new Map(), hidden: new Set(), error: res.error };
   }
   const byId = new Map(res.rows.map(r => [String(r.id), r]));
@@ -184,7 +188,7 @@ async function loadMinuteVisibility(sb: SupabaseClient, key: ApiKeyRow, owner: K
 }
 
 /** 上のフォルダの名前を「親 / 子」の形でつなぐ */
-function folderPath<T extends { parent_id: string | null; title: string }>(byId: Map<string, T>, parentId: string | null): string | null {
+export function folderPath<T extends { parent_id: string | null; title: string }>(byId: Map<string, T>, parentId: string | null): string | null {
   const names: string[] = [];
   let cur = parentId ? byId.get(String(parentId)) : undefined;
   for (let depth = 0; cur && depth < 50; depth++) {
@@ -364,7 +368,7 @@ export function createDocHandlers(deps: DocApiDeps) {
 
     if (kinds.includes("minutes")) {
       tasks.push((async () => {
-        const vis = await loadMinuteVisibility(sb, key, owner);
+        const vis = await loadMinuteVisibility(sb, key.project_id, owner);
         if (vis.error) return vis.error;
         const hidden = [...vis.hidden];
         // 見られない行は DB の段階で外す（limit の前に外さないと、見られる行が取りこぼされる）。
@@ -411,7 +415,7 @@ export function createDocHandlers(deps: DocApiDeps) {
     // ENHA2-056 ファイルボックスのファイル（中の文字・ファイル名）
     if (kinds.includes("file")) {
       tasks.push((async () => {
-        const files = await loadVisibleFiles(sb, key, owner);
+        const files = await loadVisibleFiles(sb, key.project_id, owner);
         if (files.error) return files.error;
         if (files.latest.length === 0) return null;
         const byId = new Map(files.latest.map(f => [String(f.id), f]));
@@ -476,7 +480,7 @@ export function createDocHandlers(deps: DocApiDeps) {
     if (!accessRes.ok) return res.status(accessRes.status).json({ error: accessRes.error });
     const { owner, slug, perms } = accessRes.access;
     if (perms.minutes === "none") return noPerm(res, "議事録");
-    const vis = await loadMinuteVisibility(sb, key, owner);
+    const vis = await loadMinuteVisibility(sb, key.project_id, owner);
     if (vis.error) return res.status(500).json({ error: vis.error });
 
     const id = str(query?.id);
@@ -609,7 +613,7 @@ export function createDocHandlers(deps: DocApiDeps) {
     const { data: base } = await sb.from("project_files").select("id, parent_id, file_name, is_folder, project_id")
       .eq("id", id).eq("project_id", key.project_id).maybeSingle();
     if (!base || base.is_folder) return notFound();
-    const files = await loadVisibleFiles(sb, key, owner);
+    const files = await loadVisibleFiles(sb, key.project_id, owner);
     if (files.error) return res.status(500).json({ error: files.error });
     // 見てよくない限定公開のファイルは、有るか無いかも明かさない
     const latest = files.latest.find(f => f.file_name === base.file_name && (f.parent_id ?? null) === (base.parent_id ?? null));
