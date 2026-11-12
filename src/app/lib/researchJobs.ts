@@ -3,9 +3,16 @@
 // 画面からできるのは、本人の調査を読む・作る（待機中）・キャンセルにすることだけ（RLS と列の権限で絞っている。
 // supabase/add_research_jobs.sql）。処理中・完了・失敗へ進めるのは AI が APIキーで送る
 // research-start / research-result / research-fail（api/_lib/research.ts）。
+//
+// BRU25-015-3 ブラウザの AI（Gemini・ChatGPT・Claude）で調べる調査は mode = 'browser' で作る。
+// 資料ファイルは POST /api/research/materials、答えの取り込みは POST /api/research/import（api/research/[action].ts）。
+// mode の列（supabase/add_research_jobs_mode.sql）が無い DB でもターミナルの AI の調査を作れるよう、
+// mode はブラウザの AI のときだけ送る。
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
 export type ResearchStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+/** どちらの AI で調べたか。cli = ターミナルの AI（APIキーで結果を送る）／ browser = ブラウザの AI（答えを貼って取り込む） */
+export type ResearchMode = "cli" | "browser";
 
 export const RESEARCH_STATUS_META: Record<ResearchStatus, { label: string; color: string; bg: string }> = {
   queued: { label: "待機中", color: "#6B6458", bg: "#F3F1EE" },
@@ -46,6 +53,7 @@ export interface ResearchJob {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  mode: ResearchMode;
 }
 
 export const isActiveResearch = (j: Pick<ResearchJob, "status">) => j.status === "queued" || j.status === "running";
@@ -63,6 +71,8 @@ function mapJob(r: Record<string, any>): ResearchJob {
     createdAt: String(r.created_at ?? ""),
     startedAt: r.started_at ?? null,
     finishedAt: r.finished_at ?? null,
+    // 列が無い DB（SQL 未適用）の行は、ターミナルの AI の調査
+    mode: r.mode === "browser" ? "browser" : "cli",
   };
 }
 
@@ -87,9 +97,17 @@ export async function listResearchJobs(projectId: string, userId: string): Promi
   return { ok: true, jobs: (data ?? []).map(mapJob) };
 }
 
-/** 待機中の調査を1件作る（「プロンプトを生成してコピー」を押したとき） */
+/** mode の列がまだ無い（add_research_jobs_mode.sql 未適用）ときに画面へ出す文 */
+export const RESEARCH_MODE_MISSING = "ブラウザの AI の調査を記録する列が、まだデータベースに作られていません。管理者に supabase/add_research_jobs_mode.sql の適用を依頼してください（ターミナルの AI は今までどおり使えます）";
+
+function isMissingModeColumn(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return error.code === "PGRST204" || error.code === "42703" || /'mode' column|column .*mode/i.test(error.message ?? "");
+}
+
+/** 待機中の調査を1件作る（「プロンプトを生成してコピー」「プロンプトをコピー」を押したとき） */
 export async function createResearchJob(params: {
-  projectId: string; organizationId: string | null; userId: string; question: string;
+  projectId: string; organizationId: string | null; userId: string; question: string; mode?: ResearchMode;
 }): Promise<{ ok: true; job: ResearchJob } | { ok: false; error: string }> {
   if (!isSupabaseEnabled) return { ok: false, error: "この環境では高度検索を使えません" };
   const { data, error } = await supabase!
@@ -99,11 +117,70 @@ export async function createResearchJob(params: {
       organization_id: params.organizationId,
       created_by: params.userId,
       question: params.question,
+      // mode の列が無い DB でターミナルの AI の調査が失敗しないよう、ブラウザの AI のときだけ列を含める
+      ...(params.mode === "browser" ? { mode: "browser" } : {}),
     })
     .select("*")
     .single();
-  if (error || !data) return { ok: false, error: isMissingTable(error) ? RESEARCH_TABLE_MISSING : `調査を作れませんでした: ${error?.message ?? ""}` };
+  if (error || !data) {
+    if (params.mode === "browser" && isMissingModeColumn(error)) return { ok: false, error: RESEARCH_MODE_MISSING };
+    return { ok: false, error: isMissingTable(error) ? RESEARCH_TABLE_MISSING : `調査を作れませんでした: ${error?.message ?? ""}` };
+  }
   return { ok: true, job: mapJob(data) };
+}
+
+// ── ブラウザの AI（BRU25-015） ───────────────────────────────
+export type BrowserAi = "gemini" | "chatgpt" | "claude";
+export const BROWSER_AI_LABEL: Record<BrowserAi, string> = { gemini: "Gemini", chatgpt: "ChatGPT", claude: "Claude" };
+
+export interface ResearchMaterialsSummary {
+  project: { name: string; slug: string };
+  /** 量の目安（トークン） */
+  totalTokens: number;
+  counts: { minutes: number; wiki: number; ticket: number; comment: number; backlog: number; file: number };
+  /** 入れなかった種類と理由（権限なし など） */
+  excluded: { kind: string; reason: string }[];
+  /** AI ごとの、一度に読める量・1ファイルの上限・分けるファイルの数 */
+  plans: Record<BrowserAi, { label: string; contextTokens: number; perFileTokens: number; files: number }>;
+}
+export interface ResearchMaterialsFile { name: string; index: number; total: number; tokens: number; content: string }
+
+async function postResearchApi<T>(action: "materials" | "import", body: unknown): Promise<{ ok: true; data: T } | { ok: false; error: string; status: number }> {
+  if (!isSupabaseEnabled) return { ok: false, error: "この環境では高度検索を使えません", status: 0 };
+  const { data: { session } } = await supabase!.auth.getSession();
+  if (!session?.access_token) return { ok: false, error: "ログインしてから操作してください", status: 401 };
+  try {
+    const res = await fetch(`/api/research/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: String(json?.error || `リクエストに失敗しました（${res.status}）`), status: res.status };
+    return { ok: true, data: json as T };
+  } catch {
+    return { ok: false, error: "ネットワークエラーで、サーバーに届きませんでした", status: 0 };
+  }
+}
+
+/** 資料の量と、AI ごとの分け方だけを取る（中身は取らない） */
+export async function fetchResearchMaterialsSummary(projectId: string): Promise<{ ok: true; summary: ResearchMaterialsSummary } | { ok: false; error: string }> {
+  const r = await postResearchApi<ResearchMaterialsSummary>("materials", { projectId, ai: "gemini", summary: true });
+  return r.ok ? { ok: true, summary: r.data } : { ok: false, error: r.error };
+}
+
+/** 資料ファイルの part 番目（1から）を取る */
+export async function fetchResearchMaterialsFile(projectId: string, ai: BrowserAi, part: number): Promise<{ ok: true; summary: ResearchMaterialsSummary; file: ResearchMaterialsFile } | { ok: false; error: string }> {
+  const r = await postResearchApi<ResearchMaterialsSummary & { file: ResearchMaterialsFile | null }>("materials", { projectId, ai, part });
+  if (!r.ok) return { ok: false, error: r.error };
+  if (!r.data.file) return { ok: false, error: "資料ファイルを作れませんでした" };
+  return { ok: true, summary: r.data, file: r.data.file };
+}
+
+/** 貼られた AI の答えを取り込んで、調査を完了にする */
+export async function importResearchAnswer(params: { projectId: string; jobId: string; answer: string }): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postResearchApi<{ ok: true }>("import", params);
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 
 /** 待機中・処理中の調査をキャンセルにする */

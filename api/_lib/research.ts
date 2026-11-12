@@ -13,8 +13,12 @@
 //
 // テーブルは supabase/add_research_jobs.sql。マージ・デプロイのあとに手で流すので、
 // 流す前に呼ばれたときは 503 と「SQL が未適用」の文を返す（ほかの API には影響しない）。
+//
+// BRU25-015-2 ブラウザの AI の答えを、画面から取り込む（POST /api/research/import。振り分けは api/research/[action].ts）。
+//   出典の確かめ方（normalizeSources）と大きさの上限は research-result と同じものを使う。
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ApiKeyRow } from "./apiKeyAuth.js";
+import { assertProjectAccess } from "./projectAuth.js";
 
 /** result・result_short・sources を合わせた大きさの上限（文字数） */
 export const MAX_RESEARCH_RESULT_CHARS = 200_000;
@@ -248,4 +252,123 @@ export async function handleResearchFail(sb: SupabaseClient, key: ApiKeyRow, bod
     return terminalConflict(res, cur ?? job);
   }
   return res.status(200).json({ ok: true, jobId: job.id, status: RESEARCH_STATUS_LABEL.failed, finishedAt: now });
+}
+
+// ── POST /api/research/import（BRU25-015-2） ───────────────────
+/** 貼られた答えの長さの上限（結果の上限 20万文字に、説明の文などの分を足した量） */
+const MAX_ANSWER_CHARS = 400_000;
+/** 読み取れなかったときに、画面にそのまま出す文の頭 */
+export const ANSWER_UNREADABLE = "AI の答えから結果を読み取れませんでした。答えを全部コピーしてください";
+
+/**
+ * ブラウザの AI の答えから、結果の JSON（report・short・sources）を取り出す。
+ *   1. コードブロック（```json … ``` と、言語名なしの ``` … ```）の中を JSON として読む（json の言語名つきを先に試す）
+ *   2. コードブロックが無い・どれも読めないときは、答えの中の最初の { から最後の } までを読む
+ * report・short のどちらかを持つものを選ぶ（AI が例として別の JSON を書いたときに取り違えないため）。
+ */
+export function extractAnswerJson(answer: string): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+  const text = answer.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+  const tryParse = (s: string): Record<string, unknown> | null => {
+    try {
+      const v = JSON.parse(s.trim());
+      return v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : null;
+    } catch { return null; }
+  };
+  const looksLikeResult = (v: Record<string, unknown>) => "report" in v || "short" in v || "markdown" in v;
+
+  const fenced: { lang: string; body: string }[] = [];
+  for (const m of text.matchAll(/```[ \t]*([A-Za-z0-9_+-]*)[^\n]*\n([\s\S]*?)\n[ \t]*```/g)) {
+    fenced.push({ lang: m[1].toLowerCase(), body: m[2] });
+  }
+  const ordered = [...fenced.filter(f => f.lang === "json"), ...fenced.filter(f => f.lang !== "json")];
+  let firstParsed: Record<string, unknown> | null = null;
+  for (const f of ordered) {
+    const v = tryParse(f.body);
+    if (!v) continue;
+    if (looksLikeResult(v)) return { ok: true, value: v };
+    firstParsed ??= v;
+  }
+  const start = text.indexOf("{"), end = text.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    const v = tryParse(text.slice(start, end + 1));
+    if (v && (looksLikeResult(v) || !firstParsed)) return { ok: true, value: v };
+  }
+  if (firstParsed) return { ok: true, value: firstParsed };
+  return { ok: false, error: `${ANSWER_UNREADABLE}（答えの中に、結果の JSON が見つからないか、JSON として読めませんでした）` };
+}
+
+/** 取り出した JSON を、research-result と同じ決まりで確かめる */
+export function readAnswerResult(answer: string):
+  { ok: true; report: string; short: string; sources: ResearchSource[] } | { ok: false; error: string; missing?: string[] } {
+  const parsed = extractAnswerJson(answer);
+  if (!parsed.ok) return parsed;
+  const v = parsed.value;
+  // report が本来の名前。research-result と同じ markdown でも受ける
+  const reportRaw = typeof v.report === "string" ? v.report : typeof v.markdown === "string" ? v.markdown : "";
+  const report = reportRaw.trim();
+  const short = typeof v.short === "string" ? v.short.trim() : "";
+  const missing = [
+    ...(!report ? ["report（レポート型：結論・経緯（時系列）・未決事項・出典）"] : []),
+    ...(!short ? ["short（短い回答型：回答の2〜3文）"] : []),
+  ];
+  if (missing.length) return { ok: false, error: `${ANSWER_UNREADABLE}（足りないもの：${missing.join("、")}）`, missing };
+  const normalized = normalizeSources(v.sources);
+  if (!normalized.ok) return { ok: false, error: `${ANSWER_UNREADABLE}（出典の形が違います：${normalized.error}）` };
+  const total = report.length + short.length + JSON.stringify(normalized.sources).length;
+  if (total > MAX_RESEARCH_RESULT_CHARS) {
+    return { ok: false, error: `結果が大きすぎます（report・short・sources を合わせて${MAX_RESEARCH_RESULT_CHARS.toLocaleString()}文字まで。今回は${total.toLocaleString()}文字）` };
+  }
+  return { ok: true, report, short, sources: normalized.sources };
+}
+
+/**
+ * 画面から、ブラウザの AI の答えを取り込んで調査を完了にする。
+ * 受け付けるのは、ログイン中の人の・見られるプロジェクトの・待機中の調査だけ。
+ *   ほかの人の調査は 403、見られないプロジェクト（projectId を送ったときは、それと違うプロジェクト）の調査は 404、
+ *   完了・失敗・キャンセル済み（と処理中）は 409。中身の誤りは 400。どれも記録は変えない。
+ */
+export async function handleResearchImport(sb: SupabaseClient, userId: string, body: any, res: any) {
+  const jobId = typeof body?.jobId === "string" ? body.jobId.trim() : "";
+  if (!jobId) return res.status(400).json({ error: "jobId（調査のID）は必須です" });
+  if (!UUID_RE.test(jobId)) return res.status(400).json({ error: `jobId の形式が正しくありません: ${jobId}` });
+  const answer = typeof body?.answer === "string" ? body.answer : "";
+  if (!answer.trim()) return res.status(400).json({ error: `${ANSWER_UNREADABLE}（答えが空です）` });
+  if (answer.length > MAX_ANSWER_CHARS) {
+    return res.status(400).json({ error: `答えが長すぎます（${MAX_ANSWER_CHARS.toLocaleString()}文字まで。今回は${answer.length.toLocaleString()}文字）` });
+  }
+  // 中身の誤りは、記録を読む前に返す（400 のときは記録を変えない）
+  const read = readAnswerResult(answer);
+  if (!read.ok) return res.status(400).json({ error: read.error, ...(read.missing ? { missing: read.missing } : {}) });
+
+  const { data: job, error } = await sb.from("research_jobs").select("*").eq("id", jobId).maybeSingle();
+  if (error) {
+    if (isMissingTable(error)) return res.status(503).json({ error: MISSING_TABLE_ERROR });
+    return res.status(500).json({ error: error.message });
+  }
+  const notFound = () => res.status(404).json({ error: `調査「${jobId}」が見つかりません` });
+  if (!job) return notFound();
+  // ほかのプロジェクトの調査・見られないプロジェクトの調査は、有るか無いかも明かさない
+  const projectId = typeof body?.projectId === "string" ? body.projectId.trim() : "";
+  if (projectId && job.project_id !== projectId) return notFound();
+  const denied = await assertProjectAccess(sb, { kind: "user", userId }, String(job.project_id));
+  if (denied) return denied.status === 404 ? notFound() : res.status(denied.status).json({ error: denied.error });
+  if (String(job.created_by) !== userId) {
+    return res.status(403).json({ error: "この調査は、あなたが作った調査ではないため取り込めません" });
+  }
+  if (job.status !== "queued") return terminalConflict(res, job);
+
+  const now = new Date().toISOString();
+  const { data: updated, error: upErr } = await sb.from("research_jobs")
+    .update({
+      status: "done", result: read.report, result_short: read.short, sources: read.sources,
+      error: null, started_at: job.started_at ?? now, finished_at: now,
+    })
+    .eq("id", job.id).eq("status", "queued")
+    .select("id");
+  if (upErr) return res.status(500).json({ error: upErr.message });
+  if (!updated || updated.length === 0) {
+    const { data: cur } = await sb.from("research_jobs").select("status").eq("id", job.id).maybeSingle();
+    return terminalConflict(res, cur ?? job);
+  }
+  return res.status(200).json({ ok: true, jobId: job.id, status: RESEARCH_STATUS_LABEL.done, sources: read.sources.length, finishedAt: now });
 }

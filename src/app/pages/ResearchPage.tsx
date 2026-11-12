@@ -12,10 +12,19 @@
 //   ・結果の Markdown は ResearchMarkdown で React の要素として組み立てる（HTML として入れない）。
 //   ・出典を押すと資料の画面へ移り、根拠の文を ResearchQuoteHighlighter が黄色で目立たせる。
 //   ・BUG-02/03: 一度表示したら、状態の確認中もスピナーで隠さない。BUG-05: コピー・発行・キャンセルは ref で二重押しを防ぐ。
+//
+// BRU25-015-3「使う AI」で「ブラウザの AI（Gemini・ChatGPT・Claude）」を選ぶと、APIキーを使わずに調べられる。
+//   ①「資料をダウンロード」… その人が見られる資料をまとめた .md（POST /api/research/materials。AI ごとに必要なら分ける）
+//   ②「プロンプトをコピー」… ブラウザの AI 用のプロンプト（APIキーは入らない）。このときに調査を待機中（mode = browser）で作る
+//   ③ 利用者が AI に①を添付し、②を貼って送る
+//   ④ AI の答えを貼って「結果を取り込む」… POST /api/research/import で読み取り、今と同じ結果の画面を出す
+//   ブラウザの AI の調査は AI から状態が届かないので、定期の確認・処理中のモーダルの対象にしない。
+//   ダウンロード・コピー・取り込みも ref で二重押しを防ぐ（BUG-05）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import {
   FolderKanban, ChevronRight, Copy, KeyRound, Loader2, Telescope, Clock, AlertTriangle, Terminal, Lightbulb, FileText, FolderOpen,
+  Globe, Download, ClipboardPaste, CheckCircle2, RefreshCw,
 } from "lucide-react";
 import { backfillFileTexts } from "@/app/lib/projectFiles";
 import { isSupabaseEnabled, supabase } from "@/lib/supabase";
@@ -31,11 +40,12 @@ import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 import { escStack } from "@/app/lib/escStack";
 import { submitOnModEnter } from "@/app/lib/submitKey";
 import { getResearchApiKey, createResearchApiKey } from "@/app/lib/apiKeys";
-import { buildResearchPrompt } from "@/app/lib/apiAskPrompt";
+import { buildResearchPrompt, buildBrowserResearchPrompt } from "@/app/lib/apiAskPrompt";
 import {
   listResearchJobs, createResearchJob, cancelResearchJob, isActiveResearch,
   RESEARCH_STATUS_META, RESEARCH_SOURCE_KIND_LABEL,
-  type ResearchJob, type ResearchSource,
+  fetchResearchMaterialsSummary, fetchResearchMaterialsFile, importResearchAnswer, BROWSER_AI_LABEL,
+  type ResearchJob, type ResearchSource, type ResearchMode, type BrowserAi, type ResearchMaterialsSummary,
 } from "@/app/lib/researchJobs";
 import { ResearchMarkdown, stripSourcesSection } from "@/app/components/research/ResearchMarkdown";
 import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDialog";
@@ -52,6 +62,28 @@ const EXAMPLES = [
 ];
 
 type ResultView = "report" | "short";
+
+const BROWSER_AIS: BrowserAi[] = ["gemini", "chatgpt", "claude"];
+
+/** 「約38万トークン」の形 */
+function formatTokens(n: number): string {
+  if (n >= 10_000) return `約${Math.round(n / 10_000).toLocaleString()}万トークン`;
+  if (n >= 1_000) return `約${(Math.round(n / 1_000) / 10).toLocaleString()}万トークン`;
+  return `約${n.toLocaleString()}トークン`;
+}
+
+/** 資料ファイルを保存させる（文字だけの .md） */
+function saveTextFile(name: string, content: string) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(href), 10_000);
+}
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "";
@@ -134,6 +166,19 @@ export function ResearchPage() {
   const [now, setNow] = useState(() => Date.now());
   const questionRef = useRef<HTMLTextAreaElement | null>(null);
 
+  // BRU25-015-3 使う AI（既定はターミナルの AI＝今までの動き）と、ブラウザの AI の手順
+  const [mode, setMode] = useState<ResearchMode>("cli");
+  const [browserAi, setBrowserAi] = useState<BrowserAi>("gemini");
+  const [materials, setMaterials] = useState<ResearchMaterialsSummary | null>(null);
+  const [materialsError, setMaterialsError] = useState<string | null>(null);
+  const [materialsLoading, setMaterialsLoading] = useState(false);
+  const materialsLoadingRef = useRef(false);
+  const [downloading, setDownloading] = useState<{ done: number; total: number } | null>(null);
+  const downloadingRef = useRef(false);
+  const [browserCopying, setBrowserCopying] = useState(false);
+  const browserCopyingRef = useRef(false);
+  const importingRef = useRef(false);
+
   // ── プロジェクト ──────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -186,7 +231,8 @@ export function ResearchPage() {
 
   useEffect(() => { void loadJobs(); }, [loadJobs]);
 
-  const hasActive = jobs.some(isActiveResearch);
+  // ブラウザの AI の調査は AI から状態が届かない（画面で取り込む）ので、確かめる対象にしない
+  const hasActive = jobs.some(j => isActiveResearch(j) && j.mode !== "browser");
   // 開いている間、待機中・処理中の調査があれば数秒ごとに確かめる
   useEffect(() => {
     if (!hasActive) return;
@@ -194,7 +240,7 @@ export function ResearchPage() {
     return () => window.clearInterval(id);
   }, [hasActive, loadJobs]);
 
-  const runningJob = jobs.find(j => j.status === "running") ?? null;
+  const runningJob = jobs.find(j => j.status === "running" && j.mode !== "browser") ?? null;
   // 処理中のモーダルの経過時間
   useEffect(() => {
     if (!runningJob) return;
@@ -280,6 +326,99 @@ export function ResearchPage() {
       setIssuing(false);
     }
   }, [projectId, createAndCopy, toast]);
+
+  // ── ブラウザの AI（BRU25-015-3） ─────────────────────────────
+  /** 資料の量と AI ごとの分け方を数える。BUG-02/03: 数え直しの間も、前の結果は隠さない */
+  const loadMaterials = useCallback(async () => {
+    if (materialsLoadingRef.current || !projectId) return;
+    materialsLoadingRef.current = true;
+    setMaterialsLoading(true);
+    try {
+      const r = await fetchResearchMaterialsSummary(projectId);
+      if (r.ok) { setMaterials(r.summary); setMaterialsError(null); }
+      else setMaterialsError(r.error);
+    } finally {
+      materialsLoadingRef.current = false;
+      setMaterialsLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (mode === "browser" && projectId && !materials && !materialsError) void loadMaterials();
+  }, [mode, projectId, materials, materialsError, loadMaterials]);
+
+  const browserFiles = materials?.plans[browserAi]?.files ?? 1;
+
+  const handleDownload = useCallback(async () => {
+    if (downloadingRef.current || !projectId) return;
+    downloadingRef.current = true;
+    try {
+      let total = browserFiles;
+      setDownloading({ done: 0, total });
+      for (let part = 1; part <= total; part++) {
+        const r = await fetchResearchMaterialsFile(projectId, browserAi, part);
+        if (!r.ok) { toast(r.error, "error"); return; }
+        // 数えたあとに資料が増減したときは、いまの分け方に合わせる
+        total = r.file.total;
+        setMaterials(r.summary);
+        saveTextFile(r.file.name, r.file.content);
+        setDownloading({ done: part, total });
+        // 続けて保存すると、ブラウザが2つ目以降を止めることがあるので少し間を空ける
+        if (part < total) await new Promise(resolve => window.setTimeout(resolve, 600));
+      }
+      toast(total > 1 ? `資料ファイルを ${total} つ保存しました` : "資料ファイルを保存しました");
+    } finally {
+      downloadingRef.current = false;
+      setDownloading(null);
+    }
+  }, [projectId, browserAi, browserFiles, toast]);
+
+  const canBrowserCopy = !!question.trim() && !!projectId && !!materials && !browserCopying;
+
+  const handleBrowserCopy = useCallback(async () => {
+    // BUG-05: 素早く2回押しても、調査が2件できないように ref で止める
+    if (browserCopyingRef.current || !question.trim() || !projectId || !materials) return;
+    browserCopyingRef.current = true;
+    setBrowserCopying(true);
+    try {
+      const q = question.trim();
+      const created = await createResearchJob({
+        projectId, organizationId: project?.organizationId ?? userOrgId ?? null, userId, question: q, mode: "browser",
+      });
+      if (!created.ok) { toast(created.error, "error"); return; }
+      const job = created.job;
+      prevStatusRef.current.set(job.id, job.status);
+      setJobs(prev => [job, ...prev]);
+      setSelectedId(job.id);
+      setView("report");
+      const prompt = buildBrowserResearchPrompt({
+        projectName: project?.name ?? slug, question: q, aiLabel: BROWSER_AI_LABEL[browserAi], files: materials.plans[browserAi].files,
+      });
+      const ok = await copyText(prompt);
+      if (ok) toast("プロンプトをコピーしました");
+      else setManualCopyText(prompt);
+    } finally {
+      browserCopyingRef.current = false;
+      setBrowserCopying(false);
+    }
+  }, [question, projectId, materials, project?.organizationId, project?.name, userOrgId, userId, slug, browserAi, toast]);
+
+  /** 貼られた答えを取り込む。取り込めなかったときは、画面に出す文を返す */
+  const handleImport = useCallback(async (job: ResearchJob, answer: string): Promise<string | null> => {
+    if (importingRef.current) return null;
+    importingRef.current = true;
+    try {
+      const r = await importResearchAnswer({ projectId, jobId: job.id, answer });
+      if (!r.ok) return r.error;
+      toast("結果を取り込みました");
+      await loadJobs();
+      setSelectedId(job.id);
+      setView("report");
+      return null;
+    } finally {
+      importingRef.current = false;
+    }
+  }, [projectId, loadJobs, toast]);
 
   const handleCancel = useCallback(async (job: ResearchJob) => {
     if (cancellingRef.current) return;
@@ -400,7 +539,14 @@ export function ResearchPage() {
                   style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", border: "none", borderBottom: "1px solid rgba(26,23,20,0.05)", background: active ? "#ECFDF5" : "transparent", cursor: "pointer" }}>
                   <div style={{ fontSize: 12.5, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={j.question}>{j.question}</div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4, gap: 6 }}>
-                    <span style={{ fontSize: 10.5, color: "#9E9690" }}>{formatDateTime(j.createdAt)}</span>
+                    <span style={{ fontSize: 10.5, color: "#9E9690", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      {formatDateTime(j.createdAt)}
+                      {j.mode === "browser" && (
+                        <span title="ブラウザの AI で調べた調査" style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 10, fontWeight: 700, color: "#2563EB", background: "#EFF6FF", borderRadius: 4, padding: "0 5px" }}>
+                          <Globe style={{ width: 10, height: 10 }} />ブラウザ
+                        </span>
+                      )}
+                    </span>
                     <StatusBadge status={j.status} />
                   </div>
                 </button>
@@ -414,10 +560,39 @@ export function ResearchPage() {
           <section style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: 18 }}>
             <label style={{ fontSize: 12, fontWeight: 700, color: "#6B6458" }}>調べたいこと</label>
             <textarea ref={questionRef} value={question} onChange={e => setQuestion(e.target.value)}
-              onKeyDown={submitOnModEnter(() => { void handleCopy(); }, { enabled: canCopy })}
+              onKeyDown={mode === "browser"
+                ? submitOnModEnter(() => { void handleBrowserCopy(); }, { enabled: canBrowserCopy })
+                : submitOnModEnter(() => { void handleCopy(); }, { enabled: canCopy })}
               placeholder="例：ログイン方式はいつ、どう決まった？"
               rows={4}
               style={{ display: "block", width: "100%", marginTop: 8, padding: "12px 14px", fontSize: 14, lineHeight: 1.7, border: "1px solid rgba(26,23,20,0.14)", borderRadius: 10, resize: "vertical", color: "#1A1714", background: "#FFFFFF" }} />
+
+            {/* 使う AI（BRU25-015-3） */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#6B6458" }}>使う AI</span>
+              <div role="radiogroup" aria-label="使う AI" style={{ display: "inline-flex", gap: 2, padding: 3, background: "#F3F1EE", borderRadius: 9 }}>
+                {([
+                  { v: "cli" as const, label: "ターミナルの AI（Claude Code など）", icon: Terminal },
+                  { v: "browser" as const, label: "ブラウザの AI（Gemini・ChatGPT・Claude）", icon: Globe },
+                ]).map(o => (
+                  <button key={o.v} type="button" role="radio" aria-checked={mode === o.v} onClick={() => setMode(o.v)}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", fontSize: 12, fontWeight: 700, border: "none", borderRadius: 7, cursor: "pointer", background: mode === o.v ? GREEN : "transparent", color: mode === o.v ? "#FFFFFF" : "#6B6458" }}>
+                    <o.icon style={{ width: 13, height: 13 }} />{o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {mode === "browser" ? (
+              <BrowserSteps
+                materials={materials} materialsError={materialsError} materialsLoading={materialsLoading}
+                onRecount={() => void loadMaterials()}
+                ai={browserAi} onAi={setBrowserAi}
+                downloading={downloading} onDownload={() => void handleDownload()}
+                canCopy={canBrowserCopy} copying={browserCopying} onCopy={() => void handleBrowserCopy()}
+                questionEmpty={!question.trim()}
+              />
+            ) : (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12, gap: 12 }}>
               <p style={{ fontSize: 11.5, color: "#9E9690" }}>
                 コピーしたプロンプトを、ターミナルで動く AI（Claude Code・Gemini CLI など）に貼って実行してください。⌘/Ctrl+Enter でもコピーできます。
@@ -428,6 +603,7 @@ export function ResearchPage() {
                 プロンプトを生成してコピー
               </button>
             </div>
+            )}
           </section>
 
           {jobsError && (
@@ -438,9 +614,9 @@ export function ResearchPage() {
 
           {/* 結果 */}
           {jobsLoaded && !jobsError && jobs.length === 0 ? (
-            <FirstGuide onExample={q => { setQuestion(q); questionRef.current?.focus(); }} />
+            <FirstGuide mode={mode} onExample={q => { setQuestion(q); questionRef.current?.focus(); }} />
           ) : selected ? (
-            <ResultPanel job={selected} view={view} onView={setView} onSource={openSource} onCancel={job => void handleCancel(job)} />
+            <ResultPanel key={selected.id} job={selected} view={view} onView={setView} onSource={openSource} onCancel={job => void handleCancel(job)} onImport={handleImport} />
           ) : null}
         </div>
       </div>
@@ -516,8 +692,12 @@ export function ResearchPage() {
 }
 
 // ── はじめての方へ ───────────────────────────────────────────
-function FirstGuide({ onExample }: { onExample: (q: string) => void }) {
-  const steps: { no: string; title: string; body: string; icon: typeof Lightbulb }[] = [
+function FirstGuide({ mode, onExample }: { mode: ResearchMode; onExample: (q: string) => void }) {
+  const steps: { no: string; title: string; body: string; icon: typeof Lightbulb }[] = mode === "browser" ? [
+    { no: "1", title: "調べたいことを書く", body: "上の欄に、知りたいことを文章で書きます。", icon: Lightbulb },
+    { no: "2", title: "資料とプロンプトを AI に送る", body: "①資料をダウンロードし、②プロンプトをコピーして、Gemini などのブラウザの AI に添付・貼り付けて送ります。", icon: Globe },
+    { no: "3", title: "答えを貼って取り込む", body: "AI の答えを全部コピーして貼り、「結果を取り込む」を押すと、ここに調査レポートが出ます。", icon: FileText },
+  ] : [
     { no: "1", title: "調べたいことを書く", body: "上の欄に、知りたいことを文章で書きます。", icon: Lightbulb },
     { no: "2", title: "コピーして AI に貼る", body: "「プロンプトを生成してコピー」を押し、Claude Code などの AI に貼って実行します。", icon: Terminal },
     { no: "3", title: "結果がここに出る", body: "AI が調べ終わると、この場所に調査レポートが出ます。", icon: FileText },
@@ -550,8 +730,17 @@ function FirstGuide({ onExample }: { onExample: (q: string) => void }) {
         ))}
       </div>
       <ul style={{ marginTop: 18, paddingLeft: 18, fontSize: 12, color: "#6B6458", lineHeight: 1.9, listStyle: "disc" }}>
-        <li>使える AI：ターミナルで動く AI（Claude Code、Gemini CLI など）。ブラウザ版の ChatGPT・Claude では使えません。</li>
-        <li>初めてコピーするときは、APIキーの発行の案内が出ます。「発行する」を押すと、あなた用の読み取りのキーが作られます。</li>
+        {mode === "browser" ? (
+          <>
+            <li>使える AI：ブラウザで使う Gemini・ChatGPT・Claude。APIキーの発行は要りません。</li>
+            <li>資料は、選んだ AI のサービスに送られます。会社の決まりに沿って使ってください。</li>
+          </>
+        ) : (
+          <>
+            <li>使える AI：ターミナルで動く AI（Claude Code、Gemini CLI など）。ブラウザで使う AI は、上の「使う AI」で「ブラウザの AI」を選んでください。</li>
+            <li>初めてコピーするときは、APIキーの発行の案内が出ます。「発行する」を押すと、あなた用の読み取りのキーが作られます。</li>
+          </>
+        )}
       </ul>
     </section>
   );
@@ -579,9 +768,10 @@ function SourcesList({ sources, onSource }: { sources: ResearchSource[]; onSourc
   );
 }
 
-function ResultPanel({ job, view, onView, onSource, onCancel }: {
+function ResultPanel({ job, view, onView, onSource, onCancel, onImport }: {
   job: ResearchJob; view: ResultView; onView: (v: ResultView) => void;
   onSource: (s: ResearchSource) => void; onCancel: (job: ResearchJob) => void;
+  onImport: (job: ResearchJob, answer: string) => Promise<string | null>;
 }) {
   const citeNos = useMemo(() => new Set(job.sources.map(s => s.no)), [job.sources]);
   const cite = (no: number) => {
@@ -599,6 +789,15 @@ function ResultPanel({ job, view, onView, onSource, onCancel }: {
     </div>
   );
 
+  // ブラウザの AI の待機中の調査は、③④の手順と答えの貼り付けの欄を出す（処理中のモーダルは出さない）
+  if (job.status === "queued" && job.mode === "browser") {
+    return (
+      <section style={box}>
+        {head}
+        <BrowserImportPanel job={job} onImport={onImport} onCancel={onCancel} />
+      </section>
+    );
+  }
   if (job.status === "queued") {
     return (
       <section style={box}>
@@ -662,5 +861,190 @@ function ResultPanel({ job, view, onView, onSource, onCancel }: {
       )}
       <SourcesList sources={job.sources} onSource={onSource} />
     </section>
+  );
+}
+
+// ── ブラウザの AI の手順（BRU25-015-3） ─────────────────────────
+const stepNo = (n: string) => (
+  <span style={{ width: 20, height: 20, borderRadius: 999, background: GREEN, color: "#FFFFFF", fontSize: 11, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{n}</span>
+);
+
+function BrowserSteps({
+  materials, materialsError, materialsLoading, onRecount, ai, onAi, downloading, onDownload, canCopy, copying, onCopy, questionEmpty,
+}: {
+  materials: ResearchMaterialsSummary | null; materialsError: string | null; materialsLoading: boolean; onRecount: () => void;
+  ai: BrowserAi; onAi: (ai: BrowserAi) => void;
+  downloading: { done: number; total: number } | null; onDownload: () => void;
+  canCopy: boolean; copying: boolean; onCopy: () => void; questionEmpty: boolean;
+}) {
+  const files = materials?.plans[ai]?.files ?? 1;
+  const c = materials?.counts;
+  const btn = (enabled: boolean) => ({
+    display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 16px", fontSize: 12.5, fontWeight: 700, color: "#FFFFFF",
+    background: GREEN, border: "none", borderRadius: 9, cursor: enabled ? "pointer" : "not-allowed", opacity: enabled ? 1 : 0.45, whiteSpace: "nowrap" as const,
+  });
+  const canDownload = !!materials && !downloading;
+  return (
+    <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* 注意書き */}
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "10px 12px", background: "#FFFBEB", border: "1px solid rgba(217,119,6,0.25)", borderRadius: 9, fontSize: 12, color: "#92400E", lineHeight: 1.7 }}>
+        <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }} />
+        <span>資料は、選んだ AI のサービスに送られます。会社の決まりに沿って使ってください。APIキーの発行は要りません。</span>
+      </div>
+
+      {/* 資料の量と、AI ごとの入る／分ける */}
+      <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: "12px 14px", background: "#FAFAF8" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#6B6458" }}>資料の量（あなたが見られる資料をすべて入れます）</span>
+          <button type="button" onClick={onRecount} disabled={materialsLoading}
+            style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", fontSize: 11, fontWeight: 700, color: "#6B6458", background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 6, cursor: materialsLoading ? "not-allowed" : "pointer" }}>
+            <RefreshCw className={materialsLoading ? "animate-spin" : undefined} style={{ width: 11, height: 11 }} />数え直す
+          </button>
+        </div>
+        {materials && c ? (
+          <>
+            <p style={{ fontSize: 13, color: "#1A1714", marginTop: 8, lineHeight: 1.7 }}>
+              <strong>{formatTokens(materials.totalTokens)}</strong>
+              <span style={{ marginLeft: 12, color: "#4B4640" }}>
+                議事録 {c.minutes.toLocaleString()}件・Wiki {c.wiki.toLocaleString()}ページ・チケット {c.ticket.toLocaleString()}件（コメント {c.comment.toLocaleString()}件）・バックログ {c.backlog.toLocaleString()}件・ファイル {c.file.toLocaleString()}件
+              </span>
+            </p>
+            {materials.excluded.length > 0 && (
+              <ul style={{ margin: "4px 0 0", paddingLeft: 16, fontSize: 11, color: "#9E9690", lineHeight: 1.7, listStyle: "disc" }}>
+                {materials.excluded.map(e => <li key={e.kind}>{e.reason}</li>)}
+              </ul>
+            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 8 }}>
+              {BROWSER_AIS.map(a => {
+                const n = materials.plans[a]?.files ?? 1;
+                return (
+                  <div key={a} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                    <span style={{ width: 64, fontWeight: 700, color: "#4B4640" }}>{BROWSER_AI_LABEL[a]}</span>
+                    {n <= 1 ? (
+                      <span style={{ color: GREEN, display: "inline-flex", alignItems: "center", gap: 4 }}><CheckCircle2 style={{ width: 13, height: 13 }} />1つのファイルで入ります</span>
+                    ) : (
+                      <span style={{ color: "#B45309", display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangle style={{ width: 13, height: 13 }} />{n}つのファイルに分けます</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : materialsError ? (
+          <p style={{ fontSize: 12, color: "#B91C1C", marginTop: 8 }}>資料の量を数えられませんでした：{materialsError}</p>
+        ) : (
+          <p style={{ fontSize: 12, color: "#9E9690", marginTop: 8, display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <Loader2 className="animate-spin" style={{ width: 13, height: 13 }} />資料の量を数えています…
+          </p>
+        )}
+      </div>
+
+      {/* 送る AI */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: "#6B6458" }}>送る AI</span>
+        <div role="radiogroup" aria-label="送る AI" style={{ display: "inline-flex", gap: 2, padding: 3, background: "#F3F1EE", borderRadius: 9 }}>
+          {BROWSER_AIS.map(a => (
+            <button key={a} type="button" role="radio" aria-checked={ai === a} onClick={() => onAi(a)}
+              style={{ padding: "5px 14px", fontSize: 12, fontWeight: 700, border: "none", borderRadius: 7, cursor: "pointer", background: ai === a ? GREEN : "transparent", color: ai === a ? "#FFFFFF" : "#6B6458" }}>
+              {BROWSER_AI_LABEL[a]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ①② */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          {stepNo("1")}
+          <button type="button" onClick={onDownload} disabled={!canDownload} style={btn(canDownload)}>
+            {downloading ? <Loader2 className="animate-spin" style={{ width: 14, height: 14 }} /> : <Download style={{ width: 14, height: 14 }} />}
+            {downloading ? `保存しています（${downloading.done} / ${downloading.total}）` : files > 1 ? `資料をダウンロード（${files}ファイル）` : "資料をダウンロード"}
+          </button>
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          {stepNo("2")}
+          <button type="button" onClick={onCopy} disabled={!canCopy} style={btn(canCopy)}
+            title={questionEmpty ? "調べたいことを書くと押せます" : undefined}>
+            {copying ? <Loader2 className="animate-spin" style={{ width: 14, height: 14 }} /> : <Copy style={{ width: 14, height: 14 }} />}
+            プロンプトをコピー
+          </button>
+        </span>
+      </div>
+      <p style={{ fontSize: 11.5, color: "#9E9690", lineHeight: 1.7 }}>
+        {questionEmpty ? "②は、調べたいことを書くと押せます。" : "②を押すと、調査が「待機中」で1件でき、下に答えを貼る欄が出ます。⌘/Ctrl+Enter でもコピーできます。"}
+      </p>
+
+      {/* ③④ */}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 12.5, color: "#4B4640", lineHeight: 1.7 }}>
+        {stepNo("3")}
+        <span>
+          {BROWSER_AI_LABEL[ai]} を開いて、①のファイルを添付し、②を貼って送ります。
+          {files > 1 && `ファイルを ${files} つに分けたときは、同じ会話に残りのファイルを順に添付して「続き」と送ります。`}
+        </span>
+      </div>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 12.5, color: "#4B4640", lineHeight: 1.7 }}>
+        {stepNo("4")}
+        <span>AI の答えを全部コピーして、下の欄に貼り、「結果を取り込む」を押します。</span>
+      </div>
+    </div>
+  );
+}
+
+function BrowserImportPanel({ job, onImport, onCancel }: {
+  job: ResearchJob;
+  onImport: (job: ResearchJob, answer: string) => Promise<string | null>;
+  onCancel: (job: ResearchJob) => void;
+}) {
+  const [answer, setAnswer] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const importingRef = useRef(false);
+  const canImport = !!answer.trim() && !importing;
+  const submit = async () => {
+    // BUG-05: 素早く2回押しても、取り込みを2回送らない
+    if (importingRef.current || !answer.trim()) return;
+    importingRef.current = true;
+    setImporting(true);
+    try {
+      const err = await onImport(job, answer);
+      setError(err);
+    } finally {
+      importingRef.current = false;
+      setImporting(false);
+    }
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 12.5, color: "#4B4640", lineHeight: 1.7 }}>
+        {stepNo("3")}
+        <span>ブラウザの AI を開いて、①の資料ファイルを添付し、②でコピーしたプロンプトを貼って送ります。ファイルを分けたときは、同じ会話に残りのファイルを順に添付して「続き」と送ります。</span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        {stepNo("4")}
+        <label htmlFor={`research-answer-${job.id}`} style={{ fontSize: 12, fontWeight: 700, color: "#6B6458" }}>AI の答えを貼り付け</label>
+      </div>
+      <textarea id={`research-answer-${job.id}`} value={answer}
+        onChange={e => { setAnswer(e.target.value); if (error) setError(null); }}
+        onKeyDown={submitOnModEnter(() => { void submit(); }, { enabled: canImport })}
+        placeholder="AI の答えを全部コピーして、ここに貼ってください（説明の文が付いたままでかまいません）"
+        rows={8}
+        style={{ display: "block", width: "100%", padding: "10px 12px", fontSize: 12.5, lineHeight: 1.6, fontFamily: "var(--font-mono)", border: `1px solid ${error ? "rgba(220,38,38,0.45)" : "rgba(26,23,20,0.14)"}`, borderRadius: 10, resize: "vertical", color: "#1A1714", background: "#FFFFFF" }} />
+      {error && (
+        <div role="alert" style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "10px 12px", background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.2)", borderRadius: 9, fontSize: 12.5, color: "#B91C1C", whiteSpace: "pre-wrap" }}>
+          <AlertTriangle style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }} />{error}
+        </div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <button type="button" onClick={() => onCancel(job)}
+          style={{ padding: "7px 14px", fontSize: 12, fontWeight: 700, color: "#6B6458", background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.14)", borderRadius: 8, cursor: "pointer" }}>
+          この調査をキャンセル
+        </button>
+        <button type="button" onClick={() => void submit()} disabled={!canImport}
+          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 18px", fontSize: 13, fontWeight: 700, color: "#FFFFFF", background: GREEN, border: "none", borderRadius: 10, cursor: canImport ? "pointer" : "not-allowed", opacity: canImport ? 1 : 0.45 }}>
+          {importing ? <Loader2 className="animate-spin" style={{ width: 14, height: 14 }} /> : <ClipboardPaste style={{ width: 14, height: 14 }} />}
+          結果を取り込む
+        </button>
+      </div>
+    </div>
   );
 }
