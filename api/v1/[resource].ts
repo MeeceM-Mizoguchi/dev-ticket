@@ -11,6 +11,8 @@
 //   POST /api/v1/ticket-comment … AIの確認の質問をコメントとして登録し、起票者へ知らせる（BRU25-001）
 //   GET  /api/v1/backlog        … バックログ項目の一覧（重複登録の防止用。BRU24-002）
 //   POST /api/v1/backlog        … バックログ項目の登録（親子1段まで／フォルダ指定可。BRU24-002）
+//   POST /api/v1/research-start / research-result / research-fail
+//                               … 高度検索：AI が調査の開始・結果・失敗を伝える（ENHA2-055-1。本体は api/_lib/research.ts）
 //
 // PRの作成とマージを bot 名義で行うAPI（ticket-pull-create / ticket-merge）は、GitHub App の
 // ヘルパーがある api/github/[resource].ts 側に置いている（BRU21-001）。「AIで実装」の手順書はそちらを使う。
@@ -19,6 +21,8 @@
 //   write … 登録のみ（context / tickets / backlog の POST）    ← これまでに発行されたキーはすべてこれ
 //   read  … 読み取りのみ（context / tickets の GET / ticket / backlog の GET）
 //   full  … すべて（ticket-status / ticket-update / ticket-pull / ticket-comment はこの権限のみ）
+//   ※ 例外として、高度検索の research-start / research-result / research-fail は read でも full でも POST できる
+//     （画面で一般メンバーが発行する読み取りのキーで、調査の記録だけを書けるようにするため。ENHA2-055-1）
 //
 // 認証は Dev Ticket が発行する APIキー:
 //   Authorization: Bearer dvt_live_xxxxx
@@ -43,6 +47,7 @@
 // ============================================================
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { authenticateApiKey, SCOPE_LABEL, type ApiKeyRow } from "../_lib/apiKeyAuth.js";
+import { handleResearchStart, handleResearchResult, handleResearchFail } from "../_lib/research.js";
 
 // ── 定数 ──────────────────────────────────────────────────────
 // キーの形式・権限（scope）・レート制限は api/_lib/apiKeyAuth.ts にある（api/github と共用。BRU21-001）
@@ -2918,6 +2923,17 @@ async function handleCreateBacklog(sb: SupabaseClient, key: ApiKeyRow, body: any
 }
 
 // ── エントリポイント ──────────────────────────────────────────
+const RESEARCH_HANDLERS: Record<string, (sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) => Promise<any>> = {
+  "research-start": handleResearchStart,
+  "research-result": handleResearchResult,
+  "research-fail": handleResearchFail,
+};
+
+const KNOWN_RESOURCES = [
+  "tickets", "context", "ticket", "ticket-status", "ticket-update", "ticket-pull", "ticket-comment", "backlog",
+  ...Object.keys(RESEARCH_HANDLERS),
+];
+
 export default async function handler(req: any, res: any) {
   // サーバー間通信が主だが、ブラウザから直接叩く連携もありうるので CORS を開けておく。
   // 認証は Cookie ではなく APIキーなので、オリジンを絞る意味は薄い。
@@ -2928,10 +2944,9 @@ export default async function handler(req: any, res: any) {
   if (req.method === "OPTIONS") return res.status(204).end();
 
   const resource = String(req.query?.resource ?? "");
-  if (resource !== "tickets" && resource !== "context" && resource !== "ticket" && resource !== "ticket-status"
-    && resource !== "ticket-update" && resource !== "ticket-pull" && resource !== "ticket-comment" && resource !== "backlog") {
+  if (!KNOWN_RESOURCES.includes(resource)) {
     return res.status(404).json({
-      error: `不明なエンドポイントです: /api/v1/${resource}（tickets / context / ticket / ticket-status / ticket-update / ticket-pull / ticket-comment / backlog のいずれか）`,
+      error: `不明なエンドポイントです: /api/v1/${resource}（${KNOWN_RESOURCES.join(" / ")} のいずれか）`,
     });
   }
 
@@ -3021,6 +3036,24 @@ export default async function handler(req: any, res: any) {
     }
     try {
       return await handleCreateComment(sb, auth.key, commentBody, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+
+  // 高度検索の調査の記録（ENHA2-055-1）。read のキーで POST を受け付けるのは、この3つだけ
+  const researchHandler = RESEARCH_HANDLERS[resource];
+  if (researchHandler) {
+    if (req.method !== "POST") return res.status(405).json({ error: "POST を使ってください" });
+    if (scope === "write") return denied("高度検索の調査を記録", "権限が「読み取りのみ」または「すべて」");
+    let researchBody: any;
+    try {
+      researchBody = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body ?? {});
+    } catch {
+      return res.status(400).json({ error: "リクエストボディが JSON として読めません" });
+    }
+    try {
+      return await researchHandler(sb, auth.key, researchBody, res);
     } catch (e: any) {
       return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
     }
