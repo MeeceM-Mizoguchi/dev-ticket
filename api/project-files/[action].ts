@@ -319,6 +319,14 @@ export default async function handler(req: any, res: any) {
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
     if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
+    // BRU25-012 アーカイブ済みのプロジェクトでは、アプリで開く用のURLを発行しない。
+    // archived_at は後から足した列なので * で読み、引けなければ「アーカイブされていない」として扱う。
+    {
+      const { data: proj } = await sb.from("projects").select("*").eq("id", file.project_id).maybeSingle();
+      if ((proj as { archived_at?: string | null } | null)?.archived_at) {
+        return res.status(403).json({ error: "このプロジェクトはアーカイブされています。プロジェクト一覧の『アーカイブ』から戻すと、また開けます。" });
+      }
+    }
     // Googleドライブ上のファイルは storage に実体が無く、WebDAV で開く対象にならない
     if (file.external_provider === "google") {
       return res.status(400).json({ error: "Googleドライブ上のファイルはデスクトップアプリで開けません" });

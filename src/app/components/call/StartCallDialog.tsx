@@ -11,6 +11,7 @@ import { useOrg } from "@/app/contexts/OrgContext";
 import { useCall } from "@/app/contexts/CallContext";
 import { fetchProjectCallMembers } from "@/app/lib/callService";
 import { type CallMember } from "@/app/lib/callConstants";
+import { isArchivedRow } from "@/app/lib/projectArchive";
 
 interface Proj { id: string; name: string }
 
@@ -37,11 +38,14 @@ export function StartCallDialog({ onClose }: { onClose: () => void }) {
     if (!isSupabaseEnabled) return;
     // オーナーは組織未選択なら取得しない
     if (isOwner && !orgId) { setProjects([]); return; }
-    let q = supabase!.from("projects").select("id, name, members, organization_id");
+    // archived_at（BRU25-012）は後から足した列なので名指しせず * で読む（列が無い環境でも動くように）
+    let q = supabase!.from("projects").select("*");
     if (isOwner) q = q.eq("organization_id", orgId);
     q.order("name").then(({ data }) => {
       if (!data) return;
       const accessible = data.filter((p: { members?: unknown[] }) => {
+        // BRU25-012 アーカイブしたプロジェクトは選択肢に出さない
+        if (isArchivedRow(p)) return false;
         if (isAdmin) return true;
         if (!Array.isArray(p.members)) return false;
         return p.members.some((m: unknown) => m && ((m as { name?: string }).name === userName || m === userName));

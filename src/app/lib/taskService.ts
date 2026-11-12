@@ -10,6 +10,7 @@
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapTask, mapTaskShare } from "@/app/lib/mappers";
 import type { Task, TaskShare, TaskStatus, Priority } from "@/app/types";
+import { isArchivedRow } from "@/app/lib/projectArchive";
 
 export const TASK_STATUSES: { value: TaskStatus; label: string; color: string; bg: string; border: string }[] = [
   { value: "todo",        label: "未着手", color: "#6B7280", bg: "#F3F4F6", border: "#E0DDD9" },
@@ -83,7 +84,11 @@ export function withDoneProgress<T extends { status?: TaskStatus; progress?: num
   return patch.status === "done" ? { ...patch, progress: 100 } : patch;
 }
 
-export interface ProjectOption { id: string; slug: string; name: string; members: string[] }
+export interface ProjectOption {
+  id: string; slug: string; name: string; members: string[];
+  /** BRU25-012 アーカイブ済み。候補に出さず、全体のタスク一覧からも外す */
+  archived?: boolean;
+}
 export interface MemberOption { id: string; name: string }
 
 // ── 取得 ──────────────────────────────────────────────────────
@@ -154,11 +159,13 @@ export async function loadTaskShares(taskId: string): Promise<TaskShare[]> {
 export async function loadTaskProjects(): Promise<ProjectOption[]> {
   if (!isSupabaseEnabled) return [];
   const { data, error } = await supabase!
-    .from("projects").select("id, slug, name, members").order("name").order("id");
+    // archived_at（BRU25-012）は後から足した列なので名指しせず * で読む（列が無い環境でも動くように）
+    .from("projects").select("*").order("name").order("id");
   if (error) { console.error("[tasks] projects load failed:", error.message); return []; }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (data ?? []).map((p: any) => ({
     id: p.id, slug: p.slug || "", name: p.name || "", members: Array.isArray(p.members) ? p.members : [],
+    archived: isArchivedRow(p),
   }));
 }
 
@@ -169,8 +176,10 @@ export async function loadTaskProjects(): Promise<ProjectOption[]> {
  * どこにも参画していなければ候補は空（＝個人タスクだけ）になる。
  */
 export function selectableTaskProjects(all: ProjectOption[], userName: string, isOwner: boolean): ProjectOption[] {
-  if (isOwner) return all;
-  return all.filter(p => p.members.includes(userName));
+  // BRU25-012 アーカイブしたプロジェクトは候補に出さない（オーナーも）
+  const active = all.filter(p => !p.archived);
+  if (isOwner) return active;
+  return active.filter(p => p.members.includes(userName));
 }
 
 export interface TicketOption { id: string; wbs: string; title: string }

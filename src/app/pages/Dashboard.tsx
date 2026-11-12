@@ -12,6 +12,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKETS, PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprintTicket } from "@/app/lib/mappers";
 import { calcProgress, formatDate, getPriorityMeta, computeSprintStatus, computeProjectStatus, getSprintStatusMeta, sprintProgress } from "@/app/lib/helpers";
+import { isArchivedRow } from "@/app/lib/projectArchive";
 import type { ProjectStatus, SprintTicket, TicketStatus, Priority, SprintStatus } from "@/app/types";
 
 type ChartType = 'horizontal' | 'vertical' | 'line' | 'gantt';
@@ -179,7 +180,8 @@ export function Dashboard() {
     // Supabase環境時のサイレント・アップデート
     setIsRefreshRefreshing(true);
     const isOwner = userRole === "owner";
-    let projQ = supabase!.from("projects").select("id, slug, name, status, is_manual_status, client, members, organization_id");
+    // archived_at（BRU25-012）は後から足した列なので名指しせず * で読む（列が無い環境でも動くように）
+    let projQ = supabase!.from("projects").select("*");
     if (isOwner) {
       if (selectedOrgId) projQ = projQ.eq("organization_id", selectedOrgId);
     } else if (userOrgId) {
@@ -194,9 +196,12 @@ export function Dashboard() {
         supabase!.from("ticket_categories").select("id, name"),
       ]);
 
-      const tData = tRes.data;
-      const sData = sDataRes.data;
-      const pData = pRes.data;
+      // BRU25-012 アーカイブしたプロジェクトと、そのスプリント・チケットは出さない
+      const archivedProjectIds = new Set(((pRes.data ?? []) as any[]).filter(isArchivedRow).map(p => p.id));
+      const archivedSprintIds = new Set(((sDataRes.data ?? []) as any[]).filter(s => archivedProjectIds.has(s.project_id)).map(s => s.id));
+      const tData = tRes.data ? (tRes.data as any[]).filter(t => !archivedSprintIds.has(t.sprint_id)) : tRes.data;
+      const sData = sDataRes.data ? (sDataRes.data as any[]).filter(s => !archivedSprintIds.has(s.id)) : sDataRes.data;
+      const pData = pRes.data ? (pRes.data as any[]).filter(p => !archivedProjectIds.has(p.id)) : pRes.data;
       const cData = cDataRes.data;
 
       if (tData) {

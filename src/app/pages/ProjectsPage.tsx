@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router";
-import { Search, Plus, FolderKanban, ChevronDown, X, Check } from "lucide-react";
+import { Search, Plus, FolderKanban, ChevronDown, X, Check, Archive } from "lucide-react";
 import { useTabNavigation } from "@/app/hooks/useTabNavigation";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -23,6 +23,7 @@ import { ProjectTimelineModal } from "@/app/components/projects/ProjectTimelineM
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { PageLoader } from "@/app/components/shared/PageLoader";
+import { rememberProjectArchive } from "@/app/lib/projectArchive";
 
 const CACHE_STATUS_KEY = "projects_page_status_filter";
 const CACHE_TAGS_KEY = "projects_page_multiple_tags_filter";
@@ -58,6 +59,10 @@ export function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>(isSupabaseEnabled ? [] : PROJECTS);
   const [clients, setClients] = useState<Client[]>(isSupabaseEnabled ? [] : CLIENTS);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+  // BRU25-012 アーカイブ。確認ダイアログの対象と、「アーカイブ」ボタンで切り替える表示
+  const [archiveTarget, setArchiveTarget] = useState<Project | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const archivingRef = useRef(false);
   const [editTarget, setEditTarget] = useState<Project | null>(null);
   const [categoryTarget, setCategoryTarget] = useState<Project | null>(null);
   const [tagsEditTarget, setProjectTagsEditTarget] = useState<Project | null>(null);
@@ -151,6 +156,7 @@ export function ProjectsPage() {
         // Supabaseのprojects.tagsカラムから直接タグを取得（mapProject内でマッピング済み）
         const merged = mergeTicketCounts(p, computeTicketCounts(s ?? []));
         setProjects(merged);
+        rememberProjectArchive(merged);
       }
     });
   };
@@ -176,6 +182,7 @@ export function ProjectsPage() {
         // Supabaseのprojects.tagsカラムから直接タグを取得（mapProject内でマッピング済み）
         const merged = mergeTicketCounts(p, computeTicketCounts(s ?? []));
         setProjects(merged);
+        rememberProjectArchive(merged);
       }
       if (c) setClients(c.map(mapClient));
       setLoading(false);
@@ -202,6 +209,31 @@ export function ProjectsPage() {
     toast(`「${project.name}」を削除しました`);
   };
 
+  // BRU25-012 アーカイブする／戻す。ステータス（status）は変えない。
+  // 送るのは archived_at / archived_by だけ（新規作成の insert には含めない）。
+  const setArchived = async (project: Project, archive: boolean) => {
+    if (archivingRef.current) return;
+    archivingRef.current = true;
+    try {
+      const archivedAt = archive ? new Date().toISOString() : null;
+      const archivedBy = archive ? (userName || null) : null;
+      if (isSupabaseEnabled) {
+        const { error } = await supabase!.from("projects")
+          .update({ archived_at: archivedAt, archived_by: archivedBy })
+          .eq("id", project.id);
+        if (error) {
+          toast(archive ? "アーカイブに失敗しました" : "アーカイブから戻せませんでした", "error");
+          return;
+        }
+      }
+      setProjects(prev => prev.map(p => p.id === project.id ? { ...p, archivedAt, archivedBy } : p));
+      rememberProjectArchive([{ ...project, archivedAt, archivedBy }]);
+      toast(archive ? `「${project.name}」をアーカイブしました` : `「${project.name}」をアーカイブから戻しました`);
+    } finally {
+      archivingRef.current = false;
+    }
+  };
+
   const handleDownloadProject = async (project: Project) => {
     if (!isSupabaseEnabled) return;
     const [{ data: sprintData }, { data: categoryData }] = await Promise.all([
@@ -217,9 +249,13 @@ export function ProjectsPage() {
     ? projects
     : projects.filter(p => p.members.includes(userName));
 
+  // BRU25-012 アーカイブ済みは、ふだんの一覧・タブの件数・タグの候補に入れない
+  const activeProjects = visibleProjects.filter(p => !p.archivedAt);
+  const archivedProjects = visibleProjects.filter(p => !!p.archivedAt);
+
   // 動的タグ一覧の抽出
   const allUniqueTags = Array.from(
-    new Set(visibleProjects.flatMap(p => Array.isArray(p.tags) ? p.tags : []))
+    new Set(activeProjects.flatMap(p => Array.isArray(p.tags) ? p.tags : []))
   ) as string[];
 
   const filteredTagsInMenu = allUniqueTags.filter(tag => tag.toLowerCase().includes(tagSearchQuery.toLowerCase()));
@@ -228,8 +264,10 @@ export function ProjectsPage() {
     setSelectedTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
   };
 
-  const filtered = visibleProjects.filter(p => {
+  const filtered = (showArchived ? archivedProjects : activeProjects).filter(p => {
     const ms = p.name.includes(search) || p.client.includes(search) || p.id.includes(search);
+    // アーカイブの表示は、ステータス・タグの絞り込みを掛けない（名前の検索だけ効かせる）
+    if (showArchived) return ms;
     const matchesStatus = statusFilter === "all" || p.status === statusFilter;
     const projectTags = Array.isArray(p.tags) ? p.tags : [];
     const matchesTags = selectedTags.length === 0 || selectedTags.every(t => projectTags.includes(t));
@@ -240,7 +278,7 @@ export function ProjectsPage() {
   const highlightExists = !!highlightId && visibleProjects.some(p => p.id === highlightId);
   const highlightVisible = !!highlightId && filtered.some(p => p.id === highlightId);
   useEffect(() => {
-    if (highlightExists && !highlightVisible) { setSearch(""); setSelectedTags([]); setStatusFilter("all"); }
+    if (highlightExists && !highlightVisible) { setSearch(""); setSelectedTags([]); setStatusFilter("all"); setShowArchived(false); }
   }, [highlightExists, highlightVisible]);
 
   // 強調表示は数秒で解除する（カードが実際に出てから数える）
@@ -251,11 +289,11 @@ export function ProjectsPage() {
   }, [highlightVisible]);
 
   const statusOpts = [
-    { value: "all", label: "すべて", count: visibleProjects.length },
-    { value: "in-progress", label: "進行中", count: visibleProjects.filter(p => p.status === "in-progress").length },
-    { value: "planning", label: "計画中", count: visibleProjects.filter(p => p.status === "planning").length },
-    { value: "on-hold", label: "保留中", count: visibleProjects.filter(p => p.status === "on-hold").length },
-    { value: "completed", label: "完了", count: visibleProjects.filter(p => p.status === "completed").length },
+    { value: "all", label: "すべて", count: activeProjects.length },
+    { value: "in-progress", label: "進行中", count: activeProjects.filter(p => p.status === "in-progress").length },
+    { value: "planning", label: "計画中", count: activeProjects.filter(p => p.status === "planning").length },
+    { value: "on-hold", label: "保留中", count: activeProjects.filter(p => p.status === "on-hold").length },
+    { value: "completed", label: "完了", count: activeProjects.filter(p => p.status === "completed").length },
   ];
 
   const hasActiveTags = selectedTags.length > 0;
@@ -293,12 +331,16 @@ export function ProjectsPage() {
         </div>
 
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-          {statusOpts.map(opt => (
-            <button key={opt.value} onClick={() => setStatusFilter(opt.value)}
-              style={{ display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", fontSize: 12, fontWeight: 500, borderRadius: 8, border: "1px solid", cursor: "pointer", transition: "all 0.15s", background: statusFilter === opt.value ? "#059669" : "#FFFFFF", color: statusFilter === opt.value ? "#fff" : "#6B6458", borderColor: statusFilter === opt.value ? "#059669" : "rgba(26,23,20,0.10)" }}>
-              {opt.label} <span style={{ fontSize: 9, fontFamily: "var(--font-mono)", opacity: 0.7 }}>{opt.count}</span>
-            </button>
-          ))}
+          {statusOpts.map(opt => {
+            // アーカイブを表示している間は、どのタブも選ばれていない見た目にする（押すとふだんの一覧に戻る）
+            const active = !showArchived && statusFilter === opt.value;
+            return (
+              <button key={opt.value} onClick={() => { setStatusFilter(opt.value); setShowArchived(false); }}
+                style={{ display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", fontSize: 12, fontWeight: 500, borderRadius: 8, border: "1px solid", cursor: "pointer", transition: "all 0.15s", background: active ? "#059669" : "#FFFFFF", color: active ? "#fff" : "#6B6458", borderColor: active ? "#059669" : "rgba(26,23,20,0.10)" }}>
+                {opt.label} <span style={{ fontSize: 9, fontFamily: "var(--font-mono)", opacity: 0.7 }}>{opt.count}</span>
+              </button>
+            );
+          })}
 
           {/* 複数タグ選択対応のマルチセレクトプルダウン */}
           <div ref={dropdownRef} style={{ position: "relative", marginLeft: 6 }}>
@@ -407,7 +449,19 @@ export function ProjectsPage() {
             )}
           </div>
         </div>
+
+        {/* BRU25-012 絞り込みの列の右端。押すとアーカイブ済みだけを表示し、もう一度押すとふだんの一覧に戻る */}
+        <button type="button" onClick={() => setShowArchived(v => !v)}
+          style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", fontSize: 12, fontWeight: 500, borderRadius: 8, border: "1px solid", cursor: "pointer", transition: "all 0.15s", background: showArchived ? "#4B5563" : "#FFFFFF", color: showArchived ? "#FFFFFF" : "#6B6458", borderColor: showArchived ? "#4B5563" : "rgba(26,23,20,0.10)" }}>
+          <Archive style={{ width: 12, height: 12 }} />アーカイブ <span style={{ fontSize: 9, fontFamily: "var(--font-mono)", opacity: 0.7 }}>{archivedProjects.length}</span>
+        </button>
       </div>
+
+      {showArchived && !loading && (
+        <h2 style={{ fontSize: 14, fontWeight: 700, color: "#3D3732", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
+          <Archive style={{ width: 14, height: 14, color: "#6B6458" }} />アーカイブ済みのプロジェクト（{archivedProjects.length}件）
+        </h2>
+      )}
 
       {loading ? (
         <PageLoader label="プロジェクトを読み込み中..." />
@@ -416,7 +470,7 @@ export function ProjectsPage() {
           <div style={{ width: 56, height: 56, background: "#F4F5F6", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
             <FolderKanban style={{ width: 24, height: 24, color: "#B0A9A4" }} />
           </div>
-          <p style={{ fontSize: 14, fontWeight: 600, color: "#3D3732" }}>プロジェクトが見つかりません</p>
+          <p style={{ fontSize: 14, fontWeight: 600, color: "#3D3732" }}>{showArchived ? "アーカイブ済みのプロジェクトはありません" : "プロジェクトが見つかりません"}</p>
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
@@ -426,6 +480,8 @@ export function ProjectsPage() {
               onOpenNewTab={isTabMode ? () => openNewTab(p.slug ? `/${p.slug}` : `/${p.id}`) : undefined}
               onEdit={canManage ? () => setEditTarget(p) : undefined}
               onDelete={canManage ? () => setDeleteTarget(p) : undefined}
+              onArchive={canManage ? () => setArchiveTarget(p) : undefined}
+              onUnarchive={canManage ? () => { void setArchived(p, false); } : undefined}
               onCategorySettings={canManage ? () => setCategoryTarget(p) : undefined}
               onDownload={() => handleDownloadProject(p)}
               onEditTags={() => setProjectTagsEditTarget(p)}
@@ -441,6 +497,16 @@ export function ProjectsPage() {
       {editTarget && <EditProjectDialog project={editTarget} onClose={() => setEditTarget(null)} onUpdated={() => { refreshProjects(); setEditTarget(null); }} />}
       {deleteTarget && (
         <ConfirmDialog message={`「${deleteTarget.name}」を削除しますか？`} onConfirm={() => handleDeleteProject(deleteTarget)} onClose={() => setDeleteTarget(null)} />
+      )}
+      {archiveTarget && (
+        <ConfirmDialog
+          title="アーカイブの確認"
+          message={`『${archiveTarget.name}』をアーカイブしますか？一覧に表示されなくなります。アーカイブからいつでも戻せます。`}
+          confirmLabel="アーカイブする"
+          confirmColor="#4B5563"
+          hasWarningText={false}
+          onConfirm={() => setArchived(archiveTarget, true)}
+          onClose={() => setArchiveTarget(null)} />
       )}
       {categoryTarget && (
         <CategorySettingsModal projectId={categoryTarget.id} projectName={categoryTarget.name} onClose={() => setCategoryTarget(null)} />

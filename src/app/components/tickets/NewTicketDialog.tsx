@@ -27,6 +27,7 @@ import { FileAttachments } from "@/app/components/shared/FileAttachments";
 import { uploadTicketAttachment, MAX_ATTACHMENT_BYTES } from "@/app/lib/ticketAttachments";
 import { fetchSkills } from "@/app/lib/skillsApi";
 import { Sparkles } from "lucide-react";
+import { isArchivedRow } from "@/app/lib/projectArchive";
 
 // 優先度の選択肢と色を定義
 const PRIORITY_OPTIONS: SelectOption[] = [
@@ -211,11 +212,14 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       return;
     }
 
-    supabase!.from("projects").select("id, name, members, slug").order("name").then(({ data }) => {
+    // archived_at（BRU25-012）は後から足した列なので名指しせず * で読む（列が無い環境でも動くように）
+    supabase!.from("projects").select("*").order("name").then(({ data }) => {
       if (data) {
+        // BRU25-012 アーカイブしたプロジェクトは選択肢に出さない
+        const active = data.filter((p: any) => !isArchivedRow(p));
         const accessible = userRole === "admin"
-          ? data
-          : data.filter((p: any) => {
+          ? active
+          : active.filter((p: any) => {
             if (!Array.isArray(p.members)) return false;
             return p.members.some((m: any) => m && (m.name === userName || m === userName));
           });

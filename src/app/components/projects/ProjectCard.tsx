@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Building2, Calendar, CheckCircle2, Circle, Download, GanttChartSquare, Globe, MoreHorizontal, Pencil, Tags, Trash2, Zap } from "lucide-react";
+import { Archive, ArchiveRestore, Building2, Calendar, CheckCircle2, Circle, Download, GanttChartSquare, Globe, MoreHorizontal, Pencil, Tags, Trash2, Zap } from "lucide-react";
 import type { Project } from "@/app/types";
 import { calcProgress, formatDate, getStatusMeta } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -7,9 +7,10 @@ import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { ProjectActualHours } from "@/app/components/projects/ProjectActualHours";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
+import { formatArchivedDate } from "@/app/lib/projectArchive";
 
 export function ProjectCard({
-  project, onNavigate, onOpenNewTab, onEdit, onDelete, onCategorySettings, onDownload, onEditTags, onEnvMemo, onTimeline,
+  project, onNavigate, onOpenNewTab, onEdit, onDelete, onArchive, onUnarchive, onCategorySettings, onDownload, onEditTags, onEnvMemo, onTimeline,
   highlight = false,
 }: {
   project: Project;
@@ -21,6 +22,10 @@ export function ProjectCard({
   onOpenNewTab?: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
+  /** BRU25-012 アーカイブする（「削除」と同じ人にだけ渡す） */
+  onArchive?: () => void;
+  /** BRU25-012 アーカイブから戻す（「削除」と同じ人にだけ渡す） */
+  onUnarchive?: () => void;
   onCategorySettings?: () => void;
   onDownload?: () => void;
   onEditTags?: () => void;
@@ -39,6 +44,8 @@ export function ProjectCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  // BRU25-012 アーカイブ済みのカードはグレーにし、押してもプロジェクトの中に入らない
+  const archived = !!project.archivedAt;
 
   // 強調表示になったら、画面外でも見えるところまでスクロールする
   useEffect(() => {
@@ -63,29 +70,40 @@ export function ProjectCard({
     <div
       ref={cardRef}
       onClick={(e) => {
+        if (archived) return;
         if (longPressedRef.current) { longPressedRef.current = false; return; }
         if ((e.metaKey || e.ctrlKey) && onOpenNewTab) onOpenNewTab();
         else onNavigate();
       }}
-      onAuxClick={onOpenNewTab ? (e) => { if (e.button === 1) { e.preventDefault(); onOpenNewTab(); } } : undefined}
-      onContextMenu={onOpenNewTab ? (e) => { e.preventDefault(); onOpenNewTab(); } : undefined}
-      onTouchStart={onOpenNewTab ? () => {
+      onAuxClick={onOpenNewTab && !archived ? (e) => { if (e.button === 1) { e.preventDefault(); onOpenNewTab(); } } : undefined}
+      onContextMenu={onOpenNewTab && !archived ? (e) => { e.preventDefault(); onOpenNewTab(); } : undefined}
+      onTouchStart={onOpenNewTab && !archived ? () => {
         longPressedRef.current = false;
         if (lpTimer.current) clearTimeout(lpTimer.current);
         lpTimer.current = setTimeout(() => { longPressedRef.current = true; onOpenNewTab(); }, 500);
       } : undefined}
-      onTouchEnd={onOpenNewTab ? () => { if (lpTimer.current) { clearTimeout(lpTimer.current); lpTimer.current = null; } } : undefined}
-      onTouchMove={onOpenNewTab ? () => { if (lpTimer.current) { clearTimeout(lpTimer.current); lpTimer.current = null; } } : undefined}
+      onTouchEnd={onOpenNewTab && !archived ? () => { if (lpTimer.current) { clearTimeout(lpTimer.current); lpTimer.current = null; } } : undefined}
+      onTouchMove={onOpenNewTab && !archived ? () => { if (lpTimer.current) { clearTimeout(lpTimer.current); lpTimer.current = null; } } : undefined}
       style={{
-        background: highlight ? "#F0FDF4" : "#FFFFFF", borderRadius: 16, cursor: "pointer", transition: "all 0.2s",
+        background: archived ? "#F1F1EF" : highlight ? "#F0FDF4" : "#FFFFFF", borderRadius: 16, cursor: archived ? "default" : "pointer", transition: "all 0.2s",
         boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)",
         // ホバー時のハンドラが boxShadow を直接書き換えるので、強調は outline で描く
         outline: highlight ? "3px solid #059669" : "3px solid transparent", outlineOffset: 2,
         display: "flex", flexDirection: "column",
       }}
-      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 28px rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-3px)"; }}
+      onMouseEnter={e => { if (archived) return; (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 28px rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-3px)"; }}
       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 3px rgba(26,23,20,0.06), 0 4px 12px rgba(26,23,20,0.04)"; (e.currentTarget as HTMLElement).style.transform = "none"; }}>
-      <div style={{ height: 5, background: `linear-gradient(90deg, ${dotColor}, ${dotColor}CC)`, borderRadius: "16px 16px 0 0" }} />
+      <div style={{ height: 5, background: archived ? "#C9C4BB" : `linear-gradient(90deg, ${dotColor}, ${dotColor}CC)`, borderRadius: "16px 16px 0 0" }} />
+
+      {archived && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 18px", background: "#E7E6E3", fontSize: 11, fontWeight: 600, color: "#6B6458" }}>
+          <Archive style={{ width: 12, height: 12, flexShrink: 0 }} />
+          <span>アーカイブ済み</span>
+          <span style={{ fontWeight: 500, color: "#8A847C", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {formatArchivedDate(project.archivedAt)}{project.archivedBy ? `　${project.archivedBy}` : ""}
+          </span>
+        </div>
+      )}
 
       <div style={{ padding: "16px 18px 18px", flex: 1, display: "flex", flexDirection: "column" }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
@@ -112,7 +130,21 @@ export function ProjectCard({
               <MoreHorizontal style={{ width: 15, height: 15 }} />
             </button>
 
-            {menuOpen && (
+            {menuOpen && archived && (
+              // BRU25-012 アーカイブ済みは「アーカイブから戻す」と「削除」だけ（どちらも「削除」と同じ人だけ）
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 9999, background: "#FFF", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.09)", padding: "4px", minWidth: 170 }}>
+                {onUnarchive && (
+                  <MenuItem icon={<ArchiveRestore style={{ width: 12, height: 12 }} />} label="アーカイブから戻す" onClick={() => { setMenuOpen(false); onUnarchive(); }} color="#1A1714" />
+                )}
+                {onDelete && (
+                  <MenuItem icon={<Trash2 style={{ width: 12, height: 12 }} />} label="削除" onClick={() => { setMenuOpen(false); onDelete(); }} color="#DC2626" />
+                )}
+                {!onUnarchive && !onDelete && (
+                  <div style={{ padding: "8px 10px", fontSize: 12, color: "#B0A9A4" }}>操作なし</div>
+                )}
+              </div>
+            )}
+            {menuOpen && !archived && (
               <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 9999, background: "#FFF", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.09)", padding: "4px", minWidth: 170 }}>
                 {onEdit && (
                   <MenuItem icon={<Pencil style={{ width: 12, height: 12 }} />} label="編集" onClick={() => { setMenuOpen(false); onEdit(); }} color="#1A1714" />
@@ -142,10 +174,14 @@ export function ProjectCard({
                     tooltipPlacement="top"
                   />
                 )}
+                {/* BRU25-012 「削除」のすぐ上に「アーカイブ」 */}
+                {onArchive && (
+                  <MenuItem icon={<Archive style={{ width: 12, height: 12 }} />} label="アーカイブ" onClick={() => { setMenuOpen(false); onArchive(); }} color="#4B5563" />
+                )}
                 {onDelete && (
                   <MenuItem icon={<Trash2 style={{ width: 12, height: 12 }} />} label="削除" onClick={() => { setMenuOpen(false); onDelete(); }} color="#DC2626" />
                 )}
-                {!onEdit && !onDelete && !onCategorySettings && !onDownload && !onEditTags && !onEnvMemo && !onTimeline && (
+                {!onEdit && !onDelete && !onArchive && !onCategorySettings && !onDownload && !onEditTags && !onEnvMemo && !onTimeline && (
                   <div style={{ padding: "8px 10px", fontSize: 12, color: "#B0A9A4" }}>操作なし</div>
                 )}
               </div>

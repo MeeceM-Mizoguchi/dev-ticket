@@ -4,6 +4,7 @@ import { ClipboardList, RefreshCw, ChevronDown, Plus, X, Hash, Maximize2, Minimi
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { escStack } from "@/app/lib/escStack";
 import { mapSprintTicket, mapActionMemo } from "@/app/lib/mappers";
+import { isArchivedRow } from "@/app/lib/projectArchive";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
@@ -749,8 +750,11 @@ function MentionTextarea({
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("projects").select("id, name").order("name")
-      .then(({ data }) => { if (data) setAllProjects(data as { id: string; name: string }[]); });
+    // BRU25-012 アーカイブしたプロジェクト（とそのチケット）は候補に出さない。列が無い環境でも動くよう * で読む
+    supabase!.from("projects").select("*").order("name")
+      .then(({ data }) => {
+        if (data) setAllProjects((data as any[]).filter(p => !isArchivedRow(p)).map(p => ({ id: p.id, name: p.name })));
+      });
   }, []);
 
   type MentionState = {
@@ -1156,7 +1160,8 @@ export function MyActionsPage() {
     }
     if (showSpinner) setLoading(true);
     try {
-      let projectsQuery = supabase!.from("projects").select("id, slug, name, members, organization_id");
+      // archived_at（BRU25-012）は後から足した列なので名指しせず * で読む（列が無い環境でも動くように）
+      let projectsQuery = supabase!.from("projects").select("*");
       if (isOwner && selectedOrgId) {
         // オーナーはOrgSelectorの選択で絞り込む
         projectsQuery = projectsQuery.eq("organization_id", selectedOrgId);
@@ -1175,6 +1180,8 @@ export function MyActionsPage() {
       );
 
       const accessibleProjects = (projectsRes.data ?? []).filter((p: any) => {
+        // BRU25-012 アーカイブしたプロジェクトのチケットは出さない（filterByOrg でチケットからも外れる）
+        if (isArchivedRow(p)) return false;
         if (isAdmin) return true;
         return Array.isArray(p.members) && p.members.includes(userName);
       });

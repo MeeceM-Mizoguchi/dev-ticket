@@ -242,6 +242,11 @@ export function TaskWorkspace({
     return projects.find(p => p.id === id)?.members ?? [];
   }, [projects]);
 
+  /** BRU25-012 アーカイブしたプロジェクト。全体のタスク一覧ではそのタスクを出さない */
+  const archivedProjectIds = useMemo(
+    () => new Set(projects.filter(p => p.archived).map(p => p.id)),
+    [projects]);
+
   /** BRU15-005 プルダウンに出すプロジェクト（自分が参画しているもの。オーナーだけ全件） */
   const selectableProjects = useMemo(
     () => selectableTaskProjects(projects, userName, isOwnerRole),
@@ -292,6 +297,7 @@ export function TaskWorkspace({
     return tasks.filter(t => {
       if (hideDone && t.status === "done") return false;
       if (!isProjectScope) {
+        if (t.projectId && archivedProjectIds.has(t.projectId)) return false;
         if (projectFilter === "none" && t.projectId) return false;
         if (projectFilter && projectFilter !== "none" && t.projectId !== projectFilter) return false;
       }
@@ -311,7 +317,7 @@ export function TaskWorkspace({
         && !t.categories.some(c => c.toLowerCase().includes(q))) return false;
       return true;
     });
-  }, [tasks, hideDone, isProjectScope, projectFilter, assigneeFilters, creatorFilters, search, userName, assigneesOf]);
+  }, [tasks, hideDone, isProjectScope, projectFilter, assigneeFilters, creatorFilters, search, userName, assigneesOf, archivedProjectIds]);
 
   /**
    * タブの条件。互いに排他ではない（担当も共有もされていれば両方に出る）。

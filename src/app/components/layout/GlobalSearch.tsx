@@ -7,6 +7,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
 import { htmlToText } from "@/app/lib/helpers";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
+import { isArchivedRow } from "@/app/lib/projectArchive";
 
 interface TicketResult {
   type: "ticket";
@@ -199,13 +200,16 @@ export function GlobalSearch() {
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let projQuery = supabase!.from("projects").select("id, name, client, status, members, organization_id, slug, sprints(id, name, status, project_id, identifier)");
+      // archived_at（BRU25-012）は後から足した列なので名指しせず * で読む（列が無い環境でも動くように）
+      let projQuery = supabase!.from("projects").select("*, sprints(id, name, status, project_id, identifier)");
       if (userRole === "owner") {
         if (selectedOrgId) projQuery = projQuery.eq("organization_id", selectedOrgId);
       } else if (userOrgId) {
         projQuery = projQuery.or(`organization_id.eq.${userOrgId},organization_id.is.null`);
       }
-      const { data: projData } = await projQuery as { data: any[] | null };
+      const { data: rawProjData } = await projQuery as { data: any[] | null };
+      // BRU25-012 アーカイブしたプロジェクトは、プロジェクト・スプリント・チケット・Wiki・議事録とも結果に出さない
+      const projData = (rawProjData ?? []).filter(p => !isArchivedRow(p));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const accessible: any[] = isAdmin ? (projData ?? []) : (projData ?? []).filter(p => Array.isArray(p.members) && p.members.includes(userName));
       const sprintIds: string[] = accessible.flatMap(p => (p.sprints ?? []).map((s: { id: string }) => s.id));
