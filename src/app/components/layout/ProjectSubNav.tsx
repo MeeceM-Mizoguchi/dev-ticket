@@ -1,13 +1,13 @@
 import { useState, type ElementType } from "react";
 import { useNavigate } from "react-router";
-import { Layers, ClipboardList, BookOpen, FileText, PenTool, FolderOpen, Github, Megaphone, Search, GanttChartSquare } from "lucide-react";
+import { Layers, ClipboardList, BookOpen, FileText, PenTool, FolderOpen, Github, Megaphone, Search, GanttChartSquare, Telescope } from "lucide-react";
 import type { AccessLevel, GithubAccessLevel } from "@/app/types";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 import { TICKET_SEARCH_PATH } from "@/app/lib/ticketSearch";
 import { useWbsAccess } from "@/app/hooks/useWbsAccess";
 
-type ProjectSubPage = "sprints" | "ticket-search" | "release-notes" | "backlog" | "tasks" | "wiki" | "minutes" | "whiteboard" | "wbs" | "files" | "knowledge" | "github";
+type ProjectSubPage = "sprints" | "ticket-search" | "release-notes" | "backlog" | "tasks" | "wiki" | "minutes" | "whiteboard" | "wbs" | "files" | "knowledge" | "github" | "research";
 
 // ファイルボックスは権限設定を持たない（プロジェクトメンバー全員が利用できる）ため permKey なし
 const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" | "wbs" | "github" }[] = [
@@ -28,6 +28,9 @@ const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: strin
   // ナレッジノートはファイルボックスと同様に個別の権限設定を持たない（プロジェクトメンバー全員）。
   // 代わりにプラン（feature_knowledge_ai）で表示可否を切り替える。
   { id: "knowledge",  label: "ナレッジノート", icon: BookOpen,      path: "/knowledge" },
+  // ENHA2-055 高度検索。プロジェクトメンバー全員に出す（個別の権限設定は持たない。
+  // 見られる資料の範囲は、API がキーを発行した人の権限で絞る）
+  { id: "research",   label: "高度検索",       icon: Telescope,     path: "/research" },
   // GitHubは既定が「権限なし」なので、付与された人にだけタブが出る
   { id: "github",     label: "GitHub",         icon: Github,        path: "/github",     permKey: "github" },
 ];

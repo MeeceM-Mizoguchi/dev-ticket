@@ -3,6 +3,12 @@
 //
 //   POST /api/api-keys/create  { name, projectId, expiresInDays, scope } → { plainKey, key }
 //   POST /api/api-keys/reveal  { id }                             → { plainKey }
+//   POST /api/api-keys/research-key        { projectId } → { plainKey, key } ／ { key: null }
+//   POST /api/api-keys/research-key-create { projectId } → { plainKey, key }
+//     … 高度検索（ENHA2-055-3）で使う「自分のキー」。管理者でなくても、プロジェクトのメンバーなら使える。
+//       一般メンバーはキーの一覧を RLS で読めないので、自分が発行したキーをサーバーで探して平文を返す。
+//       発行できるのは「読み取りのみ」のキーだけ（すでに自分のキーがあれば、新しく作らずにそれを返す）。
+//       高度検索の API は「キーを発行した人＝調査を作った人」で受け付けるため、他人のキーは返さない。
 //
 // 認証は「ログイン中ユーザーの Supabase アクセストークン」。
 //   Authorization: Bearer <supabase access_token>
@@ -251,13 +257,62 @@ async function handleReveal(sb: SupabaseClient, caller: Caller, body: any, res: 
   return res.status(200).json({ plainKey });
 }
 
+// ── 高度検索の自分のキー（ENHA2-055-3） ─────────────────────
+/** 高度検索の画面から発行するキーの名前と期限。権限は「読み取りのみ」固定 */
+const RESEARCH_KEY_NAME = "高度検索用";
+const RESEARCH_KEY_DAYS = 90;
+
+/** 呼び出した人がそのプロジェクトを見られるか（RLS と同じ判定を DB の関数で行う） */
+async function canAccessProject(sb: SupabaseClient, caller: Caller, projectId: string): Promise<boolean> {
+  if (caller.role === "owner") return true;
+  const { data, error } = await sb.rpc("can_user_access_project", { p_user_id: caller.id, p_project_id: projectId });
+  if (error) return false;
+  return data === true;
+}
+
+/**
+ * 呼び出した人が発行した、そのプロジェクトの使えるキー（読み取りのみ／すべて・平文を復元できるもの）のうち、
+ * いちばん新しいものの平文を返す。無ければ null。
+ */
+async function findOwnResearchKey(sb: SupabaseClient, caller: Caller, projectId: string) {
+  if (!caller.name) return null;
+  // scope 列は後から足したもの。名指しすると add_api_key_scopes.sql 未適用の環境で失敗するので * で引く
+  const { data } = await sb
+    .from("api_keys").select("*")
+    .eq("project_id", projectId).eq("created_by", caller.name).is("revoked_at", null)
+    .order("created_at", { ascending: false }).order("id", { ascending: true });
+  const now = Date.now();
+  for (const row of (data ?? []) as Record<string, unknown>[]) {
+    const scope = row.scope === "read" || row.scope === "full" ? row.scope : null;
+    if (!scope) continue;
+    if (row.expires_at && new Date(row.expires_at as string).getTime() < now) continue;
+    const plainKey = decryptKey(row.key_cipher as string | null);
+    if (!plainKey) continue;
+    return { plainKey, key: mapRow(row, scope) };
+  }
+  return null;
+}
+
+async function handleResearchKey(sb: SupabaseClient, caller: Caller, body: any, res: any, create: boolean) {
+  const projectId = typeof body?.projectId === "string" ? body.projectId.trim() : "";
+  if (!projectId) return res.status(400).json({ error: "プロジェクトが特定できません" });
+  if (!(await canAccessProject(sb, caller, projectId))) {
+    return res.status(403).json({ error: "このプロジェクトのメンバーではないため、APIキーを使えません" });
+  }
+  const own = await findOwnResearchKey(sb, caller, projectId);
+  if (own) return res.status(200).json(own);
+  if (!create) return res.status(200).json({ key: null });
+  return handleCreate(sb, caller, { name: RESEARCH_KEY_NAME, projectId, expiresInDays: RESEARCH_KEY_DAYS, scope: "read" }, res);
+}
+
 // ── エントリポイント ──────────────────────────────────────────
 export default async function handler(req: any, res: any) {
   res.setHeader("Cache-Control", "no-store");
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
   const action = String(req.query?.action ?? "");
-  if (action !== "create" && action !== "reveal") {
+  const isResearch = action === "research-key" || action === "research-key-create";
+  if (action !== "create" && action !== "reveal" && !isResearch) {
     return res.status(404).json({ error: `不明なエンドポイントです: /api/api-keys/${action}` });
   }
 
@@ -266,7 +321,8 @@ export default async function handler(req: any, res: any) {
 
   const caller = await getCaller(sb, req);
   if (!caller) return res.status(401).json({ error: "ログインが必要です" });
-  if (!isAdmin(caller)) return res.status(403).json({ error: "APIキーを操作する権限がありません（管理者のみ）" });
+  // 高度検索の自分のキーだけは、管理者でなくても使える（プロジェクトのメンバーかを中で確かめる）
+  if (!isResearch && !isAdmin(caller)) return res.status(403).json({ error: "APIキーを操作する権限がありません（管理者のみ）" });
 
   let body: any;
   try {
@@ -276,6 +332,7 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
+    if (isResearch) return await handleResearchKey(sb, caller, body, res, action === "research-key-create");
     return action === "create"
       ? await handleCreate(sb, caller, body, res)
       : await handleReveal(sb, caller, body, res);

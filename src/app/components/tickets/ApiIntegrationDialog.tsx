@@ -345,8 +345,13 @@ function AiUpdatePanel({ ticket, projectId, projectName, keysRevision, onKeyIssu
 }
 
 export function ApiIntegrationDialog({
-  sprintId, sprintName, projectId, projectName, parentTicket, implementTicket, backlog, zIndexBase = 300, onClose,
+  sprintId, sprintName, projectId, projectName, parentTicket, implementTicket, backlog, keysOnly = false, zIndexBase = 300, onClose,
 }: {
+  /**
+   * 「APIキー」タブだけを出す（高度検索の画面の「APIキー管理」から開いたとき。ENHA2-055-3）。
+   * キーの一覧・発行・失効だけを行い、プロンプトのコピーやサンプルは出さない。
+   */
+  keysOnly?: boolean;
   sprintId: string;
   sprintName: string;
   projectId?: string;
@@ -378,6 +383,7 @@ export function ApiIntegrationDialog({
   //   組み込み・APIキー … 管理者だけ（管理者以外はキーの一覧が RLS で空になる）
   const tabs = useMemo(() => {
     const list: [DialogTab, string][] = [];
+    if (keysOnly) return canManage ? [["keys", "APIキー"]] as [DialogTab, string][] : list;
     if (implementTicket) list.push(["implement", "AIで実装"]);
     // 「AIで修正」を出せる人は「AIで実装」と同じ（ENHA2-057）
     if (implementTicket) list.push(["update", "AIで修正"]);
@@ -387,8 +393,8 @@ export function ApiIntegrationDialog({
       list.push(["keys", "APIキー"]);
     }
     return list;
-  }, [implementTicket, parentTicket, canManage]);
-  const initialTab: DialogTab = implementTicket ? "implement" : "usage";
+  }, [implementTicket, parentTicket, canManage, keysOnly]);
+  const initialTab: DialogTab = keysOnly ? "keys" : implementTicket ? "implement" : "usage";
 
   const [tab, setTab] = useState<DialogTab>(initialTab);
   /** 「組み込み」タブで表示中のサンプル言語 */
@@ -1324,7 +1330,8 @@ export function ApiIntegrationDialog({
                 {issuedKey ? "APIキーを発行しました" : "API連携"}
               </p>
               <p style={{ fontSize: 11, color: "#9E9690", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {implementTicket ? `${implementTicket.wbs} ／ ${implementTicket.title}`
+                {keysOnly ? `${projectName} ／ APIキー管理`
+                  : implementTicket ? `${implementTicket.wbs} ／ ${implementTicket.title}`
                   : isBacklog ? `${projectName} ／ バックログ${backlogFolderName ? ` ／ ${backlogFolderName}` : ""}`
                     : `${projectName} ／ ${sprintName}`}
               </p>

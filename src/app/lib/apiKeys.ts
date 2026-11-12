@@ -94,7 +94,7 @@ function mapRow(row: Record<string, unknown>): ApiKeyRow {
  * Vite の開発サーバーは api/ を実行しないため、`npm run dev` ではHTMLが返る。
  * JSONとして読めなかった場合はその旨を伝えるメッセージにする。
  */
-async function postApi<T>(action: "create" | "reveal", body: unknown): Promise<
+async function postApi<T>(action: "create" | "reveal" | "research-key" | "research-key-create", body: unknown): Promise<
   { ok: true; data: T } | { ok: false; error: string; code?: string }
 > {
   const { data: { session } } = await supabase!.auth.getSession();
@@ -201,6 +201,32 @@ export async function revealApiKey(
 
   const res = await postApi<{ plainKey: string }>("reveal", { id });
   if (!res.ok) return { ok: false, error: res.error, needsReissue: res.code === "no_cipher" };
+  return { ok: true, plainKey: res.data.plainKey };
+}
+
+// ── 高度検索の自分のキー（ENHA2-055-3） ──────────────────────
+
+/**
+ * 高度検索で使う「自分が発行したキー」の平文を取り出す。無ければ null。
+ * 管理者でなくても使える（一般メンバーはキーの一覧を RLS で読めないため、サーバーで探す）。
+ * 高度検索の API は「キーを発行した人＝調査を作った人」で受け付けるので、他人のキーは使わない。
+ */
+export async function getResearchApiKey(
+  projectId: string,
+): Promise<{ ok: true; plainKey: string | null } | { ok: false; error: string }> {
+  if (!isSupabaseEnabled) return { ok: false, error: "この環境では利用できません" };
+  const res = await postApi<{ plainKey?: string; key: Record<string, unknown> | null }>("research-key", { projectId });
+  if (!res.ok) return { ok: false, error: res.error };
+  return { ok: true, plainKey: res.data.key && res.data.plainKey ? res.data.plainKey : null };
+}
+
+/** 高度検索用の「読み取りのみ」のキーを自分で発行する（すでにあれば、それを返す） */
+export async function createResearchApiKey(
+  projectId: string,
+): Promise<{ ok: true; plainKey: string } | { ok: false; error: string }> {
+  if (!isSupabaseEnabled) return { ok: false, error: "この環境ではAPIキーを発行できません" };
+  const res = await postApi<{ plainKey: string }>("research-key-create", { projectId });
+  if (!res.ok) return { ok: false, error: res.error };
   return { ok: true, plainKey: res.data.plainKey };
 }
 
