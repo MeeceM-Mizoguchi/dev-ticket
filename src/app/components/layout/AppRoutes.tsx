@@ -30,6 +30,8 @@ import { GithubPage } from "@/app/pages/GithubPage";
 import { OrganizationPage } from "@/app/pages/OrganizationPage";
 import { AnnouncementSettingsPage } from "@/app/pages/AnnouncementSettingsPage";
 import { ProjectArchiveGuard } from "@/app/components/projects/ProjectArchiveGuard";
+import { ResearchPage } from "@/app/pages/ResearchPage";
+import { ResearchQuoteHighlighter } from "@/app/components/research/ResearchQuoteHighlighter";
 
 // 保護下(ログイン後)ページの単一定義。
 export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
@@ -85,6 +87,8 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/:projectSlug/github", element: <GithubPage /> },
   { path: "/:projectSlug/whiteboard", element: <WhiteboardPage /> },
   { path: "/:projectSlug/whiteboard/:boardId", element: <WhiteboardPage /> },
+  // ENHA2-055 高度検索（静的セグメントなので /:projectSlug/:segment より優先される）
+  { path: "/:projectSlug/research", element: <ResearchPage /> },
   // ENHA2-053 WBS（静的セグメントなので /:projectSlug/:segment より優先される）
   { path: "/:projectSlug/wbs", element: <WbsPage /> },
   { path: "/:projectSlug/wbs/:wbsId", element: <WbsPage /> },
@@ -121,6 +125,9 @@ export function ProtectedRoutes({ location }: { location?: string }) {
           <Route key={r.path} path={r.path} element={r.element} />
         ))}
       </Routes>
+      {/* ENHA2-055 高度検索の出典から移ってきたとき、根拠の文を目立たせる。
+          非アクティブのタブ（location 固定）では動かさない */}
+      {!location && <ResearchQuoteHighlighter />}
     </ErrorBoundary>
   );
 }
