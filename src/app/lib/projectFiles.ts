@@ -313,6 +313,14 @@ export async function fetchFileBoxUsage(projectId: string): Promise<FileBoxUsage
 }
 
 /**
+ * ENHA2-056 既存のファイルの中の文字を、高度検索のためにまとめて取り出す（管理者・オーナーだけ）。
+ * 1回の呼び出しで、サーバーの実行時間の許す分だけ進む。remaining が 0 になるまで呼び直す。
+ */
+export async function backfillFileTexts(projectId: string): Promise<{ processed: number; failed: number; remaining: number; total: number }> {
+  return postApi("extract-text-backfill", { projectId });
+}
+
+/**
  * ファイルをアップロードする。
  * ①サーバーが保存キーを決めて署名付きアップロードURLを発行
  * ②ブラウザ→ストレージへ直接アップロード（サーバーレス関数のサイズ上限を回避）

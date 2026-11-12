@@ -15,8 +15,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import {
-  FolderKanban, ChevronRight, Copy, KeyRound, Loader2, Telescope, Clock, AlertTriangle, Terminal, Lightbulb, FileText,
+  FolderKanban, ChevronRight, Copy, KeyRound, Loader2, Telescope, Clock, AlertTriangle, Terminal, Lightbulb, FileText, FolderOpen,
 } from "lucide-react";
+import { backfillFileTexts } from "@/app/lib/projectFiles";
 import { isSupabaseEnabled, supabase } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -76,6 +77,8 @@ function sourcePath(slug: string, s: ResearchSource): string | null {
     case "backlog": return `/${slug}/backlog/${id}`;
     case "ticket":
     case "comment": return `/${slug}/${id}`;
+    // ENHA2-056 ファイルボックスでそのファイルを開く（ファイルの中の文は目立たせない）
+    case "file": return `/${slug}/files?file=${id}`;
     default: {
       if (!s.url) return null;
       try {
@@ -291,10 +294,36 @@ export function ResearchPage() {
     }
   }, [loadJobs, toast]);
 
+  // ENHA2-056 既存のファイルの文字をまとめて取り出す（管理者・オーナーだけ）。
+  // サーバーは1回で時間の許す分だけ進めるので、残りが 0 になるまで繰り返し呼ぶ。
+  const [backfill, setBackfill] = useState<{ done: number; total: number } | null>(null);
+  const backfillRef = useRef(false);
+  const handleBackfill = useCallback(async () => {
+    if (backfillRef.current || !projectId) return;
+    if (!window.confirm("このプロジェクトのファイルボックスにある既存のファイル（Excel・Word・PDF・PowerPoint）から文字を取り出し、高度検索の対象にします。ファイルが多いと数分かかります。始めますか？")) return;
+    backfillRef.current = true;
+    let failed = 0;
+    try {
+      for (let round = 0; round < 200; round++) {
+        const r = await backfillFileTexts(projectId);
+        failed += r.failed;
+        setBackfill({ done: r.total - r.remaining, total: r.total });
+        if (r.remaining <= 0 || r.processed === 0) break;
+      }
+      toast(failed > 0 ? `ファイルの文字を取り出しました（取り出せなかったファイル：${failed}件。古い形式・画像だけのPDFなど）` : "ファイルの文字を取り出しました");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "ファイルの文字を取り出せませんでした", "error");
+    } finally {
+      backfillRef.current = false;
+      setBackfill(null);
+    }
+  }, [projectId, toast]);
+
   const openSource = useCallback((s: ResearchSource) => {
     const path = sourcePath(slug, s);
     if (!path) { toast("この出典の画面を開けませんでした", "error"); return; }
-    navigate(path, s.quote ? { state: { researchQuote: s.quote } } : undefined);
+    // ファイルの中（Excel・PDF など）では文を目立たせられないので、文は渡さない（ENHA2-056）
+    navigate(path, s.quote && s.kind !== "file" ? { state: { researchQuote: s.quote } } : undefined);
   }, [slug, navigate, toast]);
 
   const selected = jobs.find(j => j.id === selectedId) ?? null;
@@ -328,10 +357,18 @@ export function ResearchPage() {
           <span style={{ color: "#1A1714", fontWeight: 600 }}>高度検索</span>
         </div>
         {isAdmin && project && (
-          <button type="button" onClick={() => setKeysDialog(true)}
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 12px", fontSize: 12, fontWeight: 700, color: PURPLE, background: "#FFFFFF", border: "1px solid rgba(124,58,237,0.25)", borderRadius: 8, cursor: "pointer" }}>
-            <KeyRound style={{ width: 13, height: 13 }} /> APIキー管理
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button type="button" onClick={() => void handleBackfill()} disabled={!!backfill}
+              title="ファイルボックスに前からあるファイルの中の文字を取り出して、高度検索の対象にします"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 12px", fontSize: 12, fontWeight: 700, color: "#6B6458", background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.14)", borderRadius: 8, cursor: backfill ? "not-allowed" : "pointer" }}>
+              {backfill ? <Loader2 className="animate-spin" style={{ width: 13, height: 13 }} /> : <FolderOpen style={{ width: 13, height: 13 }} />}
+              {backfill ? `ファイルの文字を取り出し中（${backfill.done} / ${backfill.total}）` : "既存ファイルの文字を取り出す"}
+            </button>
+            <button type="button" onClick={() => setKeysDialog(true)}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 12px", fontSize: 12, fontWeight: 700, color: PURPLE, background: "#FFFFFF", border: "1px solid rgba(124,58,237,0.25)", borderRadius: 8, cursor: "pointer" }}>
+              <KeyRound style={{ width: 13, height: 13 }} /> APIキー管理
+            </button>
+          </div>
         )}
       </div>
 
@@ -339,7 +376,7 @@ export function ResearchPage() {
         <div style={{ minWidth: 0 }}>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>高度検索</h1>
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-            議事録・Wiki・チケット・コメント・バックログを、AI がまとめて調べてレポートにします
+            議事録・Wiki・チケット・コメント・バックログ・ファイルボックスのファイルを、AI がまとめて調べてレポートにします
           </p>
         </div>
         <ProjectSubNav projectSlug={slug} active="research" marginBottom={0}

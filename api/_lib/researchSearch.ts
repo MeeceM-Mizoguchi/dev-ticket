@@ -7,6 +7,12 @@
 //   GET /api/v1/wiki                         … Wiki の一覧（ID・タイトル・親・更新日）
 //   GET /api/v1/wiki?id=…                    … Wiki 1ページの本文（テキスト）
 //   GET /api/v1/backlog-item?id=…            … バックログ1件の本文（テキスト）とステータス・優先度
+//   GET /api/v1/file-text?id=…               … ファイルボックスの1ファイルから取り出した文字（ENHA2-056）
+//
+// ENHA2-056 search の kinds に file を足した。ファイルの中の文字は project_file_texts（api/_lib/fileText.ts が保存）。
+//   ・各ファイルの最新の版だけを見る（古い版の文字では当たらない）。ファイル名に全部の語が入っているものも当てる。
+//   ・限定公開（acl_id）のファイルは、キーを発行した人が見てよいもの（api/_lib/fileAccess.ts の決まり）だけを返す。
+//   ・project_file_texts が無い環境（SQL 未適用）では、ファイルを検索の対象から外して excludedKinds に理由を書く。
 //
 // 振り分けと APIキーの認証は api/v1/[resource].ts が行い、ここは中身だけを持つ（read / full のキーだけ）。
 // 本文のテキスト化（htmlToText）と画面のオリジンは [resource].ts のものを受け取って使う（同じ変換にそろえる）。
@@ -24,6 +30,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ApiKeyRow } from "./apiKeyAuth.js";
 import { resolveKeyOwner, type KeyOwner } from "./research.js";
+import { seesFileRow, sharedAclIds } from "./fileAccess.js";
+import { latestVersions } from "./fileVersions.js";
 
 export interface DocApiDeps {
   htmlToText: (html: string) => { text: string };
@@ -31,11 +39,45 @@ export interface DocApiDeps {
   appOrigin: () => string;
 }
 
-export const SEARCH_KINDS = ["ticket", "comment", "wiki", "minutes", "backlog"] as const;
+export const SEARCH_KINDS = ["ticket", "comment", "wiki", "minutes", "backlog", "file"] as const;
 export type SearchKind = typeof SEARCH_KINDS[number];
 const KIND_LABEL: Record<SearchKind, string> = {
-  ticket: "チケット", comment: "コメント", wiki: "Wiki", minutes: "議事録", backlog: "バックログ",
+  ticket: "チケット", comment: "コメント", wiki: "Wiki", minutes: "議事録", backlog: "バックログ", file: "ファイル",
 };
+
+const FILE_TEXTS_MISSING = "ファイルの文字を保存するテーブル（supabase/add_project_file_texts.sql）がまだ無いため、ファイルを検索の対象から外しました";
+
+interface FileMeta {
+  id: string; parent_id: string | null; file_name: string; version: number | null; is_folder: boolean;
+  owner_id: string | null; acl_id: string | null; created_at: string | null; external_provider: string | null;
+}
+
+/**
+ * プロジェクトのファイルのうち、キーを発行した人が見てよい「最新の版」だけを返す。
+ * フォルダの行は名前をたどるために byId に入れる。
+ */
+async function loadVisibleFiles(sb: SupabaseClient, key: ApiKeyRow, owner: KeyOwner): Promise<{ latest: FileMeta[]; byId: Map<string, FileMeta>; error: string | null }> {
+  const res = await fetchAllRows<FileMeta>((from, to) => sb.from("project_files")
+    .select("id, parent_id, file_name, version, is_folder, owner_id, acl_id, created_at, external_provider")
+    .eq("project_id", key.project_id).order("id", { ascending: true }).range(from, to));
+  if (res.error) return { latest: [], byId: new Map(), error: res.error };
+  const byId = new Map(res.rows.map(r => [String(r.id), r]));
+  const actor = { id: owner.id, role: owner.role };
+  const shared = await sharedAclIds(sb, actor);
+  const latest = latestVersions(res.rows.filter(r => !r.is_folder)).filter(r => seesFileRow(actor, r, shared));
+  return { latest, byId, error: null };
+}
+
+/** フォルダの名前を「親 / 子」の形でつなぐ（ファイルボックスは file_name がフォルダ名） */
+function fileFolderPath(byId: Map<string, FileMeta>, parentId: string | null): string | null {
+  const names: string[] = [];
+  let cur = parentId ? byId.get(String(parentId)) : undefined;
+  for (let depth = 0; cur && depth < 50; depth++) {
+    names.unshift(cur.file_name || "無題のフォルダ");
+    cur = cur.parent_id ? byId.get(String(cur.parent_id)) : undefined;
+  }
+  return names.length ? names.join(" / ") : null;
+}
 
 const SEARCH_DEFAULT_LIMIT = 20;
 const SEARCH_MAX_LIMIT = 50;
@@ -200,6 +242,8 @@ function parseKinds(raw: string): { ok: true; kinds: SearchKind[] } | { ok: fals
 interface Hit {
   kind: SearchKind; kindLabel: string; id: string; wbs?: string; commentId?: string;
   title: string; date: string | null; excerpt: string; url: string | null;
+  /** ファイルのときだけ。置き場所のフォルダ（「親 / 子」） */
+  folder?: string | null;
 }
 
 /** 日付の新しい順。同じ日付は種類・ID で並べて、順番を固定する */
@@ -364,6 +408,51 @@ export function createDocHandlers(deps: DocApiDeps) {
       })());
     }
 
+    // ENHA2-056 ファイルボックスのファイル（中の文字・ファイル名）
+    if (kinds.includes("file")) {
+      tasks.push((async () => {
+        const files = await loadVisibleFiles(sb, key, owner);
+        if (files.error) return files.error;
+        if (files.latest.length === 0) return null;
+        const byId = new Map(files.latest.map(f => [String(f.id), f]));
+        const ids = [...byId.keys()];
+        const textById = new Map<string, string>();
+        const matched = new Set<string>();
+        for (let i = 0; i < ids.length; i += TICKET_ID_CHUNK) {
+          const { data, error } = await applyTerms(
+            sb.from("project_file_texts").select("file_id, text").in("file_id", ids.slice(i, i + TICKET_ID_CHUNK)),
+            ["text"], terms,
+          ).order("file_id", { ascending: true }).limit(take);
+          if (error) {
+            // テーブルが無い（SQL 未適用）ときは、ファイルだけを外して他の種類の結果は返す
+            excluded.push({ kind: "file", reason: FILE_TEXTS_MISSING });
+            return null;
+          }
+          for (const r of (data ?? []) as any[]) {
+            matched.add(String(r.file_id));
+            textById.set(String(r.file_id), String(r.text ?? ""));
+          }
+        }
+        // ファイル名にすべての語が入っているものも当てる（文字を取り出せない形式のファイルも探せるように）
+        const lowerTerms = terms.map(t => t.toLowerCase());
+        for (const f of files.latest) {
+          const name = f.file_name.toLowerCase();
+          if (lowerTerms.every(t => name.includes(t))) matched.add(String(f.id));
+        }
+        for (const id of matched) {
+          const f = byId.get(id);
+          if (!f) continue;
+          hits.push({
+            kind: "file", kindLabel: KIND_LABEL.file, id, title: f.file_name,
+            folder: fileFolderPath(files.byId, f.parent_id), date: f.created_at ?? null,
+            excerpt: makeExcerpt(textById.get(id) ?? "", terms),
+            url: url(slug, `/files?file=${encodeURIComponent(id)}`),
+          });
+        }
+        return null;
+      })());
+    }
+
     const errors = (await Promise.all(tasks)).filter((e): e is string => !!e);
     if (errors.length) return res.status(500).json({ error: `検索に失敗しました: ${errors[0]}` });
 
@@ -507,6 +596,43 @@ export function createDocHandlers(deps: DocApiDeps) {
     });
   }
 
-  return { handleSearch, handleMinutes, handleWiki, handleBacklogItem };
+  // ── GET /api/v1/file-text（ENHA2-056） ──
+  // 古い版の ID が渡されても、同じファイルの最新の版の文字を返す（ファイルボックスの共有リンクと同じ読み替え）
+  async function handleFileText(sb: SupabaseClient, key: ApiKeyRow, query: any, res: any) {
+    const id = str(query?.id);
+    if (!id) return res.status(400).json({ error: "id（ファイルのID）は必須です。GET /api/v1/search?kinds=file で探せます" });
+    const accessRes = await resolveAccess(sb, key);
+    if (!accessRes.ok) return res.status(accessRes.status).json({ error: accessRes.error });
+    const { owner, slug } = accessRes.access;
+
+    const notFound = () => res.status(404).json({ error: `ファイル「${id}」がこのAPIキーのプロジェクトに見つかりません` });
+    const { data: base } = await sb.from("project_files").select("id, parent_id, file_name, is_folder, project_id")
+      .eq("id", id).eq("project_id", key.project_id).maybeSingle();
+    if (!base || base.is_folder) return notFound();
+    const files = await loadVisibleFiles(sb, key, owner);
+    if (files.error) return res.status(500).json({ error: files.error });
+    // 見てよくない限定公開のファイルは、有るか無いかも明かさない
+    const latest = files.latest.find(f => f.file_name === base.file_name && (f.parent_id ?? null) === (base.parent_id ?? null));
+    if (!latest) return notFound();
+
+    const { data: t, error } = await sb.from("project_file_texts").select("text, error, extracted_at, extracted_version, source")
+      .eq("file_id", latest.id).maybeSingle();
+    if (error) return res.status(503).json({ error: FILE_TEXTS_MISSING });
+    const body = String(t?.text ?? "");
+    return res.status(200).json({
+      id: latest.id, fileName: latest.file_name, folder: fileFolderPath(files.byId, latest.parent_id),
+      version: latest.version ?? null, updatedAt: latest.created_at ?? null,
+      google: latest.external_provider === "google",
+      url: url(slug, `/files?file=${encodeURIComponent(String(latest.id))}`),
+      extracted: !!t, extractedAt: t?.extracted_at ?? null,
+      // 取り出せなかった理由（対象外の形式・画像だけのPDF・まだ取り出していない など）
+      error: t ? (t.error ?? null) : (latest.external_provider === "google"
+        ? "まだ文字を取り出していません（Googleのファイルは、ファイルボックスで誰かが開いたときに取り出します）"
+        : "まだ文字を取り出していません"),
+      text: body.slice(0, MAX_BODY_CHARS), truncated: body.length > MAX_BODY_CHARS,
+    });
+  }
+
+  return { handleSearch, handleMinutes, handleWiki, handleBacklogItem, handleFileText };
 }
 

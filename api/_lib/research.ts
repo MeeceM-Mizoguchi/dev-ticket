@@ -37,6 +37,8 @@ const SOURCE_KIND_BY_LABEL: Record<string, string> = {
   ticket: "ticket", "チケット": "ticket",
   comment: "comment", "コメント": "comment",
   backlog: "backlog", "バックログ": "backlog",
+  // ENHA2-056 ファイルボックスのファイル
+  file: "file", "ファイル": "file",
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -171,7 +173,7 @@ function normalizeSources(raw: unknown): { ok: true; sources: ResearchSource[] }
     if (seenNo.has(no)) return { ok: false, error: `${at}.no（${no}）が重複しています` };
     seenNo.add(no);
     const kind = SOURCE_KIND_BY_LABEL[String(s.kind ?? "").trim().toLowerCase()] ?? SOURCE_KIND_BY_LABEL[String(s.kind ?? "").trim()];
-    if (!kind) return { ok: false, error: `${at}.kind「${String(s.kind ?? "")}」は使えません（minutes / wiki / ticket / comment / backlog）` };
+    if (!kind) return { ok: false, error: `${at}.kind「${String(s.kind ?? "")}」は使えません（minutes / wiki / ticket / comment / backlog / file）` };
     const id = String(s.id ?? "").trim();
     if (!id) return { ok: false, error: `${at}.id（資料のID。チケット・コメントはチケットの WBS）は必須です` };
     const title = String(s.title ?? "").trim();
