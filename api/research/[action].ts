@@ -2,6 +2,8 @@
 //
 //   POST /api/research/materials {projectId, ai, part?, summary?}
 //     … その人が見られる資料をまとめた .md の中身と量（BRU25-015-1。本体は api/_lib/researchMaterials.ts）
+//   POST /api/research/import {jobId, answer, projectId?}
+//     … 貼られた AI の答えから結果を読み取って保存し、調査を完了にする（BRU25-015-2。本体は api/_lib/research.ts）
 //
 // 認証は、ログイン中の人の Supabase のアクセストークン（Authorization: Bearer <access_token>）だけ。
 // APIキーは受けない（ブラウザの AI は APIキーを使わない。ターミナルの AI 用の API は api/v1 のまま変えない）。
@@ -9,7 +11,7 @@
 // 中の資料の見られる範囲は researchMaterials.ts（高度検索の API と同じ判定）で絞る。
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { serviceClient, authenticateCaller, assertProjectAccess } from "../_lib/projectAuth.js";
-import type { KeyOwner } from "../_lib/research.js";
+import { handleResearchImport, type KeyOwner } from "../_lib/research.js";
 import { buildMaterials, BROWSER_AIS, type BrowserAi } from "../_lib/researchMaterials.js";
 
 /** 画面のオリジン。出典の URL に使う（api/v1 の appPublicOrigin と同じ環境変数。無ければ呼ばれたホスト） */
@@ -64,7 +66,7 @@ export default async function handler(req: any, res: any) {
   res.setHeader("Cache-Control", "no-store");
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
   const action = String(req.query?.action ?? "");
-  if (action !== "materials") {
+  if (action !== "materials" && action !== "import") {
     return res.status(404).json({ error: `不明なエンドポイントです: /api/research/${action}` });
   }
   const sb = serviceClient();
@@ -80,6 +82,7 @@ export default async function handler(req: any, res: any) {
   try {
     const who = await loginOwner(sb, req);
     if (!who.ok) return res.status(who.status).json({ error: who.error });
+    if (action === "import") return await handleResearchImport(sb, who.owner.id, body, res);
     return await handleMaterials(sb, req, who.owner, body, res);
   } catch (e: any) {
     return res.status(500).json({ error: e?.message ?? "サーバーでエラーが起きました" });
