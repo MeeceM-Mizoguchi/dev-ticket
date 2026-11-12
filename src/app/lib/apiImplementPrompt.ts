@@ -257,8 +257,26 @@ const SQL_AFTER_MERGE_RULES = [
 ];
 /** 「マージ」を選んだときだけ、PRの本文の書き方に足す一文（BRU25-013） */
 const SQL_PR_BODY_RULE = "- " + c("supabase/") + " に " + c(".sql") + " を追加したときは、本文の冒頭に「マージ後に本番DBで実行する SQL：" + c("supabase/◯◯.sql") + "」と書く（複数あれば実行する順番に並べる）。SQL の追加が無いときは書かない。";
-/** 「マージ」を選んだときだけ、報告の最初に置く項目（BRU25-013） */
-const SQL_REPORT_ITEM = "- **（報告の最初に書く）**マージ後に本番DBで実行が必要な SQL ファイル（複数あれば実行する順番）。無ければ「本番DBで実行が必要な SQL はありません」";
+/**
+ * 「マージ」を選んだときだけ、報告の前に置く「手で実行する SQL を1つのファイルにまとめる」決まり（BRU25-014）。
+ * ファイル名を報告に並べるだけでは、長い報告に埋もれて見落とされた（ENHA2-055・ENHA2-056）。
+ * 中身は手で書き写させず、マージ後の main から git show で取り出させる（マージ後の内容と食い違わないように）。
+ * 一時フォルダの場所は AI の環境で違うため、決め打ちしない。
+ */
+function sqlBundleRules(baseName: string): string[] {
+  return [
+    "- **本番DBで手で実行する SQL を、1つのファイルにまとめる。**今回マージしたチケットのうち、" + c("supabase/") + " に " + c(".sql") + " を追加したものが1件でもあれば、報告の前に、マージ後に本番DBで手で実行する SQL を、実行する順に1つのファイルにまとめる。",
+    "  - ファイル名は " + c("本番DB_手動実行SQL_YYYYMMDD.sql") + " の形にする（YYYYMMDD は今日の日付）。",
+    "  - 置き場所は、リポジトリの外の、AI の作業用の一時フォルダ（無ければ OS の一時フォルダ）。**このファイルはコミットしない。APIキーを書かない。**",
+    "  - ファイルの先頭に、実行する順番・各 SQL のファイル名・どのチケット／PR のものかを、SQL のコメント（" + c("--") + "）で書く。",
+    "  - そのあとに、各 " + c(".sql") + " の中身を、実行する順に、マージしたあとの " + c(baseName) + " の内容のまま並べる。中身は手で書き写さず、" + c("git fetch origin") + " のあと " + c("git show origin/" + baseName + ":<パス>") + " でそのまま取り出す。",
+    "  - SQL の追加が無いときは、ファイルを作らない。",
+  ];
+}
+/** 「マージ」を選んだときだけ、報告の最初に置く項目（BRU25-013 → BRU25-014 で、まとめたファイルを指す1行に変更） */
+const SQL_REPORT_ITEM = "- **（報告の最初に書く）**SQL をまとめたファイルを作ったときは、報告の最初の「結果」「お願い」の2行の中に、「本番DBで SQL の実行が必要（ファイルは報告の最後）」と1行で書く。SQL の追加が無いときは「本番DBで実行が必要な SQL はありません」と書く。";
+/** 「マージ」を選んだときだけ、報告の最後に置く項目（BRU25-014） */
+const SQL_REPORT_LAST_ITEM = "- **（報告の最後に書く）**SQL をまとめたファイルへのリンク（Markdown のリンクで、クリックして開ける形。例: " + c("[本番DB_手動実行SQL_YYYYMMDD.sql](<ファイルの絶対パス>)") + "）と、そのファイルの絶対パス。ファイルを作らなかったときは書かない。";
 
 /**
  * 「PRの作成・マージの仕様」の節（BRU21-001）。1件用・まとめて実装用で共用する。
@@ -627,6 +645,7 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
   }
 
   step("報告する",
+    ...(sel.merge ? [...sqlBundleRules(ctx.defaultBranch ?? "<ベースブランチ>"), ""] : []),
     "最後に、次の内容を利用者に報告する。",
     "",
     ...(sel.merge ? [SQL_REPORT_ITEM] : []),
@@ -645,6 +664,7 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
     "- コメントで質問したときは、その質問と、登録したコメントの応答（" + c("url") + "・" + c("warnings") + "）",
     "- **行っていない作業**（上の表で ❌ のもの）",
     "- 判断に迷った点、本文とコメントの食い違い、確認してほしい点",
+    ...(sel.merge ? [SQL_REPORT_LAST_ITEM] : []),
   );
 
   // ── PRの作成・マージの仕様 ──
@@ -1003,6 +1023,7 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
   add(
     "## 最後に報告する",
     "",
+    ...(sel.merge ? [...sqlBundleRules(ctx.defaultBranch ?? "<ベースブランチ>"), "  - すべてのチケットの分を、1つのファイルにまとめる（チケットごとに分けない）。", ""] : []),
     "すべてのチケットを終えたら（または途中で止まったら）、次の内容を**チケットごとに**利用者に報告する。",
     "",
     ...(sel.merge ? [SQL_REPORT_ITEM] : []),
@@ -1021,6 +1042,7 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
     "- コメントで質問して飛ばしたチケットと、その質問・登録したコメントの応答（" + c("url") + "・" + c("warnings") + "）",
     "- **行っていない作業**（上の表で ❌ のもの）",
     "- 判断に迷った点、本文とコメントの食い違い、確認してほしい点",
+    ...(sel.merge ? [SQL_REPORT_LAST_ITEM.replace("（報告の最後に書く）", "（チケットごとの報告のあと、報告全体の最後に1回だけ書く）")] : []),
     "",
   );
 
