@@ -31,11 +31,20 @@ let seq = 0;
 let unavailableReason: string | null = null;
 const pending = new Map<number, Pending>();
 const downloadListeners = new Set<(file: string, progress: number) => void>();
+// 最後に受け取ったDLの進み具合（0〜100）。null は「まだ何も受け取っていない」。
+// 先読みはログイン直後に裏で始まるため（BRU25-011）、ナレッジノートを開いた時点で
+// 既に進んでいることがある。購読より前の値をここから受け取り、0%から出直さないようにする。
+let lastDownloadProgress: number | null = null;
 
 /** モデルのDL進捗を購読する。戻り値を呼ぶと解除 */
 export function onModelDownload(fn: (file: string, progress: number) => void): () => void {
   downloadListeners.add(fn);
   return () => downloadListeners.delete(fn);
+}
+
+/** 最後に受け取ったDLの進み具合。読み込みが終わっていれば 100、何も受け取っていなければ null */
+export function getModelDownloadProgress(): number | null {
+  return lastDownloadProgress;
 }
 
 /** この環境で意味検索が使えないと判明している場合、その理由 */
@@ -60,7 +69,17 @@ function ensureWorker(): Worker | null {
   worker.onmessage = (ev: MessageEvent<WorkerOut>) => {
     const m = ev.data;
     if (m.type === "download") {
+      lastDownloadProgress = m.progress;
       downloadListeners.forEach(fn => fn(m.file, m.progress));
+      return;
+    }
+    if (m.type === "ready") {
+      // 読み込み完了。最後のファイルの進み具合が 100 で届かなかった場合も、
+      // 「検索の準備中」を出しっぱなしにしないよう 100 として知らせる。
+      if (lastDownloadProgress !== 100) {
+        lastDownloadProgress = 100;
+        downloadListeners.forEach(fn => fn("", 100));
+      }
       return;
     }
     if (m.type === "embedded") {
@@ -93,8 +112,8 @@ function ensureWorker(): Worker | null {
 }
 
 /**
- * モデルを先読みする。画面を開いた時点で呼んでおくと、
- * 検索を押した瞬間から待たせずに済む。
+ * モデルを先読みする。ログイン後に裏で呼んでおくと（KnowledgeModelPreloader）、
+ * 検索を押した瞬間から待たせずに済む。何度呼んでも読み込みは1回だけ（Worker 側で使い回す）。
  * 失敗しても例外は投げない（意味検索なしで動作を継続させる）。
  */
 export function warmup(): void {

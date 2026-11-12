@@ -11,6 +11,7 @@ import { RefreshProvider, useRefresh } from "@/app/contexts/RefreshContext";
 import { CallLayer } from "@/app/components/call/CallLayer";
 import { MlSetupGate } from "@/app/components/members/MlSetupGate";
 import { GoogleLinkReturnHandler } from "./GoogleLinkReturnHandler";
+import { KnowledgeModelPreloader } from "@/app/components/knowledge/KnowledgeModelPreloader";
 import { clearRedirect, rememberRedirect } from "@/app/lib/authRedirect";
 
 export function AppShell() {
@@ -100,6 +101,8 @@ export function ProtectedShell() {
       <MlSetupGate />
       {/* BRU17-028 Googleアカウントの紐づけから戻ってきたときの後処理（1つだけ置く） */}
       <GoogleLinkReturnHandler />
+      {/* BRU25-011 ナレッジノートの検索用モデルを、ログイン後に裏で読み込み始める（1つだけ置く） */}
+      <KnowledgeModelPreloader />
     </CallProvider>
   );
 }

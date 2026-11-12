@@ -28,11 +28,17 @@ export const UNLIMITED_PLAN: PlanSettings = {
 
 interface PlanContextValue {
   plan: PlanSettings;
+  /**
+   * 組織のプランを読み終えたか。読み終える前の plan は仮の UNLIMITED_PLAN（全機能 true）なので、
+   * 「使えないプランでは始めない」処理（ナレッジノートのモデルの先読みなど）は、これが true になってから判定する。
+   */
+  planLoaded: boolean;
   isLimitReached: (max: number | null, current: number) => boolean;
 }
 
 const PlanContext = createContext<PlanContextValue>({
   plan: UNLIMITED_PLAN,
+  planLoaded: false,
   isLimitReached: () => false,
 });
 
@@ -68,6 +74,8 @@ function mapPlan(row: Record<string, unknown>): PlanSettings {
 export function PlanProvider({ children }: { children: ReactNode }) {
   const { userOrgId, logout } = useAuth();
   const [plan, setPlan] = useState<PlanSettings>(UNLIMITED_PLAN);
+  // どの組織のプランを読み終えたか（組織が変わったら、読み直すまで未読扱い）
+  const [loadedOrgId, setLoadedOrgId] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -76,7 +84,16 @@ export function PlanProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    const orgId = userOrgId;
     const load = async () => {
+      try {
+        await loadPlan();
+      } finally {
+        setLoadedOrgId(orgId);
+      }
+    };
+
+    const loadPlan = async () => {
       const { data: org } = await supabase!
         .from("organizations")
         .select("plan_id")
@@ -115,8 +132,10 @@ export function PlanProvider({ children }: { children: ReactNode }) {
     return current >= max;
   };
 
+  const planLoaded = !isSupabaseEnabled || (!!userOrgId && loadedOrgId === userOrgId);
+
   return (
-    <PlanContext.Provider value={{ plan, isLimitReached }}>
+    <PlanContext.Provider value={{ plan, planLoaded, isLimitReached }}>
       {children}
     </PlanContext.Provider>
   );
