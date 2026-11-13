@@ -200,7 +200,7 @@ export async function handleResearchResult(sb: SupabaseClient, key: ApiKeyRow, b
   // 中身の誤りは、記録を読む前に返す（400 のときは記録を変えない）
   const markdown = typeof body?.markdown === "string" ? body.markdown.trim() : "";
   const short = typeof body?.short === "string" ? body.short.trim() : "";
-  if (!markdown) return res.status(400).json({ error: "markdown（レポート型の結果：結論・経緯（時系列）・未決事項・出典）は必須です" });
+  if (!markdown) return res.status(400).json({ error: "markdown（レポート型の結果：結論・現時点で決まっていること・未決事項・経緯（時系列）・出典）は必須です" });
   if (!short) return res.status(400).json({ error: "short（短い回答型の結果：回答の2〜3文）は必須です" });
   const normalized = normalizeSources(body?.sources);
   if (!normalized.ok) return res.status(400).json({ error: normalized.error });
@@ -308,7 +308,7 @@ export function readAnswerResult(answer: string):
   const report = reportRaw.trim();
   const short = typeof v.short === "string" ? v.short.trim() : "";
   const missing = [
-    ...(!report ? ["report（レポート型：結論・経緯（時系列）・未決事項・出典）"] : []),
+    ...(!report ? ["report（レポート型：結論・現時点で決まっていること・未決事項・経緯（時系列）・出典）"] : []),
     ...(!short ? ["short（短い回答型：回答の2〜3文）"] : []),
   ];
   if (missing.length) return { ok: false, error: `${ANSWER_UNREADABLE}（足りないもの：${missing.join("、")}）`, missing };
