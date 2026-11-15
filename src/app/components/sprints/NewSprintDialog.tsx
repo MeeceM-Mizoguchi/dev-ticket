@@ -97,8 +97,8 @@ export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCo
         {attempted && !name.trim() && <ErrMsg msg="スプリント名を入力してください" />}
       </div>
       <div>
-        <FieldInput label="スプリント識別子" placeholder="例: SP5, S1（URLに使用）" required value={identifier} onChange={setIdentifier} />
-        <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。英数字推奨（例: SP5, S1, Q1）</p>
+        <FieldInput label="スプリント識別子" placeholder="例: SP5, S1（URLに使用）" required value={identifier} onChange={v => setIdentifier(v.toUpperCase())} />
+        <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。英字は大文字になります（例: SP5, S1, Q1）</p>
         {/* 🌟 修正: 識別子が存在する場合の重複バリデーションメッセージをオリジナルUIで即時表示 */}
         {isDuplicateIdentifier ? (
           <ErrMsg msg="他スプリントで使っている識別子は利用できません" />
