@@ -235,6 +235,43 @@ function inlineToHtml(text: string): string {
   return s.replace(new RegExp(CODE_MARK + "(\\d+)" + CODE_MARK, "g"), (_m, i: string) => codes[Number(i)] ?? "");
 }
 
+// ── Markdown の表（KAIZEN2611-002）──
+// 判定とセルの分け方は、画面側の src/app/lib/markdown/parse.ts に合わせる。
+const MD_MAX_TABLE_COLS = 20;
+
+/** `|` を区切りにセルへ分解する（`\|` はセル内の文字） */
+function mdSplitRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  const cells: string[] = [];
+  let cur = "";
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "\\" && s[i + 1] === "|") { cur += "|"; i++; continue; }
+    if (s[i] === "|") { cells.push(cur); cur = ""; continue; }
+    cur += s[i];
+  }
+  cells.push(cur);
+  return cells.map(c => c.trim());
+}
+
+/** GFM の区切り行（|---|:--:|）か */
+function mdIsDelimRow(line: string): boolean {
+  if (!line.includes("-")) return false;
+  if (!/^[\s|:-]+$/.test(line)) return false;
+  const cells = mdSplitRow(line);
+  return cells.length >= 1 && cells.every(c => /^:?-{1,}:?$/.test(c));
+}
+
+/** i 行目から表が始まるか（見出し行＋区切り行） */
+function mdIsTableStart(lines: string[], i: number): boolean {
+  const head = lines[i];
+  const delim = lines[i + 1];
+  if (!head || !delim || !head.includes("|")) return false;
+  if (!mdIsDelimRow(delim)) return false;
+  return mdSplitRow(head).length === mdSplitRow(delim).length && mdSplitRow(head).length >= 2;
+}
+
 // export しているのは検証用（scripts から直接呼んで出力を確認できるようにするため）。
 // ルーティングには影響しない（Vercel が見るのは default export のみ）。
 export function mdToHtml(md: string): string {
@@ -296,6 +333,29 @@ export function mdToHtml(md: string): string {
     const bq = trimmed.match(/^>\s?(.*)$/);
     if (bq) { flushPara(); flushList(); quote.push(bq[1]); continue; }
     flushQuote();
+
+    // 表（見出し行＋区切り行）。直前が文の行（空行なし）でも表として始める。
+    // 出力は RichEditor（tiptap）の表と同じ形（table > tbody > tr > th/td > p）。
+    if (mdIsTableStart(lines, i)) {
+      flushAll();
+      const header = mdSplitRow(line).slice(0, MD_MAX_TABLE_COLS);
+      const cols = header.length;
+      i += 2; // 見出し行＋区切り行
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
+        if (mdIsDelimRow(lines[i])) { i++; continue; }
+        const cells = mdSplitRow(lines[i]);
+        while (cells.length < cols) cells.push("");
+        rows.push(cells.slice(0, cols));
+        i++;
+      }
+      i--; // for の i++ で次の行へ進む
+      const cell = (tag: string, c: string) => `<${tag}><p>${inlineToHtml(c)}</p></${tag}>`;
+      const head = `<tr>${header.map(c => cell("th", c)).join("")}</tr>`;
+      const body = rows.map(r => `<tr>${r.map(c => cell("td", c)).join("")}</tr>`).join("");
+      out.push(`<table><tbody>${head}${body}</tbody></table>`);
+      continue;
+    }
 
     const bullet = trimmed.match(/^[-*+]\s+(.*)$/);
     if (bullet) {
