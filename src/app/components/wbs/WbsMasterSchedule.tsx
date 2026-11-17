@@ -120,7 +120,8 @@ export function WbsMasterSchedule({ rows, timeline, leafLabel, statusColors, onO
   const chartW = timeline.length * ppd;
 
   // 枠の下まで埋める空の行。最後の1行に満たない端数は、高さを合わせた行で埋める
-  const bodyH = Math.max(0, box.h - HEAD_H);
+  // 縦も横と同じ理由で1px内側に収める（ブラウザを縮小したときに、高さの端数でスクロールバーが出たり消えたりして揺れたため）
+  const bodyH = Math.max(0, box.h - 1 - HEAD_H);
   const fillerCount = Math.max(0, Math.floor(bodyH / ROW_H) - rows.length);
   const restH = Math.max(0, bodyH - (rows.length + fillerCount) * ROW_H);
 
