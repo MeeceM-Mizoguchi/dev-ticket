@@ -181,7 +181,8 @@ const TICKET_UPDATE_FIELDS_SPEC = `### 修正で送れる項目（送った項�
 | descriptionHtml | 本文のHTML（丸ごと置き換え） | **本文を直すときはこれを使う。**\`ticket.descriptionHtml\` を直して送り返すと、画像・表・メンションが残る |
 | description | 本文の Markdown（丸ごと置き換え） | 一から書き直すときだけ。画像・表・メンションは消える。\`descriptionHtml\` と一緒には送れない |
 | attachedImages | 本文の下の画像のURLの配列 | \`ticket.attachedImages\` から外す・並べ替えるだけ。新しいURLは追加されない |
-| prLinkWaived | true / false | PR不要 |
+| prLinkWaived | true / false | PR不要。リリース待ちでリリース日が今日（日本時間）以前なら、付けるとクローズになる |
+| releaseNotRequired | true / false | 親チケットだけ。リリース不要（作業のみ）。\`true\` でその場でクローズになり、リリースノートに出ない（\`false\` にしてもクローズのまま） |
 | actualHours | 実績工数（時間・小数第1位まで） | 子チケットは \`null\` で自動計測に戻る |
 | actualHoursBreakdown | 親チケットの工程ごとの実績（5つの数値の配列：着手→レビュー依頼／レビュー依頼→承認／承認→STG／STG→UAT／UAT→リリース） | 送ると合計が実績工数になる |
 | releaseDate / releaseDateUndecided | \`YYYY/MM/DD\` ／ true | リリース待ちのとき、または status をクローズにするときだけ。クローズにしてリリース日が空なら、その日（日本時間）が入る |

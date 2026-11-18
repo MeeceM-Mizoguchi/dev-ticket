@@ -51,6 +51,8 @@ export const SAMPLE_KINDS: { id: SampleKind; label: string; endpoint: string; pe
       "本文は descriptionHtml（読み取りで返るHTML）を直して送ると、画像・表・メンションが残ります。危ないタグ・属性は取り除いて保存します",
       "メンバーにいない担当者・登録されていない分類は変えずに warnings に理由を返します。担当者を変えても通知は送りません",
       "ステータスは画面のボタンと同じ動きです。レビュー中にして reviewer を指定すると、レビュアーに依頼の通知が届きます",
+      "releaseNotRequired: true（リリース不要・作業のみ）を送ると、親チケットがその場でクローズになり、リリースノートに出なくなります",
+      "PR不要のリリース待ちのチケットは、releaseDate・prLinkWaived を変えた結果、リリース日が今日（日本時間）以前ならクローズになります",
       "変えた内容は、チケットのコメント欄に履歴として1件残ります",
     ],
   },
@@ -341,7 +343,7 @@ curl "${c.baseUrl}/api/v1/ticket?wbs=${wbs}" \\
 #     "description": "本文（Markdown 風のテキスト）",
 #     "images": ["https://…"], "attachments": [], "comments": [],
 #     "descriptionHtml": "<p>保存されている本文のHTML</p>", "updatedAt": "…（修正するときに送り返す）",
-#     "labels": [], "attachedImages": [], "releaseDate": null, "operationVerified": false
+#     "labels": [], "attachedImages": [], "releaseDate": null, "operationVerified": false, "releaseNotRequired": false
 #   },
 #   "parent": null,
 #   "children": [ { "wbs": "${wbs}-1", "…": "ticket と同じ形" } ]
@@ -424,6 +426,8 @@ const UPDATE_RULES = [
   "・担当者・分類が見つからないときは、その項目を変えずに warnings に理由が入る（担当者を変えても通知は送らない）",
   "・見積工数は開始日・期限日から「日数×8時間」で自動で計算し直す（estimatedHours は送れない）",
   "・status は画面のボタンと同じ動き。レビュー中にして reviewer を指定すると、レビュアーへ通知が届く",
+  "・releaseNotRequired: true（リリース不要・作業のみ）で親チケットはその場でクローズ（リリースノートに出ない）",
+  "・PR不要のリリース待ちは、releaseDate・prLinkWaived を変えてリリース日が今日（日本時間）以前ならクローズ",
 ];
 
 function updateCurlSample(c: SampleContext, key: string, wbs: string): string {

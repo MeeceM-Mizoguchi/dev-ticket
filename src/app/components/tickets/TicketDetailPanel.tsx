@@ -55,6 +55,7 @@ import { CompletionOverlay } from "@/app/components/tickets/CompletionOverlay";
 import { TicketPrSection, type TicketPrState } from "@/app/components/github/TicketPrSection";
 import { PrLinkLeaveDialog } from "@/app/components/github/PrLinkLeaveDialog";
 import { recordMilestoneFromTicketStatus, fetchMilestones } from "@/app/hooks/useProject";
+import { closeAsReleased, isWaivedReleaseDue, waivedReleaseHistoryHtml, type WaivedReleaseTarget } from "@/app/lib/releaseAutoClose";
 import { fireSlackNotify, slackTicketLink } from "@/app/utils/slackNotify";
 import { escStack } from "@/app/lib/escStack";
 import { submitOnEnter } from "@/app/lib/submitKey";
@@ -533,6 +534,10 @@ export function TicketDetailPanel({
   const [showChangeDatePicker, setShowChangeDatePicker] = useState(false);
   const [pendingReleaseDate, setPendingReleaseDate] = useState<string | null>(null);
   const [showUndecidedConfirm, setShowUndecidedConfirm] = useState(false);
+  // リリース不要（作業のみ）のチェック（KAIZEN2611-006）。付けるときは確認を挟む
+  const [releaseNotRequired, setReleaseNotRequired] = useState(ticket?.releaseNotRequired ?? false);
+  const [showReleaseNotRequiredConfirm, setShowReleaseNotRequiredConfirm] = useState(false);
+  const releaseNotRequiredBusyRef = useRef(false);
 
   // 関連PR（BRU13-013）。リリースノートに追加したのにPRが紐付いていないチケットを取り残さないための状態。
   // 判定材料は TicketPrSection が持っているので、そこから上げてもらう
@@ -717,6 +722,7 @@ export function TicketDetailPanel({
         setIsReleaseDateUndecided(t.isReleaseDateUndecided ?? false);
         setIsOperationVerified(t.isOperationVerified ?? false);
         setPrLinkWaived(t.prLinkWaived ?? false);
+        setReleaseNotRequired(t.releaseNotRequired ?? false);
         setPrefixes(t.prefixes ?? []);
       });
   }, []);
@@ -1035,6 +1041,8 @@ export function TicketDetailPanel({
     setIsOperationVerified(ticket.isOperationVerified ?? false);
     // チケットを切り替えたら、前のチケットの案内・離脱確認を持ち越さない
     setPrLinkWaived(ticket.prLinkWaived ?? false);
+    setReleaseNotRequired(ticket.releaseNotRequired ?? false);
+    setShowReleaseNotRequiredConfirm(false);
     setPrState({ ticketId: "", loaded: false, level: "none", pullCount: 0 });
     setPrGuide(false);
     setShowPrLeaveConfirm(false);
@@ -1764,8 +1772,30 @@ export function TicketDetailPanel({
       }
       const dateStr = isReleaseDateUndecided ? "（リリース日未定）" : releaseDate ? `（リリース予定日: ${releaseDate.replace(/-/g, "/")}）` : "";
       await addComment(`<p>対応完了してリリースノートに追加しました${dateStr}</p>`, "status_change", [], newStatus as TicketStatus);
+      // PR不要でリリース日が今日以前なら、その場でクローズにする（KAIZEN2611-006）
+      await closeWaivedIfDueHere({
+        status: newStatus, prLinkWaived, releaseDate: isReleaseDateUndecided ? null : (releaseDate || null),
+        isReleaseDateUndecided,
+      });
       syncSprint();
     })();
+  };
+
+  /**
+   * PR不要・リリース待ち・リリース日が日本時間の今日以前なら、その場でクローズにする（KAIZEN2611-006）。
+   * リリース日の保存・リリースノートへの追加・PR不要のチェックのあとに呼ぶ。判定は releaseAutoClose.ts と共通。
+   * 渡すのは保存した直後の値（state はまだ前の値のことがあるため）
+   */
+  const closeWaivedIfDueHere = async (next: WaivedReleaseTarget) => {
+    if (!ticket || ticket.parentId) return;
+    if (!isWaivedReleaseDue(next)) return;
+    const r = await closeAsReleased(ticket.id, { expectStatus: "waiting-release" });
+    if (!r.ok) return;
+    setStatus("released");
+    setProgress(100);
+    await addComment(waivedReleaseHistoryHtml(next.releaseDate as string), "status_change", [], "released");
+    onUpdated?.();
+    syncSprint();
   };
 
   const handleSaveReleaseDate = async (newDate: string) => {
@@ -1779,6 +1809,46 @@ export function TicketDetailPanel({
       }).eq("id", ticket.id);
     }
     onUpdated?.();
+    await closeWaivedIfDueHere({ status, prLinkWaived, releaseDate: newDate || null, isReleaseDateUndecided: false });
+  };
+
+  /**
+   * 「リリース不要（作業のみ）」のチェック（KAIZEN2611-006）。
+   * 付けるとその場で親チケットをクローズにする（段階に関係なく。確認は呼ぶ前に済ませる）。
+   * 外してもステータスはクローズのまま戻さない（チェックの記録だけ外す）。
+   */
+  const handleSetReleaseNotRequired = async (checked: boolean) => {
+    if (!ticket || ticket.parentId || !isSupabaseEnabled) return;
+    if (releaseNotRequiredBusyRef.current) return;
+    releaseNotRequiredBusyRef.current = true;
+    try {
+      if (!checked) {
+        const { error } = await supabase!.from("sprint_tickets").update({ release_not_required: false }).eq("id", ticket.id);
+        // 列が無い（マイグレーション未適用）ときに黙って効かないと原因が分からない
+        if (error) { showAlert("設定を保存できませんでした"); return; }
+        setReleaseNotRequired(false);
+        await addComment("<p>リリース不要（作業のみ）のチェックを外しました（ステータスはクローズのままです）</p>", "status_change", [], status as TicketStatus);
+        onUpdated?.();
+        return;
+      }
+      // 子チケットが終わっていなければ、画面からクローズにするときと同じ確認で止める。
+      // 段階を飛ばしてクローズにするので、一番厳しい「対応完了」の条件で確かめる
+      const validErr = validateParentStatusChange("done", childTickets);
+      if (validErr) { showAlert(validErr, "変更できません"); return; }
+      const r = await closeAsReleased(ticket.id, { expectStatus: status, extra: { release_not_required: true } });
+      if (!r.ok) {
+        showAlert(r.error ? "設定を保存できませんでした" : "ステータスが直前に変更されたため、クローズにしませんでした。開き直してからもう一度お試しください");
+        return;
+      }
+      setReleaseNotRequired(true);
+      setStatus("released");
+      setProgress(100);
+      await addComment("<p>リリース不要（作業のみ）のため、ステータスを「クローズ」に変更しました</p>", "status_change", [], "released");
+      onUpdated?.();
+      syncSprint();
+    } finally {
+      releaseNotRequiredBusyRef.current = false;
+    }
   };
 
   const handleSetReleaseDateUndecided = async () => {
@@ -2642,6 +2712,8 @@ export function TicketDetailPanel({
             }
             setPrLinkWaived(true);
             onUpdated?.();
+            // リリース待ちでリリース日が今日以前なら、PR不要にした時点でクローズにする（KAIZEN2611-006）
+            await closeWaivedIfDueHere({ status, prLinkWaived: true, releaseDate: releaseDate || null, isReleaseDateUndecided });
             leaveWithoutPrLink();
           }}
           onLeave={leaveWithoutPrLink}
@@ -2657,6 +2729,18 @@ export function TicketDetailPanel({
           zIndex={320}
           onConfirm={async () => { await handleSaveReleaseDate(pendingReleaseDate); setPendingReleaseDate(null); }}
           onClose={() => setPendingReleaseDate(null)}
+        />
+      )}
+      {showReleaseNotRequiredConfirm && (
+        <ConfirmDialog
+          title="リリース不要にする"
+          message="クローズにします。よろしいですか？（リリースノートには表示されません）"
+          confirmLabel="クローズにする"
+          confirmColor="#059669"
+          hasWarningText={false}
+          zIndex={320}
+          onConfirm={async () => { setShowReleaseNotRequiredConfirm(false); await handleSetReleaseNotRequired(true); }}
+          onClose={() => setShowReleaseNotRequiredConfirm(false)}
         />
       )}
       {showUndecidedConfirm && (
@@ -3460,6 +3544,24 @@ export function TicketDetailPanel({
                       )}
                     </div>
                   )}
+                  {/* リリース不要（作業のみ）。親チケットだけ。保留中・取下・クローズのときは出さない。
+                      付けてクローズになったあとは、チェックを外せるよう付いている間だけ出す（KAIZEN2611-006） */}
+                  {!ticket.parentId && canEdit && isSupabaseEnabled
+                    && (releaseNotRequired || !["on-hold", "withdrawn", "released"].includes(status)) && (
+                    <label style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 8, cursor: "pointer" }}
+                      title="資料の更新・調査など、リリースするものが無いチケットに付けます。付けるとクローズになり、リリースノートには出ません">
+                      <input
+                        type="checkbox"
+                        checked={releaseNotRequired}
+                        onChange={e => {
+                          if (e.target.checked) setShowReleaseNotRequiredConfirm(true);
+                          else void handleSetReleaseNotRequired(false);
+                        }}
+                        style={{ accentColor: "#059669", width: 13, height: 13, cursor: "pointer" }}
+                      />
+                      <span style={{ fontSize: 11, color: "#6B7280" }}>このチケットはリリース不要（作業のみ）</span>
+                    </label>
+                  )}
                 </div>
                 <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", opacity: canEdit ? 1 : 0.65, pointerEvents: canEdit ? "auto" : "none" }}>
                   <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>優先度</p>
@@ -3837,7 +3939,12 @@ export function TicketDetailPanel({
                   prLinkWaived={prLinkWaived}
                   guide={prGuide}
                   onStateChange={handlePrStateChange}
-                  onWaiveChange={w => { setPrLinkWaived(w); onUpdated?.(); }}
+                  onWaiveChange={w => {
+                    setPrLinkWaived(w);
+                    onUpdated?.();
+                    // リリース待ちでリリース日が今日以前なら、PR不要にした時点でクローズにする（KAIZEN2611-006）
+                    if (w) void closeWaivedIfDueHere({ status, prLinkWaived: true, releaseDate: releaseDate || null, isReleaseDateUndecided });
+                  }}
                   onLinked={() => onUpdated?.()}
                 />
               </div>
