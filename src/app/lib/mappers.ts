@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, TicketAttachment, BacklogAttachment, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, ClientNote, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare, WbsSheet, WbsStatus, WbsItem, WbsHoliday } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, TicketAttachment, BacklogAttachment, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, ClientNote, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare, WbsSheet, WbsStatus, WbsItem, WbsHoliday, WbsSnapshotMeta } from "@/app/types";
 import { compareWbs } from "@/app/lib/helpers";
 
 // ── ENHA2-032 タスク ──
@@ -244,6 +244,21 @@ export function mapWbsSheet(r: any): WbsSheet {
     sortOrder: r.sort_order ?? 0,
     // 列が無い（SQL 未適用）ときは null。select("*") の行に is_locked のキーがあるかで見分ける
     isLocked: "is_locked" in r ? r.is_locked === true : null,
+    // KAIZEN2611-004 列が無い（SQL 未適用）ときは、バックアップ・アーカイブの操作を出さない
+    backupEnabled: "edit_version" in r,
+    editVersion: Number(r.edit_version ?? 0),
+    archivedAt: r.archived_at ?? null,
+    archivedByName: r.archived_by_name || "",
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapWbsSnapshotMeta(r: any): WbsSnapshotMeta {
+  return {
+    id: r.id, sheetId: r.wbs_sheet_id, takenAt: r.taken_at,
+    kind: r.kind === "before_restore" ? "before_restore" : "daily",
+    // Storage へ移すときに data を空にして storage_path を入れる。storage_path があれば Storage にある
+    inStorage: !!r.storage_path,
   };
 }
 

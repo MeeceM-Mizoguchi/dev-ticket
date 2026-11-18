@@ -4,9 +4,11 @@
 // テーブルと RLS は supabase/add_wbs.sql。可視範囲（公開設定）は RLS が絞るので、
 // ここに組織やメンバーの条件は要らない。「閲覧のみ／編集可」の出し分けは画面側で行う。
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { mapWbsHoliday, mapWbsItem, mapWbsSheet, mapWbsStatus } from "@/app/lib/mappers";
+import { mapWbsHoliday, mapWbsItem, mapWbsSheet, mapWbsSnapshotMeta, mapWbsStatus } from "@/app/lib/mappers";
 import type { WbsImportItem } from "@/app/lib/wbsImport";
-import type { AccessLevel, UserPermissions, WbsHoliday, WbsItem, WbsLevels, WbsSheet, WbsStatus, WbsVisibility } from "@/app/types";
+import type {
+  AccessLevel, UserPermissions, WbsHoliday, WbsItem, WbsLevels, WbsSheet, WbsSnapshotContent, WbsSnapshotMeta, WbsStatus, WbsVisibility,
+} from "@/app/types";
 
 /** 並びの初期間隔。追加は末尾に積み、並べ替えは前後の中点を採る（tasks.sort_order と同じ） */
 export const WBS_SORT_GAP = 1024;
@@ -514,4 +516,141 @@ export async function importWbsItems(input: {
     if (error) { console.error("[wbs] import: insert item tickets failed:", error.message); return false; }
   }
   return true;
+}
+
+
+// ── バックアップ・反映・アーカイブ（KAIZEN2611-004） ─────────
+// 一覧と DB にある中身は画面から直接読む（RLS で、そのWBSを見られる人だけ）。
+// Storage へ移した中身の取り出し・反映・アーカイブは api/wbs/[action].ts を通す（権限は DB の関数が確かめる）。
+
+/** そのWBSのバックアップの一覧（新しい順）。中身は含まない */
+export async function loadWbsSnapshots(sheetId: string): Promise<WbsSnapshotMeta[]> {
+  if (!isSupabaseEnabled || !sheetId) return [];
+  const { data, error } = await supabase!
+    .from("wbs_snapshots").select("id, wbs_sheet_id, taken_at, kind, storage_path").eq("wbs_sheet_id", sheetId)
+    .order("taken_at", { ascending: false })
+    .order("id", { ascending: false });
+  if (error) { console.error("[wbs] load snapshots failed:", error.message); return []; }
+  return (data ?? []).map(mapWbsSnapshotMeta);
+}
+
+/** いまの版の番号（過去の時点の表示を始めたときに覚えておき、反映のときに DB が比べる） */
+export async function loadWbsEditVersion(sheetId: string): Promise<number | null> {
+  if (!isSupabaseEnabled) return null;
+  const { data, error } = await supabase!.from("wbs_sheets").select("edit_version").eq("id", sheetId).maybeSingle();
+  if (error || !data) { console.error("[wbs] load edit version failed:", error?.message); return null; }
+  return Number((data as { edit_version?: number }).edit_version ?? 0);
+}
+
+/** 日付の一覧に出す名前。例「2026/11/10 3:00」「2026/11/17 14:05 反映前に保存」 */
+export function wbsSnapshotLabel(meta: WbsSnapshotMeta): string {
+  const d = new Date(meta.takenAt);
+  const text = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return meta.kind === "before_restore" ? `${text} 反映前に保存` : text;
+}
+
+/** バックアップの中身（DB の jsonb の形）を、画面で表示する形に直す */
+export function parseWbsSnapshotContent(sheetId: string, raw: unknown): WbsSnapshotContent {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const r = (raw ?? {}) as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
+  const links = new Map<string, string[]>();
+  for (const t of arr(r.item_tickets)) {
+    if (!t?.wbs_item_id || !t?.ticket_id) continue;
+    const list = links.get(t.wbs_item_id);
+    if (list) list.push(t.ticket_id); else links.set(t.wbs_item_id, [t.ticket_id]);
+  }
+  return {
+    items: arr(r.items).map(i => mapWbsItem({ ...i, wbs_sheet_id: sheetId })),
+    statuses: arr(r.statuses).map(st => mapWbsStatus({ ...st, wbs_sheet_id: sheetId })),
+    links,
+    holidays: arr(r.holidays).filter(h => h?.holiday_date).map(h => ({ date: String(h.holiday_date), name: String(h.name ?? "") })),
+  };
+}
+
+type WbsApiResult<T> = { ok: true; data: T } | { ok: false; error: string; code?: string; detail?: Record<string, unknown> };
+
+/**
+ * `api/wbs/[action]` を呼ぶ。認証はログイン中ユーザーのアクセストークン。
+ * Vite の開発サーバーは api/ を実行しないため、`npm run dev` ではHTMLが返る（その旨を伝える）。
+ */
+async function postWbsApi<T>(action: "snapshot" | "restore" | "archive" | "unarchive" | "purge", body: unknown): Promise<WbsApiResult<T>> {
+  if (!isSupabaseEnabled) return { ok: false, error: "Supabase が設定されていません" };
+  const { data: { session } } = await supabase!.auth.getSession();
+  if (!session?.access_token) return { ok: false, error: "ログインが必要です" };
+  let res: Response;
+  try {
+    res = await fetch(`/api/wbs/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return { ok: false, error: "サーバーに接続できませんでした" };
+  }
+  const raw = await res.text();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let json: any = null;
+  try { json = raw ? JSON.parse(raw) : null; } catch { /* HTML が返った */ }
+  if (json === null) {
+    return { ok: false, error: "APIサーバーが応答しませんでした。ローカルの開発サーバー（npm run dev）ではAPIが動かないため、デプロイした環境で操作してください" };
+  }
+  if (!res.ok) return { ok: false, error: json?.error || "リクエストに失敗しました", code: json?.code, detail: json };
+  return { ok: true, data: json as T };
+}
+
+/** バックアップの中身を読む。DB にあるものは直接、Storage へ移したものは API から取り出す */
+export async function loadWbsSnapshotContent(meta: WbsSnapshotMeta): Promise<{ ok: true; content: WbsSnapshotContent } | { ok: false; error: string }> {
+  if (!isSupabaseEnabled) return { ok: false, error: "Supabase が設定されていません" };
+  if (!meta.inStorage) {
+    const { data, error } = await supabase!.from("wbs_snapshots").select("data").eq("id", meta.id).maybeSingle();
+    if (error || !data) return { ok: false, error: error?.message || "バックアップが見つかりません" };
+    const raw = (data as { data: unknown }).data;
+    // 一覧を読んだあとに Storage へ移された（data が空になった）ときは、下の API から取り出す
+    if (raw) return { ok: true, content: parseWbsSnapshotContent(meta.sheetId, raw) };
+  }
+  const r = await postWbsApi<{ data: unknown }>("snapshot", { snapshotId: meta.id });
+  if (!r.ok) return { ok: false, error: r.error };
+  return { ok: true, content: parseWbsSnapshotContent(meta.sheetId, r.data.data) };
+}
+
+/** 反映を止めたとき（ほかの人の編集）の、編集した人と時刻 */
+export interface WbsRestoreConflict { editedByName: string; editedAt: string | null }
+
+/**
+ * その時点に戻す（反映）。expectedVersion は表示を始めたときの版の番号。
+ * DB が、版の番号の比較・反映前の保存・戻す処理を1回の処理で行う。
+ */
+export async function restoreWbsSnapshot(snapshotId: string, expectedVersion: number): Promise<
+  { ok: true } | { ok: false; conflict: WbsRestoreConflict } | { ok: false; conflict?: undefined; error: string }
+> {
+  const r = await postWbsApi<{ version: number }>("restore", { snapshotId, expectedVersion });
+  if (r.ok) return { ok: true };
+  if (r.code === "conflict") {
+    return { ok: false, conflict: { editedByName: String(r.detail?.editedByName ?? ""), editedAt: (r.detail?.editedAt as string | null) ?? null } };
+  }
+  return { ok: false, error: r.error };
+}
+
+/** WBSをアーカイブする（中身とバックアップを圧縮して Storage へ移し、一覧から外す） */
+export async function archiveWbsSheet(sheetId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postWbsApi("archive", { sheetId });
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
+}
+
+/** アーカイブから戻す（中身とバックアップの履歴が戻る） */
+export async function unarchiveWbsSheet(sheetId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postWbsApi("unarchive", { sheetId });
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
+}
+
+/**
+ * 削除したWBSの、Storage に残ったファイル（1年たったバックアップ・アーカイブ）を消す。
+ * DB のバックアップは WBS の削除で一緒に消える（on delete cascade）
+ */
+export async function purgeWbsSheetFiles(projectId: string, sheetId: string): Promise<boolean> {
+  const r = await postWbsApi("purge", { projectId, sheetId });
+  if (!r.ok) console.error("[wbs] purge files failed:", r.error);
+  return r.ok;
 }

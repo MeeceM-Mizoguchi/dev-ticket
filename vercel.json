@@ -2,7 +2,8 @@
   "outputDirectory": "dist",
   "ignoreCommand": "node scripts/skip-superseded-build.mjs",
   "crons": [
-    { "path": "/api/github/sync-released", "schedule": "*/15 * * * *" }
+    { "path": "/api/github/sync-released", "schedule": "*/15 * * * *" },
+    { "path": "/api/wbs/cron-backup", "schedule": "0 18 * * *" }
   ],
   "functions": {
     "api/github/[resource].ts": {
@@ -18,6 +19,9 @@
       "maxDuration": 60
     },
     "api/research/[action].ts": {
+      "maxDuration": 60
+    },
+    "api/wbs/[action].ts": {
       "maxDuration": 60
     }
   },

@@ -267,7 +267,7 @@ export const WBS_MANUAL: WbsManualGroup[] = [
         ],
         notes: [
           "同じ名前の WBS は作れません。",
-          "WBS を削除すると、その行・ステータス・チケットの紐づけもすべて消えます（チケット自体は消えません）。元に戻せません。",
+          "WBS を削除すると、その行・ステータス・チケットの紐づけ・バックアップもすべて消えます（チケット自体は消えません）。元に戻せません。使い終えた WBS を残しておきたいときは、削除ではなく「アーカイブ」を使います。",
           "削除できるのは、その WBS を作った人とオーナーです。",
         ],
       },
@@ -728,6 +728,75 @@ export const WBS_MANUAL: WbsManualGroup[] = [
           "「閲覧のみ」の人も、エクスポートできます。",
           "見出し行は、画面と同じように行全体が塗りつぶされます。ステータスの色・遅延の赤・土日休日のグレーも付きます。",
           "画面でたたんでいる行も、すべて出力されます。",
+        ],
+      },
+    ],
+  },
+  {
+    title: "バックアップ",
+    items: [
+      {
+        id: "backup-view",
+        title: "過去の時点を見る・その時点に戻す",
+        lead: "WBS は毎日 3:00 に自動でバックアップされます。日付を選ぶと、その時点の WBS を表示でき、「反映」でその状態に戻せます。",
+        illustration: (
+          <Frame style={{ padding: 10 }}>
+            <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+              <Mark n={1} style={{ top: -8, left: 70 }} />
+              <span style={{ fontSize: 10, color: "#A09790", fontWeight: 700 }}>バックアップ</span><ToolBtn>2026/11/10 3:00　▾</ToolBtn>
+            </div>
+            <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 7 }}>
+              <Mark n={2} style={{ top: -8, right: 92 }} /><Mark n={3} style={{ top: -8, right: 8 }} />
+              <span style={{ fontSize: 10, fontWeight: 700, color: "#1E3A8A" }}>📅 2026/11/10 3:00 時点を表示中（編集できません）</span>
+              <span style={{ flex: 1 }} /><ToolBtn primary>反映</ToolBtn><ToolBtn>今の状態に戻る</ToolBtn>
+            </div>
+          </Frame>
+        ),
+        steps: [
+          "① 上部の「バックアップ」のプルダウンで、見たい日付を選びます。表・ガント・集計が、その時点のデータに切り替わります。",
+          "② 「反映」を押して確認のダイアログで「反映する」を押すと、WBS 全体がその時点の状態に戻ります。",
+          "③ 「今の状態に戻る」を押すと、反映せずに、いつもの編集できる画面に戻ります。",
+        ],
+        notes: [
+          "バックアップは、前日から変更があった WBS だけ取られます。変更が無い日は取られません。手動で保存するボタンはありません。",
+          "表示している間は、セルの入力・行の追加や削除・インポート・ステータス設定・休日設定などの変更はできません。",
+          "反映で戻るのは、行・並び順・ステータスの種類と色・チケットの紐づけ・この WBS だけの休日です。全 WBS で共通の休日・WBS の名前・段数・公開設定・ロックは変わりません。",
+          "反映の直前の状態は、一覧に「反映前に保存」として残ります。それを選んで反映すれば、反映を取り消せます。",
+          "バックアップのあとで削除されたチケットの紐づけは、外れた状態で戻ります。",
+          "表示を始めたあとに、ほかの人がこの WBS を編集していたときは、反映が止まり、編集した人と時刻が表示されます。今の状態を確かめてから、もう一度日付を選んで反映してください。",
+          "ロック中の WBS は反映できません。「今の状態に戻る」を押してから、ロックを解除してください。",
+          "1年たったバックアップは圧縮して別の場所に保管されます。一覧から選ぶと、少し待ってから表示されます。",
+          "日付の一覧と過去の時点の表示は「閲覧のみ」の人も使えます。「反映」は「編集可」の人だけが使えます。",
+        ],
+      },
+      {
+        id: "archive",
+        title: "アーカイブ",
+        lead: "使い終えた WBS を、削除せずに一覧から片付けられます。行・ステータス・チケットの紐づけ・バックアップを圧縮して保管し、いつでも元に戻せます。",
+        editOnly: true,
+        illustration: (
+          <Frame style={{ padding: 10 }}>
+            <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+              <Mark n={1} style={{ top: -8, left: 40 }} /><Mark n={2} style={{ top: -8, left: 128 }} />
+              <ToolBtn>全体計画　▾</ToolBtn><ToolBtn>アーカイブ</ToolBtn>
+            </div>
+            <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", border: BORDER, borderRadius: 7 }}>
+              <Mark n={3} style={{ top: -8, right: 8 }} />
+              <span style={{ fontSize: 10, fontWeight: 700 }}>旧計画</span><span style={{ fontSize: 9, color: "#A09790" }}>アーカイブ：2026/11/18 10:00</span>
+              <span style={{ flex: 1 }} /><ToolBtn>アーカイブから戻す</ToolBtn>
+            </div>
+          </Frame>
+        ),
+        steps: [
+          "① アーカイブした WBS は、WBS を切り替えるプルダウンの一番下の「アーカイブ済み（◯件）」から見られます。",
+          "② 上部の「アーカイブ」を押し、確認のダイアログで「アーカイブする」を押すと、その WBS が一覧から外れます。",
+          "③ 「アーカイブ済み」の画面で「アーカイブから戻す」を押すと、WBS とバックアップの履歴が元に戻ります。",
+        ],
+        notes: [
+          "アーカイブした WBS は、中身を表示できません。見るときは、アーカイブから戻します。",
+          "アーカイブした WBS は、バックアップが取られません。マスタースケジュールにも出ません。",
+          "ロック中の WBS も、アーカイブできます。",
+          "アーカイブ・アーカイブから戻すは、WBS の権限が「編集可」の人が行えます。",
         ],
       },
     ],
