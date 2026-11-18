@@ -1,17 +1,27 @@
 // ENHA2-053 WBS画面の上部の操作列。
 // WBSの切り替え・新規作成・名前変更・削除・段数・公開設定を並べる。
+// KAIZEN2611-004 バックアップの日付の選択（過去の時点の表示）と、アーカイブ・アーカイブ済みの入口も置く。
 import type { ReactNode } from "react";
-import { Plus, Pencil, Trash2, Globe, Lock, BookOpen, Link2, CalendarRange, LockKeyhole, LockKeyholeOpen } from "lucide-react";
-import { WBS_LEVEL_OPTIONS } from "@/app/lib/wbsService";
-import type { WbsLevels, WbsSheet } from "@/app/types";
+import { Plus, Pencil, Trash2, Globe, Lock, BookOpen, Link2, CalendarRange, LockKeyhole, LockKeyholeOpen, Archive, History } from "lucide-react";
+import { WBS_LEVEL_OPTIONS, wbsSnapshotLabel } from "@/app/lib/wbsService";
+import type { WbsLevels, WbsSheet, WbsSnapshotMeta } from "@/app/types";
 import { PickerCell } from "@/app/components/tasks/TaskPickerCell";
 import { wbsToolBtn, wbsToolBtnDisabled, wbsToolLabel } from "./wbsStyles";
 
 /** ロック中に削除ボタンへ出す説明 */
 const LOCKED_DELETE_HINT = "このWBSはロックされているため削除できません。削除する場合はロックを解除してください";
 
-export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onCreate, onRename, onDelete, onLock, onUnlock, onChangeLevels, onOpenVisibility, onOpenManual, onCopyUrl, onOpenMaster, children }: {
+/** WBSを切り替えるプルダウンの、アーカイブ済みの一覧へ移る選択肢の値（WBSの id とは重ならない） */
+const ARCHIVED_OPTION = "__archived__";
+
+export function WbsSheetBar({
+  sheets, current, canEdit, canManage, onSelect, onCreate, onRename, onDelete, onLock, onUnlock, onChangeLevels, onOpenVisibility, onOpenManual, onCopyUrl, onOpenMaster,
+  archivedCount = 0, archivedSelected = false, onOpenArchived, onArchive,
+  snapshots = [], snapshotId = "", snapshotLoadingId = null, onSelectSnapshot, children,
+}: {
+  /** 切り替えの候補（アーカイブしていないWBS） */
   sheets: WbsSheet[];
+  /** 開いているWBS。アーカイブ済みの一覧を開いているときは null */
   current: WbsSheet | null;
   /** WBSの権限が「編集可」か */
   canEdit: boolean;
@@ -33,6 +43,21 @@ export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onC
   onCopyUrl: () => void;
   /** マスタースケジュールの画面へ移る。閲覧のみの人にも出す */
   onOpenMaster: () => void;
+  /** KAIZEN2611-004 アーカイブ済みのWBSの数。1件以上あれば、切り替えのプルダウンの一番下に出す */
+  archivedCount?: number;
+  /** アーカイブ済みの一覧を開いているか */
+  archivedSelected?: boolean;
+  onOpenArchived?: () => void;
+  /** このWBSをアーカイブする（確認は呼び出し側で挟む）。渡さなければボタンを出さない */
+  onArchive?: () => void;
+  /** バックアップの一覧（新しい順）。onSelectSnapshot を渡したときだけ日付の選択を出す */
+  snapshots?: WbsSnapshotMeta[];
+  /** 表示中のバックアップ。"" は今の状態 */
+  snapshotId?: string;
+  /** 中身を読み込み中のバックアップ */
+  snapshotLoadingId?: string | null;
+  /** 日付を選んだ（"" は今の状態に戻る） */
+  onSelectSnapshot?: (id: string) => void;
   /** 右側に足す操作（ステータス設定など） */
   children?: ReactNode;
 }) {
@@ -40,8 +65,12 @@ export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onC
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
       {/* プルダウンはブラウザ標準の <select> ではなく、タスク画面と同じ PickerCell を使う */}
-      <PickerCell variant="chip" value={current?.id ?? ""} onChange={onSelect} title="WBSを切り替える"
-        options={sheets.map(s => ({ value: s.id, label: s.name }))}
+      <PickerCell variant="chip" value={archivedSelected ? ARCHIVED_OPTION : current?.id ?? ""} title="WBSを切り替える"
+        onChange={v => { if (v === ARCHIVED_OPTION) onOpenArchived?.(); else onSelect(v); }}
+        options={[
+          ...sheets.map(s => ({ value: s.id, label: s.name })),
+          ...(archivedCount > 0 ? [{ value: ARCHIVED_OPTION, label: `アーカイブ済み（${archivedCount}件）` }] : []),
+        ]}
         textStyle={{ minWidth: 180, maxWidth: 320, height: 30, padding: "0 10px", fontSize: 12, fontWeight: 700, color: "#1A1714" }} />
 
       {canEdit && current && (
@@ -102,6 +131,32 @@ export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onC
             </span>
           )}
         </>
+      )}
+
+      {/* KAIZEN2611-004 過去の時点の表示。閲覧のみの人にも出す */}
+      {current && onSelectSnapshot && (
+        <>
+          <span style={{ ...wbsToolLabel, marginLeft: 6, display: "inline-flex", alignItems: "center", gap: 3 }}>
+            <History style={{ width: 11, height: 11 }} />バックアップ
+          </span>
+          <span title={snapshots.length === 0 ? "バックアップはまだありません（毎日 3:00 に、前日から変更があったWBSだけ取ります）" : "日付を選ぶと、その時点のWBSを表示します（編集はできません）"}
+            style={{ display: "inline-flex", flexShrink: 0 }}>
+            <PickerCell variant="chip" value={snapshotId} disabled={snapshots.length === 0 || !!snapshotLoadingId} title="バックアップの日付"
+              onChange={onSelectSnapshot}
+              options={[
+                { value: "", label: "今の状態" },
+                ...snapshots.map(s => ({ value: s.id, label: wbsSnapshotLabel(s) })),
+              ]}
+              textStyle={{ minWidth: 120, height: 30, padding: "0 10px", fontSize: 12, color: "#1A1714" }} />
+          </span>
+          {snapshotLoadingId && <span style={{ fontSize: 11, color: "#A09790", whiteSpace: "nowrap" }}>読み込み中...</span>}
+        </>
+      )}
+      {canEdit && current && onArchive && (
+        <button type="button" onClick={onArchive}
+          title="このWBSを圧縮して保管し、一覧から外します（プルダウンの「アーカイブ済み」から戻せます）" style={wbsToolBtn}>
+          <Archive style={{ width: 12, height: 12 }} />アーカイブ
+        </button>
       )}
 
       {children}

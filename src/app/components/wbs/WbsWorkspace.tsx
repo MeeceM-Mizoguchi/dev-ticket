@@ -2,6 +2,8 @@
 //
 // WbsPage がWBSの切り替えと枠を受け持ち、ここは選ばれた1つのWBSの中身を受け持つ。
 // WBSを切り替えたら key で作り直すので、前のWBSの行や選択を持ち越さない。
+// KAIZEN2611-004 snapshot を渡したときは、DB の今の行ではなく、その時点（バックアップ）の中身を表示する。
+// そのときは呼び出し側が canEdit=false で渡すので、変更の操作は出ない。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trash2, Tags, CalendarOff, Download, Upload, FilterX, Maximize2, Minimize2, FolderInput } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -14,7 +16,7 @@ import {
   loadWbsStatuses, removeWbsItemTickets, renumberWbsItems, updateWbsItem,
 } from "@/app/lib/wbsService";
 import { buildWbsGantt, buildWbsRows, siblingsOf, todayStr } from "@/app/lib/wbsCalc";
-import type { Project, WbsHoliday, WbsItem, WbsSheet, WbsStatus } from "@/app/types";
+import type { Project, WbsHoliday, WbsItem, WbsSheet, WbsSnapshotContent, WbsStatus } from "@/app/types";
 import { WbsSummary } from "./WbsSummary";
 import { WbsStatusDialog } from "./WbsStatusDialog";
 import { WbsHolidayDialog } from "./WbsHolidayDialog";
@@ -52,10 +54,12 @@ function readColOrder(userId: string, sheetId: string): WbsColKey[] {
   return [];
 }
 
-export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange, focusItemId = null, onFocusDone }: {
+export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange, focusItemId = null, onFocusDone, snapshot = null }: {
   sheet: WbsSheet;
   project: Project;
   canEdit: boolean;
+  /** KAIZEN2611-004 過去の時点を表示するときの中身。null なら今のデータ */
+  snapshot?: WbsSnapshotContent | null;
   /** そのプロジェクトのチケット（スプリントをまたいだ全件）。紐づけの候補とチップの表示に使う */
   tickets: WbsTicketRef[];
   /** チップを押したとき。WBS画面のままチケット詳細パネルを開く */
@@ -167,6 +171,18 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   }, []);
 
   const load = useCallback(async () => {
+    if (snapshot) {
+      // 全WBSで共通の休日はバックアップに入れていないので今のものを使い、このWBSだけの休日はその時点のものを使う
+      const common = (await loadWbsHolidays(project.id, sheet.id)).filter(h => h.sheetId === null);
+      const own: WbsHoliday[] = snapshot.holidays.map((h, i) => ({ id: `snapshot-${i}`, projectId: project.id, sheetId: sheet.id, date: h.date, name: h.name }));
+      setItems(snapshot.items);
+      setStatuses(snapshot.statuses);
+      setHolidays([...common, ...own].sort((a, b) => a.date.localeCompare(b.date)));
+      setLinks(snapshot.links);
+      initializedRef.current = true;
+      setLoading(false);
+      return;
+    }
     const [its, sts, hols, lks] = await Promise.all([
       loadWbsItems(sheet.id), loadWbsStatuses(sheet.id), loadWbsHolidays(project.id, sheet.id), loadWbsItemTickets(sheet.id),
     ]);
@@ -176,7 +192,7 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     setLinks(lks);
     initializedRef.current = true;
     setLoading(false);
-  }, [sheet.id, project.id]);
+  }, [sheet.id, project.id, snapshot]);
 
   const reloadHolidays = useCallback(async () => { setHolidays(await loadWbsHolidays(project.id, sheet.id)); }, [project.id, sheet.id]);
 
@@ -216,6 +232,8 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     attentionCheckedRef.current = true;
     // マスタースケジュールから行を指定して来たときは出さない（強調した行がお知らせに隠れるので）
     if (focusItemId) return;
+    // 過去の時点を表示しているときは出さない（お知らせは今の状態についてのもの）
+    if (snapshot) return;
     if (attention.delayed.length + attention.notStarted.length === 0) return;
     if (isWbsAttentionDismissed(userId, sheet.id, today)) return;
     setAttentionOpen(true);

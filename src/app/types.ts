@@ -1264,6 +1264,38 @@ export interface WbsSheet {
    * null は列が無い環境（supabase/add_wbs_lock.sql 未適用）。ロックの操作を出さない
    */
   isLocked: boolean | null;
+  /**
+   * KAIZEN2611-004 バックアップ・反映・アーカイブの仕組みがある環境か（supabase/add_wbs_snapshots.sql 適用済み）。
+   * false のときは、バックアップの日付の選択・アーカイブの操作を出さない
+   */
+  backupEnabled: boolean;
+  /** 版の番号。行・ステータス・チケットの紐づけ・このWBSだけの休日を変えるたびに DB が上げる */
+  editVersion: number;
+  /** アーカイブした日時。null ならアーカイブしていない */
+  archivedAt: string | null;
+  archivedByName: string;
+}
+
+/** KAIZEN2611-004 WBSのバックアップ（日付の一覧に出す1件。中身は含まない） */
+export interface WbsSnapshotMeta {
+  id: string;
+  sheetId: string;
+  /** 取った日時（ISO） */
+  takenAt: string;
+  /** daily = 毎日のバックアップ / before_restore = 反映の直前に自動で保存したもの */
+  kind: "daily" | "before_restore";
+  /** Storage へ移したもの（1年たったもの）。中身は API から取り出す */
+  inStorage: boolean;
+}
+
+/** KAIZEN2611-004 バックアップの中身（画面で表示する形） */
+export interface WbsSnapshotContent {
+  items: WbsItem[];
+  statuses: WbsStatus[];
+  /** 行の id → 紐づいていたチケットの id */
+  links: Map<string, string[]>;
+  /** そのWBSだけの休日（全WBSで共通の休日は含まない） */
+  holidays: { date: string; name: string }[];
 }
 
 /** WBSごとのステータス。チケットのステータス（未着手・進行中・レビュー中など）とは別物 */
