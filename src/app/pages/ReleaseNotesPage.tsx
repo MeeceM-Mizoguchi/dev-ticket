@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router";
 import { ChevronLeft, ChevronRight, Info, CheckCircle2, X, GripVertical, FolderKanban } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { closeWaivedIfDue } from "@/app/lib/releaseAutoClose";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { mapSprintTicket, mapProject } from "@/app/lib/mappers";
@@ -205,7 +206,8 @@ export function ReleaseNotesPage() {
 
       if (error) { console.error("[ReleaseNotes] load error:", error.message); return; }
 
-      const mapped: ReleaseItem[] = (data ?? []).map((r: any) => ({
+      // リリース不要（作業のみ）のチケットはリリースノートに出さない（KAIZEN2611-006）
+      const mapped: ReleaseItem[] = (data ?? []).filter((r: any) => r.release_not_required !== true).map((r: any) => ({
         ticket: mapSprintTicket(r),
         sprintId: r.sprints.id,
         projectId: r.sprints.projects.id,
@@ -390,6 +392,17 @@ export function ReleaseNotesPage() {
         ? { ...i, ticket: { ...i.ticket, releaseDate: undecided ? null : targetDate, isReleaseDateUndecided: undecided } }
         : i
       ));
+      // PR不要でリリース日を今日以前にしたら、その場でクローズにする（KAIZEN2611-006。詳細パネルと同じ判定）
+      const item = items.find(i => i.ticket.id === id);
+      if (item && await closeWaivedIfDue(id, {
+        status: item.ticket.status, prLinkWaived: item.ticket.prLinkWaived, parentId: item.ticket.parentId,
+        releaseDate: undecided ? null : targetDate, isReleaseDateUndecided: undecided,
+      }, userName || "システム")) {
+        setItems(prev => prev.map(i => i.ticket.id === id
+          ? { ...i, ticket: { ...i.ticket, status: "released" as const, progress: 100 } }
+          : i
+        ));
+      }
     }
     setPendingDrop(null);
   };

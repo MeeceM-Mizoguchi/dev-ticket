@@ -2074,7 +2074,96 @@ async function runReleaseSync(sb: SupabaseClient, orgId: string | null, res: any
     }
   }
 
-  return res.status(200).json({ ok: true, released, behind, details });
+  // ③ PR不要のチケットは、リリース日が来たらクローズにする（KAIZEN2611-006）。
+  //    GitHub 連携の有無に関係なく回すので、上のプロジェクトの繰り返しとは別に行う。
+  //    失敗しても PR のマージによる反映（①②）の結果は返す
+  let waivedReleased: { wbs: string; title: string }[] = [];
+  try {
+    waivedReleased = await closeWaivedReleases(sb, orgId);
+  } catch (e) {
+    console.error("[github sync-released] waived", (e as Error)?.message);
+  }
+
+  return res.status(200).json({ ok: true, released: released + waivedReleased.length, behind, details, waivedReleased });
+}
+
+/** 日本時間の今日（"2026-11-18"）。UTC の日付で比べると、日本時間の 0:00〜8:59 に1日ずれるため */
+function todayJst(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+}
+
+/** 親チケットのマイルストーンの列（useProject.ts の MILESTONE_ORDER と同じ順） */
+const WAIVED_MILESTONE_COLUMNS = [
+  "started_at", "review_requested_at", "review_approved_at", "stg_completed_at", "uat_completed_at", "released_at",
+] as const;
+
+/**
+ * PR不要・リリース待ち・リリース日が日本時間の今日以前の親チケットをクローズにする（KAIZEN2611-006）。
+ *
+ * PR不要のチケットはPRが紐付いていないので、上の syncProjectReleases（マージ済みのPRで進める）では進まない。
+ * 本番反映の確認（deploy_check_mode = gate）の対象にもしない（確かめるマージコミットが無いため）。
+ * リリース日が「未定」のものは進めない。
+ * 更新は画面からクローズにしたときと同じ（status・progress・まだ空のマイルストーンを今の時刻で埋める）にし、
+ * コメント欄に理由つきの履歴を残す。
+ *
+ * @param orgId 画面からの手動実行ではその組織だけ。定期実行（null）は全組織
+ */
+async function closeWaivedReleases(sb: SupabaseClient, orgId: string | null): Promise<{ wbs: string; title: string }[]> {
+  const today = todayJst();
+
+  let sprintIds: string[] | null = null;
+  if (orgId) {
+    const { data: projects, error: projectsError } = await sb.from("projects").select("id").eq("organization_id", orgId);
+    if (projectsError) throw new Error(projectsError.message);
+    const projectIds = (projects ?? []).map(p => (p as any).id as string);
+    if (!projectIds.length) return [];
+    const { data: sprints, error: sprintsError } = await sb.from("sprints").select("id").in("project_id", projectIds);
+    if (sprintsError) throw new Error(sprintsError.message);
+    sprintIds = (sprints ?? []).map(s => (s as any).id as string);
+    if (!sprintIds.length) return [];
+  }
+
+  let q = sb.from("sprint_tickets")
+    .select(`id, wbs, title, release_date, ${WAIVED_MILESTONE_COLUMNS.join(", ")}`)
+    .eq("status", "waiting-release")
+    .eq("pr_link_waived", true)
+    .is("parent_id", null)
+    .eq("is_release_date_undecided", false)
+    .not("release_date", "is", null)
+    .lte("release_date", today);
+  if (sprintIds) q = q.in("sprint_id", sprintIds);
+  const { data: tickets, error } = await q.order("id", { ascending: true }).limit(500);
+  if (error) throw new Error(error.message);
+  if (!tickets?.length) return [];
+
+  const now = new Date().toISOString();
+  const closed: { id: string; wbs: string; title: string; releaseDate: string }[] = [];
+  for (const t of tickets as any[]) {
+    const patch: Record<string, unknown> = { status: "released", progress: 100 };
+    for (const c of WAIVED_MILESTONE_COLUMNS) if (!t[c]) patch[c] = now;
+    // 条件に status を残す。判定中に人が別のステータスへ動かしていたら上書きしない
+    const { data: updated, error: updateError } = await sb.from("sprint_tickets")
+      .update(patch).eq("id", t.id).eq("status", "waiting-release").select("id");
+    if (updateError) {
+      console.error("[github sync-released] waived", t.wbs, updateError.message);
+      continue;
+    }
+    if (updated?.length) closed.push({ id: t.id, wbs: t.wbs ?? "", title: t.title ?? "", releaseDate: String(t.release_date) });
+  }
+  if (!closed.length) return [];
+
+  // コメント欄の履歴。ステータスは変わっているので、履歴の失敗で全体を落とさない
+  const { error: commentError } = await sb.from("ticket_comments").insert(closed.map(c => ({
+    id: `CMT-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    ticket_id: c.id, user_name: "システム",
+    content: `<p>PR不要・リリース日（${c.releaseDate.slice(5).replace("-", "/")}）到来のためクローズにしました</p>`,
+    ticket_status: "released", comment_type: "status_change", images: [],
+  })));
+  if (commentError) console.error("[github sync-released] waived history", commentError.message);
+
+  return closed.map(c => ({ wbs: c.wbs, title: c.title }));
 }
 
 /**

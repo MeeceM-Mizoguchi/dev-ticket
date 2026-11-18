@@ -993,6 +993,16 @@ async function handleTicketDetail(sb: SupabaseClient, key: ApiKeyRow, query: any
   const categoryNameById = new Map(((categoryRows ?? []) as any[]).map(c => [c.id as string, c.name as string]));
   const wbsById = new Map([...all, ...linkedRows].map(t => [t.id as string, t.wbs as string]));
 
+  // リリース不要（KAIZEN2611-006）。後から足した列（add_release_not_required.sql）なので DETAIL_COLS には入れず別に引く。
+  // 列が無い環境では、チケットの読み取りごと失敗させずに全件 false として返す
+  const releaseNotRequiredIds = new Set<string>();
+  {
+    const { data: rnrRows, error: rnrError } = await sb.from("sprint_tickets").select("id, release_not_required")
+      .in("id", [...all, ...linkedRows].map(t => t.id as string));
+    if (rnrError) console.warn("[api/v1] release_not_required:", rnrError.message);
+    for (const r of (rnrRows ?? []) as any[]) if (r.release_not_required === true) releaseNotRequiredIds.add(r.id as string);
+  }
+
   const toView = (t: any) => {
     const isChild = !!t.parent_id;
     const body = htmlToText(String(t.description ?? ""));
@@ -1039,6 +1049,8 @@ async function handleTicketDetail(sb: SupabaseClient, key: ApiKeyRow, query: any
       updatedAt: t.updated_at ?? null,
       labels: Array.isArray(t.prefixes) ? t.prefixes.filter((p: unknown) => typeof p === "string") : [],
       prLinkWaived: t.pr_link_waived === true,
+      // リリース不要（作業のみ）。true のチケットはクローズ済みで、リリースノートに出ない（KAIZEN2611-006）
+      releaseNotRequired: releaseNotRequiredIds.has(t.id),
       // 本文の下の画像欄の画像だけ（images は本文に貼られた画像も含む）。外す・並べ替えるときに使う
       attachedImages: Array.isArray(t.images) ? t.images.filter((u: unknown) => typeof u === "string" && !!u) : [],
       reviewer: t.reviewer_name || null,
@@ -1711,7 +1723,7 @@ export function sanitizeHtml(html: string): { html: string; removed: number } {
 const UPDATE_KEYS = new Set([
   "wbs", "id", "updatedAt", "title", "labels", "priority", "prLinkWaived", "category", "assignee",
   "startDate", "dueDate", "description", "descriptionHtml", "attachedImages", "actualHours", "actualHoursBreakdown",
-  "releaseDate", "releaseDateUndecided", "operationVerified", "status", "reviewer",
+  "releaseDate", "releaseDateUndecided", "operationVerified", "status", "reviewer", "releaseNotRequired",
 ]);
 /** 本文のHTMLの上限。古い本文には画像が data: のまま埋め込まれているものがあり、Markdown より大きくなる */
 const MAX_DESCRIPTION_HTML_LENGTH = 2_000_000;
@@ -2249,12 +2261,77 @@ export async function handleUpdateTicket(sb: SupabaseClient, key: ApiKeyRow, bod
     }
   }
 
+  // ── リリース不要（作業のみ。KAIZEN2611-006）。true でその場でクローズにする。false はチェックの記録だけ外す ──
+  //    後から足した列（add_release_not_required.sql）なので、送られたときだけ読み書きする
+  let releaseNotRequiredClose = false;
+  if (has("releaseNotRequired")) {
+    if (isChild) {
+      warnings.push("releaseNotRequired は親チケットだけのため無視しました");
+    } else if (typeof b.releaseNotRequired !== "boolean") {
+      warnings.push(`releaseNotRequired「${String(b.releaseNotRequired)}」は true / false ではないため変えていません`);
+    } else {
+      const { data: rnr, error: rnrError } = await sb
+        .from("sprint_tickets").select("release_not_required").eq("id", row.id).maybeSingle();
+      if (rnrError) {
+        return res.status(500).json({ error: `リリース不要の値を読めませんでした（supabase/add_release_not_required.sql が未適用の可能性があります）: ${rnrError.message}` });
+      }
+      const cur = rnr?.release_not_required === true;
+      if (b.releaseNotRequired !== cur) {
+        patch.release_not_required = b.releaseNotRequired;
+        changes.push(`リリース不要 ${cur ? "あり" : "なし"} → ${b.releaseNotRequired ? "あり" : "なし"}`);
+      }
+      if (b.releaseNotRequired === true && nextStatus !== "released") {
+        if (nextStatus === "on-hold" || nextStatus === "withdrawn") {
+          return res.status(409).json({ error: `「${row.wbs}」は${labelOf(nextStatus)}のため、リリース不要にしてクローズにはできません` });
+        }
+        // 子チケットがすべて対応完了していること（画面の validateParentStatusChange と同じ。段を飛ばすので一番厳しい条件）
+        const { data: childRows, error: childError } = await sb
+          .from("sprint_tickets").select("wbs, status").eq("parent_id", row.id);
+        if (childError) return res.status(500).json({ error: childError.message });
+        const blocking = ((childRows ?? []) as any[])
+          .filter(c => c.status !== "withdrawn" && (STATUS_RANK[c.status] ?? 0) < requiredChildRank("released"))
+          .sort((x, y) => compareWbs(x.wbs, y.wbs));
+        if (blocking.length > 0) {
+          return res.status(409).json({
+            error: `子チケット ${blocking.length}件（${blocking.map(c => c.wbs).join(" / ")}）が対応完了していないため、リリース不要にしてクローズにはできません`,
+          });
+        }
+        // リリース不要のクローズは本番反映の確認（gate）の対象にしない（リリースするものが無いため）
+        Object.assign(statusPatch, milestonePatchFor(row, "released", now));
+        statusPatch.status = "released";
+        statusPatch.progress = STATUS_PROGRESS.released;
+        statusText = `ステータス ${labelOf(current)} → クローズ（リリース不要）`;
+        nextStatus = "released";
+        releaseNotRequiredClose = true;
+      }
+    }
+  }
+
   // ── クローズにしたとき、リリース日が空ならクローズにした日（日本時間）を入れる（ticket-status と同じ。KAIZEN2611-005） ──
-  if (closingNow && !row.release_date && !("release_date" in patch) && patch.is_release_date_undecided !== true) {
+  //    リリース不要でクローズにしたときは入れない（リリースノートに出さないため。KAIZEN2611-006）
+  if (closingNow && !releaseNotRequiredClose && b.releaseNotRequired !== true
+    && !row.release_date && !("release_date" in patch) && patch.is_release_date_undecided !== true) {
     const d = todayJst();
     patch.release_date = d;
     patch.is_release_date_undecided = false;
     changes.push(`リリース日 ${row.is_release_date_undecided ? "未定" : "未設定"} → ${historyDate(d)}`);
+  }
+
+  // ── PR不要のチケットは、リリース日が今日（日本時間）以前ならその場でクローズにする（KAIZEN2611-006） ──
+  //    releaseDate・prLinkWaived を変えたときに、変えたあとの値で判定する（画面のリリース日の保存・PR不要のチェックと同じ）。
+  //    リリース日が未定のものは進めない。本番反映の確認（gate）の対象にしない（確かめるマージコミットが無いため）
+  if (!isChild && (has("releaseDate") || has("prLinkWaived")) && nextStatus === "waiting-release") {
+    const waived = "pr_link_waived" in patch ? patch.pr_link_waived === true : row.pr_link_waived === true;
+    const relDate = ("release_date" in patch ? patch.release_date : row.release_date) as string | null;
+    const undecided = "is_release_date_undecided" in patch ? patch.is_release_date_undecided === true : row.is_release_date_undecided === true;
+    if (waived && !undecided && relDate && relDate <= todayJst()) {
+      Object.assign(statusPatch, milestonePatchFor(row, "released", now));
+      statusPatch.status = "released";
+      statusPatch.progress = STATUS_PROGRESS.released;
+      statusText = `ステータス ${labelOf(current)} → クローズ`;
+      changes.push(`PR不要・リリース日（${historyDate(relDate)}）到来のためクローズにしました`);
+      nextStatus = "released";
+    }
   }
 
   // ── 動作確認済み（親がリリース済みのときだけ） ──
