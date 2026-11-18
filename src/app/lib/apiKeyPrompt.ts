@@ -158,7 +158,8 @@ const ACTUAL_TABLE_ROWS = `
 /** 実績の書き方の指示。親向け・子向けの2つの手順書で同じものを使う */
 const ACTUAL_NOTE = `
 - **完了済みの作業を後から登録するときは、\`status\` を「クローズ」にし、分かる範囲で \`actualHours\`・\`startedAt\`・\`completedAt\` を入れる。**根拠が無ければ省略する（推測で埋めない）。
-- \`completedAt\` は \`startedAt\` より前にしない。クローズ以外のステータスで \`completedAt\` を送っても登録されない（\`warnings\` に出る）。`;
+- \`completedAt\` は \`startedAt\` より前にしない。クローズ以外のステータスで \`completedAt\` を送っても登録されない（\`warnings\` に出る）。
+- 親チケットをクローズで登録すると、\`completedAt\` の日（無ければ登録した日。日本時間）がリリース日に入る。`;
 
 /**
  * 既存チケットの修正（POST /api/v1/ticket-update。ENHA2-057）で送れる項目と決まりごと。
@@ -183,7 +184,7 @@ const TICKET_UPDATE_FIELDS_SPEC = `### 修正で送れる項目（送った項�
 | prLinkWaived | true / false | PR不要 |
 | actualHours | 実績工数（時間・小数第1位まで） | 子チケットは \`null\` で自動計測に戻る |
 | actualHoursBreakdown | 親チケットの工程ごとの実績（5つの数値の配列：着手→レビュー依頼／レビュー依頼→承認／承認→STG／STG→UAT／UAT→リリース） | 送ると合計が実績工数になる |
-| releaseDate / releaseDateUndecided | \`YYYY/MM/DD\` ／ true | リリース待ちのときだけ |
+| releaseDate / releaseDateUndecided | \`YYYY/MM/DD\` ／ true | リリース待ちのとき、または status をクローズにするときだけ。クローズにしてリリース日が空なら、その日（日本時間）が入る |
 | operationVerified | true / false | 親がクローズ（リリース済み）のときだけ |
 | status | 未着手 / 進行中 / レビュー中 / レビュー完了 / STG完了 / UAT完了 / リリース待ち / クローズ（親）、未着手 / 進行中 / 対応完了（子）、保留 / 保留解除 / 取下 / 取下解除 | 画面のボタンと同じ動き（後ろへ戻す・未着手に戻すこともできる） |
 | reviewer | レビュアーの名前 | status を「レビュー中」にするときだけ。画面と同じくレビュアーへ依頼の通知が届く |

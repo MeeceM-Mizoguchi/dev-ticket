@@ -138,6 +138,16 @@ function jstStartOfDay(date: string): string {
   return `${date}T00:00:00+09:00`;
 }
 
+/**
+ * 日本時間の今日（"2026-11-18"）。クローズにした日をリリース日として入れるときに使う（KAIZEN2611-005）。
+ * new Date().toISOString().slice(0, 10) は UTC の日付になり、日本時間の 0:00〜8:59 は前日になるため使わない。
+ */
+function todayJst(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+}
+
 /** parseDate の結果が実在する日か（"2026-02-31" のような日は DB が受け付けず、登録全体が失敗するため） */
 function isRealDate(date: string): boolean {
   const [y, m, d] = date.split("-").map(Number);
@@ -1140,7 +1150,7 @@ async function handleUpdateStatus(sb: SupabaseClient, key: ApiKeyRow, body: any,
   }
 
   const found = await lookupTicket(sb, key, { wbs, id },
-    `id, wbs, title, status, sprint_id, parent_id, ${MILESTONE_COLUMNS.join(", ")}`);
+    `id, wbs, title, status, sprint_id, parent_id, release_date, is_release_date_undecided, ${MILESTONE_COLUMNS.join(", ")}`);
   if (!found.ok) return res.status(found.status).json({ error: found.error });
   const row = found.row;
   const isChild = !!row.parent_id;
@@ -1220,6 +1230,16 @@ async function handleUpdateStatus(sb: SupabaseClient, key: ApiKeyRow, body: any,
     }
   }
 
+  // クローズにしたとき（gate でリリース待ちにとどめたときも）、リリース日が空ならクローズにした日（日本時間）を入れる。
+  // リリースノートはリリース日の無いチケットを出さないため（KAIZEN2611-005）。入っている日付は上書きしない。
+  // 子チケットの「対応完了」には入れない（リリースノートは親の単位で見るため）
+  let releaseDateSet: string | null = null;
+  if (!isChild && requested === "released" && !row.release_date) {
+    releaseDateSet = todayJst();
+    patch.release_date = releaseDateSet;
+    patch.is_release_date_undecided = false;
+  }
+
   // 条件に元のステータスを入れておく。読んでから書くまでの間に人が画面で動かしていたら上書きしない
   const { data: updated, error: updateError } = await sb
     .from("sprint_tickets").update(patch).eq("id", row.id).eq("status", current).select("id");
@@ -1235,7 +1255,7 @@ async function handleUpdateStatus(sb: SupabaseClient, key: ApiKeyRow, body: any,
     id: newCommentId(), ticket_id: row.id, user_name: actor,
     content: isChild
       ? (target === "closed" ? `<p>対応完了しました（${via}）</p>` : `<p>着手開始しました（${via}）</p>`)
-      : `<p>${via}：ステータスを「${toLabel}」に変更しました</p>`,
+      : `<p>${via}：ステータスを「${toLabel}」に変更しました${releaseDateSet ? `、リリース日 ${row.is_release_date_undecided ? "未定" : "未設定"} → ${historyDate(releaseDateSet)}` : ""}</p>`,
     ticket_status: target, comment_type: "status_change", images: [],
   }];
 
@@ -2196,10 +2216,14 @@ export async function handleUpdateTicket(sb: SupabaseClient, key: ApiKeyRow, bod
     }
   }
 
-  // ── リリース予定日・未定（リリース待ちのときだけ。ステータスを変えたあとの値で判定する） ──
+  // このリクエストで親をクローズにしたか（gate でリリース待ちにとどめたときも含む）。KAIZEN2611-005
+  const closingNow = !isChild && statusOp?.kind === "set" && statusOp.target === "released" && "status" in statusPatch;
+
+  // ── リリース予定日・未定（リリース待ちのときだけ。ステータスを変えたあとの値で判定する）。
+  //    クローズにするリクエストで一緒に送られたときも受け付ける（送られた日付を優先する） ──
   if (has("releaseDate") || has("releaseDateUndecided")) {
-    if (nextStatus !== "waiting-release") {
-      warnings.push("releaseDate・releaseDateUndecided は、リリース待ちのときだけ変えられます。無視しました");
+    if (nextStatus !== "waiting-release" && !closingNow) {
+      warnings.push("releaseDate・releaseDateUndecided は、リリース待ちのとき（または status をクローズにするとき）だけ変えられます。無視しました");
     } else if (b.releaseDateUndecided === true) {
       if (has("releaseDate") && given(b.releaseDate)) {
         return res.status(400).json({ error: "releaseDate と releaseDateUndecided: true は一緒に送れません（どちらか一方にしてください）" });
@@ -2223,6 +2247,14 @@ export async function handleUpdateTicket(sb: SupabaseClient, key: ApiKeyRow, bod
     } else if (typeof b.releaseDateUndecided !== "boolean") {
       warnings.push(`releaseDateUndecided「${String(b.releaseDateUndecided)}」は true / false ではないため変えていません`);
     }
+  }
+
+  // ── クローズにしたとき、リリース日が空ならクローズにした日（日本時間）を入れる（ticket-status と同じ。KAIZEN2611-005） ──
+  if (closingNow && !row.release_date && !("release_date" in patch) && patch.is_release_date_undecided !== true) {
+    const d = todayJst();
+    patch.release_date = d;
+    patch.is_release_date_undecided = false;
+    changes.push(`リリース日 ${row.is_release_date_undecided ? "未定" : "未設定"} → ${historyDate(d)}`);
   }
 
   // ── 動作確認済み（親がリリース済みのときだけ） ──
@@ -2600,6 +2632,9 @@ async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any
     ...(t.actualHours !== null ? { actual_work_hours: t.actualHours } : {}),
     ...(t.startedAt ? { started_at: jstStartOfDay(t.startedAt) } : {}),
     ...(t.completedAt ? { released_at: jstStartOfDay(t.completedAt) } : {}),
+    // 親をクローズで登録するときは、完了日（無ければ登録した日。日本時間）をリリース日に入れる（KAIZEN2611-005）。
+    // 子には入れない。指定の無い行は上と同じく null（＝未設定）で送られる
+    ...(parentId === null && t.status === "closed" ? { release_date: t.completedAt ?? todayJst() } : {}),
   });
 
   // created は入力順（tickets の並び）で返す
