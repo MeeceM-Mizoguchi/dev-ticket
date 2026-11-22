@@ -1724,21 +1724,27 @@ export default async function handler(req: any, res: any) {
           }
 
           if (src?.trashed) throw new Error("ゴミ箱に入っているファイルです");
-          // フォルダは Picker で選べないが、URL貼り付けからは届きうる。
-          // DevTicket 側のフォルダとは別物なので、階層ごとの取り込みは行わない
-          if (String(src?.mimeType) === FOLDER_MIME) {
+          // フォルダは、元のフォルダのまま追加するとき（linkOnly）だけ、1行のリンクとして登録する（KAIZEN2611-007）。
+          // クリックすると Googleドライブでそのフォルダが開き、中の階層は Googleドライブの画面で辿る。
+          // ★ DevTicket 側のフォルダとは別物なので、階層ごとの取り込みは行わない
+          //   （drive.file スコープでは、Picker で選んだフォルダでも中の一覧は読めない）。
+          //   コピーして追加する経路では、フォルダはコピーできないので今まで通り断る。
+          const isFolder = String(src?.mimeType) === FOLDER_MIME;
+          if (isFolder && !linkOnly) {
             throw new Error("フォルダは追加できません（中のファイルを選んでください）");
           }
 
-          const drawio = isDrawio(src ?? {});
+          // フォルダの名前が .drawio で終わっていても draw.io の図としては扱わない
+          const drawio = !isFolder && isDrawio(src ?? {});
           const inFolder = Array.isArray(src?.parents) && src.parents.includes(folderId);
           let fileId = String(src.id);
           let webViewLink = String(src.webViewLink ?? "");
           // Google形式（スプシ・ドキュメント・スライド）だけは拡張子を持たない。
           // それ以外は Drive 上の名前をそのまま使う（.xlsx / .pdf などの拡張子ごと）
           const googleKind = Object.keys(MIME).find(k => MIME[k] === src.mimeType) ?? null;
+          // フォルダは Drive 上の名前のまま（拡張子は付けない）
           const named = sanitizeFileName(label)
-            || DEFAULT_NAME[drawio ? "drawio" : (googleKind ?? "")] || "無題のファイル";
+            || (isFolder ? "無題のフォルダ" : DEFAULT_NAME[drawio ? "drawio" : (googleKind ?? "")]) || "無題のファイル";
           // MIME だけで draw.io と判定したファイルは拡張子が無いことがあるので付ける
           // （コピーの名前にもなるので、Drive 上でも draw.io の図だと分かるようになる）
           const name = nextFreeName(drawio ? withDrawioExt(named) : named, taken);
@@ -1786,8 +1792,8 @@ export default async function handler(req: any, res: any) {
             folder_path: "",
             file_name: name,
             // Google形式のファイルはサイズを持たない（Drive が size を返さない）ので 0 のまま。
-            // Office文書・PDF などは一覧でサイズを出せるよう、Drive の値を入れておく
-            file_size: Number(src.size ?? 0) || 0,
+            // Office文書・PDF などは一覧でサイズを出せるよう、Drive の値を入れておく。フォルダは 0
+            file_size: isFolder ? 0 : (Number(src.size ?? 0) || 0),
             // draw.io の図は MIME がまちまち（octet-stream 等）なので揃える。
             // 画面側は file_type で種別を見分けている（projectFiles.ts の getFileKind）
             file_type: drawio ? DRAWIO_MIME : String(src.mimeType),

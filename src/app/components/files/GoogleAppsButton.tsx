@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import {
-  ChevronDown, FileSpreadsheet, FileText, Presentation, Workflow, Loader2, AlertTriangle, FolderInput, Link2,
+  ChevronDown, FileSpreadsheet, FileText, Presentation, Workflow, Loader2, AlertTriangle, FolderInput, FolderSymlink, Link2,
 } from "lucide-react";
 import { escStack } from "@/app/lib/escStack";
 import { openPendingTab } from "@/app/lib/pendingTab";
@@ -13,7 +13,7 @@ import {
   createGoogleFile, importGoogleFiles, startGoogleOAuth, myDriveWarningKey, DRAWIO_OPEN_HINT,
   type GoogleDriveProjectConfig,
 } from "@/app/lib/googleDrive";
-import { pickGoogleFiles, parseGoogleFileUrl } from "@/app/lib/googlePicker";
+import { pickGoogleFiles, pickGoogleFolders, parseGoogleFileUrl } from "@/app/lib/googlePicker";
 import { GOOGLE_CREATE_LABEL, KIND_COLOR, type GoogleCreateKind } from "@/app/lib/projectFiles";
 
 // ファイルボックスの「Googleアプリ」ボタン（docs/google-drive-integration-design.md 5.1）
@@ -22,6 +22,8 @@ import { GOOGLE_CREATE_LABEL, KIND_COLOR, type GoogleCreateKind } from "@/app/li
 //   ・スプレッドシート / ドキュメント / スライド / draw.io の図を新規作成して別タブで開く
 //   ・もともと Drive にあるファイルを追加する（Picker で選ぶ / URL を貼る）
 //     種別は問わない。Office文書・PDF・画像なども追加でき、どれも Drive で開く
+//   ・Drive のフォルダを、元のフォルダのまま1行のリンクとして追加する（Picker で選ぶ / URL を貼る。KAIZEN2611-007）
+//     クリックすると Googleドライブでそのフォルダが開く。中の階層は Googleドライブの画面で辿る
 
 const ITEMS: { kind: GoogleCreateKind; icon: typeof FileSpreadsheet; color: string }[] = [
   { kind: "spreadsheet", icon: FileSpreadsheet, color: KIND_COLOR.gsheet },
@@ -38,7 +40,11 @@ type Action =
   /** Picker で選んで追加する */
   | { type: "pick" }
   /** 貼られた URL のファイルを追加する（Picker で1回 Select してもらう） */
-  | { type: "url"; fileId: string };
+  | { type: "url"; fileId: string }
+  /** フォルダを Picker で選んで、リンクとして追加する */
+  | { type: "pickFolder" }
+  /** 貼られた URL のフォルダを、リンクとして追加する（Picker で1回 Select してもらう） */
+  | { type: "urlFolder"; folderId: string };
 
 // トーストが画面を埋めないよう、先頭数件だけ出して残りは件数で伝える
 function summarize(items: string[], head = 3): string {
@@ -62,10 +68,10 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState<GoogleCreateKind | null>(null);
   const [importing, setImporting] = useState(false);
-  // Picker を閉じた後、サーバーで追加している間だけ true。
+  // Picker を閉じた後、サーバーで追加している間だけ値を持つ（ぐるぐるの文言に使う）。
   // importing は Picker を開いている間も true なので、大きなぐるぐるの表示には使えない
   // （Picker の手前に幕が来て操作を塞いでしまう）。
-  const [savingImport, setSavingImport] = useState(false);
+  const [savingImport, setSavingImport] = useState<"file" | "folder" | null>(null);
   // 個人ドライブの注意モーダル。作成・追加の「前」に挟む
   const [pending, setPending] = useState<Action | null>(null);
   const [dontShowAgain, setDontShowAgain] = useState(false);
@@ -164,18 +170,23 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
     }
   }, [handleError]);
 
-  /** 追加のしかたを選んだあと、選ばれたファイルを追加する */
-  const runSave = useCallback(async (picked: string[], asLink: boolean) => {
+  /**
+   * 追加のしかたを選んだあと、選ばれたファイルを追加する。
+   * @param folder フォルダをリンクとして追加するとき true（asLink も true で呼ぶ）。完了の文言だけが変わる
+   */
+  const runSave = useCallback(async (picked: string[], asLink: boolean, folder = false) => {
     if (busyRef.current) return;
     busyRef.current = true;
     setChooseFor(null);
-    setSavingImport(true);
+    setSavingImport(folder ? "folder" : "file");
     try {
       const res = await importGoogleFiles(projectId, picked, parentId, asLink);
 
       if (res.imported.length > 0) {
         const copied = res.imported.filter(i => i.copied).length;
-        toast(asLink
+        toast(folder
+          ? `${res.imported.length} 件のフォルダを追加しました。開けるかどうかは Googleドライブ側の共有設定で決まります`
+          : asLink
           ? `${res.imported.length} 件を元のファイルのまま追加しました。開けるかどうかは Googleドライブ側の共有設定で決まります`
           : copied > 0
             ? `${res.imported.length} 件を追加しました。うち ${copied} 件は保存先の外にあったためコピーして追加しました。元のファイルは残っているので、今後は DevTicket 側のファイルを編集してください`
@@ -192,17 +203,41 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
       await handleError(e, "追加に失敗しました");
     } finally {
       busyRef.current = false;
-      setSavingImport(false);
+      setSavingImport(null);
     }
   }, [projectId, parentId, onCreated, toast, handleError]);
+
+  /**
+   * Drive のフォルダを選んで、リンクとして追加する（KAIZEN2611-007）。
+   * フォルダはコピーできないので「追加のしかたを選ぶ」は出さず、元のフォルダのまま追加する
+   * （external_linked = true。コピーしない・メンバーに権限を配らない）。
+   * @param folderIds URL から取り出したID。指定するとそのフォルダを Picker の最初のタブに出す
+   */
+  const runImportFolders = useCallback(async (folderIds?: string[]) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setImporting(true);
+    let picked: string[] = [];
+    try {
+      picked = await pickGoogleFolders(folderIds);
+    } catch (e) {
+      await handleError(e, "追加に失敗しました");
+    } finally {
+      busyRef.current = false;
+      setImporting(false);
+    }
+    if (picked.length > 0) await runSave(picked, true, true);
+  }, [handleError, runSave]);
 
   const closeChoose = useCallback(() => setChooseFor(null), []);
 
   const runAction = useCallback((a: Action) => {
     if (a.type === "create") void runCreate(a.kind);
     else if (a.type === "pick") void runImport();
-    else void runImport([a.fileId]);
-  }, [runCreate, runImport]);
+    else if (a.type === "url") void runImport([a.fileId]);
+    else if (a.type === "pickFolder") void runImportFolders();
+    else void runImportFolders([a.folderId]);
+  }, [runCreate, runImport, runImportFolders]);
 
   /** 個人ドライブ運用のときは、所有者が個人になることを先に知らせてから実行する */
   const request = useCallback((a: Action) => {
@@ -237,16 +272,19 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   const closeUrlDialog = useCallback(() => setUrlOpen(false), []);
 
   const submitUrl = useCallback(() => {
-    const id = parseGoogleFileUrl(urlText);
-    if (!id) {
-      setUrlError("GoogleドライブのファイルのURLを貼り付けてください（例: https://drive.google.com/file/d/… / https://docs.google.com/spreadsheets/d/…）");
+    const target = parseGoogleFileUrl(urlText);
+    if (!target) {
+      setUrlError("Googleドライブのファイルかフォルダの URL を貼り付けてください（例: https://drive.google.com/file/d/… / https://docs.google.com/spreadsheets/d/… / https://drive.google.com/drive/folders/…）");
       return;
     }
     setUrlOpen(false);
-    request({ type: "url", fileId: id });
+    // フォルダはリンクとしてだけ追加できる（「追加のしかたを選ぶ」は出さない）
+    request(target.type === "folder"
+      ? { type: "urlFolder", folderId: target.id }
+      : { type: "url", fileId: target.id });
   }, [urlText, request]);
 
-  const busy = creating !== null || importing || savingImport;
+  const busy = creating !== null || importing || savingImport !== null;
 
   const menuItemStyle = {
     display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "8px 10px",
@@ -261,8 +299,9 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
       {/* 作成中・追加の保存中は、画面の真ん中に大きなぐるぐるを出す */}
-      {(creating !== null || savingImport) && (
-        <BlockingSpinner label={creating !== null ? `${GOOGLE_CREATE_LABEL[creating]}を作成しています` : "ファイルを追加しています"} />
+      {(creating !== null || savingImport !== null) && (
+        <BlockingSpinner label={creating !== null ? `${GOOGLE_CREATE_LABEL[creating]}を作成しています`
+          : savingImport === "folder" ? "フォルダを追加しています" : "ファイルを追加しています"} />
       )}
       <button onClick={() => setOpen(v => !v)} disabled={busy}
         style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#EFF6FF", color: "#1D4ED8", border: "1px solid #BFDBFE", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: busy ? "wait" : "pointer" }}>
@@ -302,6 +341,12 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
             </span>
             URLを貼って追加
           </button>
+          <button role="menuitem" onClick={() => request({ type: "pickFolder" })} style={menuItemStyle} {...hover}>
+            <span style={{ width: 24, height: 24, borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#EFF6FF" }}>
+              <FolderSymlink style={{ width: 13, height: 13, color: "#2563EB" }} />
+            </span>
+            Driveのフォルダをリンクで追加
+          </button>
 
           <p style={{ margin: "6px 8px 4px", fontSize: 10.5, color: "#B0A9A4", lineHeight: 1.6 }}>
             {drive.mode === "shared_drive"
@@ -310,6 +355,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
             <br />既存のファイルは、保存先へコピーして追加するか、
             <br />コピーせず元のファイルのまま追加するかを選べます。
             <br />Excel・PDF なども追加できます（開くときはGoogleドライブが開きます）。
+            <br />フォルダはリンクとして追加され、Googleドライブで開きます。
           </p>
         </div>
       )}
@@ -332,7 +378,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
             </button>
           </>}>
           <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 6 }}>
-            GoogleドライブのファイルのURL
+            Googleドライブのファイル・フォルダの URL
           </label>
           <input
             type="url"
@@ -349,8 +395,9 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
           {/* URL だけではアプリがファイルを読めない（drive.file の仕様）ので、
               次の画面で Select を押してもらう理由を先に伝えておく */}
           <p style={{ margin: "8px 0 0", fontSize: 11, color: "#A09790", lineHeight: 1.7 }}>
-            「次へ」を押すとGoogleの画面にそのファイルが表示されるので、「Select」を押してください。
+            「次へ」を押すとGoogleの画面にそのファイル（フォルダ）が表示されるので、「Select」を押してください。
             DevTicketがそのファイルを扱うための確認です。
+            フォルダの URL（https://drive.google.com/drive/folders/…）を貼ると、そのフォルダをリンクとして追加します。
           </p>
         </DialogShell>,
         document.body,

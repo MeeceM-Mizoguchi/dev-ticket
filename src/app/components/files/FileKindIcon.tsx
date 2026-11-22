@@ -78,6 +78,21 @@ interface Props {
 }
 
 export function FileKindIcon({ kind, fallback: Fallback, fallbackColor }: Props) {
+  // Googleドライブのフォルダ（KAIZEN2611-007）。書類ではないのでフォルダの形にし、
+  // 中に Drive の三角を白抜きで入れて、DevTicket 側のフォルダ（オレンジの線のアイコン）と見分ける
+  if (kind === "gfolder") {
+    const color = "#5F6368";
+    return (
+      <span role="img" aria-label="Googleドライブのフォルダ" title="Googleドライブのフォルダ"
+        style={{ ...BOX, background: `${color}1F` }}>
+        <svg width="18" height="15" viewBox="0 0 20 16" aria-hidden="true">
+          <path d="M2 0.5h5.2l2 2H18a2 2 0 0 1 2 2V14a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V2.5a2 2 0 0 1 2-2z" fill={color} />
+          <path d="M10 6.2l3 5.2H7z" fill="none" stroke="#fff" strokeWidth="1.2" strokeLinejoin="round" />
+        </svg>
+      </span>
+    );
+  }
+
   const office = OFFICE[kind];
   if (office) {
     return (

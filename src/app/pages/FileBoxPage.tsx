@@ -230,6 +230,8 @@ const KIND_ICON = {
   powerpoint: Presentation, image: FileImage, text: FileText, other: FileIcon,
   // Googleドライブ上のファイル（別タブで開く）
   gsheet: FileSpreadsheet, gdoc: FileText, gslide: Presentation, drawio: Workflow,
+  // Googleドライブのフォルダ（リンクとして追加したもの。KAIZEN2611-007）
+  gfolder: Folder,
 } as const;
 
 function formatDateTime(d: string) {
@@ -1556,13 +1558,16 @@ export function FileBoxPage() {
                     );
                   })()}
                   {/* Googleドライブ上のファイルは storage に実体が無いので、Drive から直接落とす。
-                      Google形式だけは元の形式が無いため Office形式へ書き出す */}
-                  <button onClick={e => { e.stopPropagation(); isGoogle ? handleExportGoogle(f) : handleDownload(f); }}
-                    title={kind === "gsheet" || kind === "gdoc" || kind === "gslide"
-                      ? "Office形式でダウンロード" : "ダウンロード"}
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
-                    <Download style={{ width: 13, height: 13 }} />
-                  </button>
+                      Google形式だけは元の形式が無いため Office形式へ書き出す。
+                      Googleドライブのフォルダはファイルとして落とせないので出さない（KAIZEN2611-007） */}
+                  {kind !== "gfolder" && (
+                    <button onClick={e => { e.stopPropagation(); isGoogle ? handleExportGoogle(f) : handleDownload(f); }}
+                      title={kind === "gsheet" || kind === "gdoc" || kind === "gslide"
+                        ? "Office形式でダウンロード" : "ダウンロード"}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                      <Download style={{ width: 13, height: 13 }} />
+                    </button>
+                  )}
                   {/* ドラッグせずに、移動先のフォルダを選んで移す（BRU22-001） */}
                   <button onClick={e => { e.stopPropagation(); setMoveTarget(f); }} title="移動" aria-label="移動"
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
