@@ -97,18 +97,31 @@ export async function pickSharedFolder(): Promise<PickedFolder | null> {
   });
 }
 
+/** Picker で選ばれたもの。フォルダはリンクとしてだけ追加できる（KAIZEN2611-007） */
+export interface PickedDriveItem {
+  id: string;
+  isFolder: boolean;
+}
+
+const FOLDER_MIME = "application/vnd.google-apps.folder";
+
 /**
- * 既存の Driveファイルを選ばせる（ファイルボックスへの取り込み用）。
+ * 既存の Driveファイル・フォルダを選ばせる（ファイルボックスへの取り込み用）。
  *
  * ★ Picker で選ぶこと自体が、drive.file でそのファイルを扱うための許可になる。
  *   選ばれていないファイルは、IDが分かっていてもサーバーから 404 になる。
  *
- * @param fileIds 指定すると、そのファイルだけを表示する（URL を貼って追加する経路）。
- *   URL だけではアプリがファイルに触れないので、貼られたファイルを Picker に出して
+ * ★ フォルダも選べる（KAIZEN2611-007）。フォルダは元のフォルダのまま1行のリンクとして追加し、
+ *   クリックすると Googleドライブでそのフォルダが開く。drive.file スコープでは、
+ *   ここでフォルダを選んでも中のファイルの一覧は読めないため、中身は Googleドライブの画面で辿ってもらう。
+ *
+ * @param ids 指定すると、そのファイル（フォルダ）を表示する（URL を貼って追加する経路）。
+ *   URL だけではアプリがファイルに触れないので、貼られたものを Picker に出して
  *   1回 Select してもらい、許可を得る。
- * @returns 選ばれたファイルのID。キャンセルされたら空配列
+ * @param folder ids がフォルダの URL から取り出したものなら true
+ * @returns 選ばれたもの。キャンセルされたら空配列
  */
-export async function pickGoogleFiles(fileIds?: string[]): Promise<string[]> {
+export async function pickGoogleFiles(ids?: string[], folder = false): Promise<PickedDriveItem[]> {
   const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
   if (!apiKey) throw new Error("VITE_GOOGLE_API_KEY が設定されていません");
 
@@ -116,117 +129,67 @@ export async function pickGoogleFiles(fileIds?: string[]): Promise<string[]> {
   const picker = window.google?.picker;
   if (!picker) throw new Error("Google Picker を利用できません");
 
-  return new Promise<string[]>(resolve => {
+  return new Promise<PickedDriveItem[]>(resolve => {
     const builder = new picker.PickerBuilder()
       .setOAuthToken(accessToken)
       .setDeveloperKey(apiKey)
-      .setCallback((data: { action: string; docs?: { id: string }[] }) => {
+      .setCallback((data: { action: string; docs?: { id: string; mimeType?: string; type?: string }[] }) => {
         if (data.action === picker.Action.PICKED) {
-          resolve((data.docs ?? []).map(d => d.id).filter(Boolean));
+          resolve((data.docs ?? []).filter(d => !!d.id).map(d => ({
+            id: d.id,
+            isFolder: d.mimeType === FOLDER_MIME || d.type === "folder",
+          })));
         } else if (data.action === picker.Action.CANCEL) {
           resolve([]);
         }
       });
 
-    if (fileIds && fileIds.length > 0) {
-      // 貼られたURLのファイルだけを出す。種別で絞ると、形式違いのときに
-      // 何も表示されず理由が分からなくなるので、ここでは絞らない（種別はサーバーで確かめる）
-      //
-      // ★ setEnableDrives(true) を付けてはいけない。Google の仕様で、
-      //   setEnableDrives は「それ以前の setFileIds / setParent の呼び出しを上書きする」。
-      //   付けると貼ったファイルの指定が消え、共有ドライブの一覧が出てしまう（本番で実測）。
-      //   共有ドライブ上のファイル向けの Feature.SUPPORT_DRIVES は非推奨なので使わない。
-      //
-      // NAV_HIDDEN で左のナビゲーション（他のドライブへ移動する欄）を隠し、
-      // 「貼ったファイルを確認して Select を押すだけ」の画面にする。
-      builder
-        .setTitle("追加するファイルを確認して「Select」を押してください")
-        .enableFeature(picker.Feature.NAV_HIDDEN)
-        .addView(new picker.DocsView(picker.ViewId.DOCS)
-          .setFileIds(fileIds.join(",")));
-    } else {
-      // ★ 種別で絞らない（setMimeTypes を付けない）。Drive にあるものは
-      //   Office文書でも PDF でも追加でき、どれも Drive で開く形に揃えているため、
-      //   一覧に出ないファイルがあると「なぜか選べない」だけの状態になる。
-      //   フォルダは中に入るために出すだけで、選択はできない（setSelectFolderEnabled を付けていない）。
-      //   フォルダをリンクで追加するのは別の経路（pickGoogleFolders）。
-      builder
-        .setTitle("ファイルボックスに追加するファイルを選択")
-        .enableFeature(picker.Feature.MULTISELECT_ENABLED)
-        // マイドライブ・共有アイテム
-        .addView(new picker.DocsView(picker.ViewId.DOCS)
-          .setIncludeFolders(true))
-        // 共有ドライブ。setEnableDrives を付けたビューは共有ドライブを出すものなので、
-        // マイドライブ用のビューとは分けて、タブを2つ並べる
-        .addView(new picker.DocsView(picker.ViewId.DOCS)
-          .setIncludeFolders(true)
-          .setEnableDrives(true));
-    }
-
-    const appId = import.meta.env.VITE_GOOGLE_APP_ID;
-    if (appId) builder.setAppId(appId);
-
-    builder.build().setVisible(true);
-  });
-}
-
-/**
- * Driveのフォルダを選ばせる（ファイルボックスへ「元のフォルダのままリンク」で追加する用。KAIZEN2611-007）。
- *
- * ★ drive.file スコープでは、ここでフォルダを選んでも中のファイルの一覧は読めない。
- *   フォルダは1行のリンクとして登録し、中身は Googleドライブの画面で辿ってもらう。
- *
- * @param folderIds 指定すると、そのフォルダを最初のタブに出す（URL を貼って追加する経路）。
- *   setFileIds でフォルダを出して選べるかは Google の仕様上はっきりしないため、
- *   ナビゲーションは隠さず、通常の「マイドライブ・共有アイテム」「共有ドライブ」のタブも並べる。
- *   最初のタブで選べないときは、そちらで選び直してもらえる。
- * @returns 選ばれたフォルダのID。キャンセルされたら空配列
- */
-export async function pickGoogleFolders(folderIds?: string[]): Promise<string[]> {
-  const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
-  if (!apiKey) throw new Error("VITE_GOOGLE_API_KEY が設定されていません");
-
-  const [{ accessToken }] = await Promise.all([fetchPickerToken(), loadPickerScript()]);
-  const picker = window.google?.picker;
-  if (!picker) throw new Error("Google Picker を利用できません");
-
-  return new Promise<string[]>(resolve => {
-    const builder = new picker.PickerBuilder()
-      .setOAuthToken(accessToken)
-      .setDeveloperKey(apiKey)
+    // 通常の2タブ。ファイルもフォルダも選べる（setSelectFolderEnabled）。
+    // フォルダは1回クリックで選択、ダブルクリックで中に入る。
+    // ★ 種別で絞らない（setMimeTypes を付けない）。Drive にあるものは
+    //   Office文書でも PDF でも追加でき、どれも Drive で開く形に揃えているため、
+    //   一覧に出ないファイルがあると「なぜか選べない」だけの状態になる。
+    const addBrowseViews = () => builder
       .enableFeature(picker.Feature.MULTISELECT_ENABLED)
-      .setCallback((data: { action: string; docs?: { id: string }[] }) => {
-        if (data.action === picker.Action.PICKED) {
-          resolve((data.docs ?? []).map(d => d.id).filter(Boolean));
-        } else if (data.action === picker.Action.CANCEL) {
-          resolve([]);
-        }
-      });
-
-    if (folderIds && folderIds.length > 0) {
-      // 貼られたURLのフォルダだけを出すタブ。
-      // ★ このビューに setEnableDrives(true) を付けてはいけない（pickGoogleFiles と同じ理由。
-      //   setEnableDrives はそれ以前の setFileIds の指定を上書きし、貼ったフォルダが消える）。
-      builder
-        .setTitle("追加するフォルダを確認して「Select」を押してください")
-        .addView(new picker.DocsView(picker.ViewId.DOCS)
-          .setIncludeFolders(true)
-          .setSelectFolderEnabled(true)
-          .setFileIds(folderIds.join(",")));
-    } else {
-      builder.setTitle("ファイルボックスにリンクで追加するフォルダを選択");
-    }
-
-    // フォルダだけを出し、フォルダそのものを選べるようにする。
-    // マイドライブ・共有アイテム用と共有ドライブ用でタブを分ける（pickGoogleFiles と同じ理由）
-    builder
-      .addView(new picker.DocsView(picker.ViewId.FOLDERS)
+      // マイドライブ・共有アイテム
+      .addView(new picker.DocsView(picker.ViewId.DOCS)
         .setIncludeFolders(true)
         .setSelectFolderEnabled(true))
-      .addView(new picker.DocsView(picker.ViewId.FOLDERS)
+      // 共有ドライブ。setEnableDrives を付けたビューは共有ドライブを出すものなので、
+      // マイドライブ用のビューとは分けて、タブを2つ並べる
+      .addView(new picker.DocsView(picker.ViewId.DOCS)
         .setIncludeFolders(true)
         .setSelectFolderEnabled(true)
         .setEnableDrives(true));
+
+    if (ids && ids.length > 0) {
+      // 貼られたURLのものだけを出す。種別で絞ると、形式違いのときに
+      // 何も表示されず理由が分からなくなるので、ここでは絞らない（種別はサーバーで確かめる）
+      //
+      // ★ このビューに setEnableDrives(true) を付けてはいけない。Google の仕様で、
+      //   setEnableDrives は「それ以前の setFileIds / setParent の呼び出しを上書きする」。
+      //   付けると貼ったファイルの指定が消え、共有ドライブの一覧が出てしまう（本番で実測）。
+      //   共有ドライブ上のファイル向けの Feature.SUPPORT_DRIVES は非推奨なので使わない。
+      const pasted = new picker.DocsView(picker.ViewId.DOCS).setFileIds(ids.join(","));
+      if (folder) {
+        // フォルダの URL。setFileIds でフォルダを出して選べるかは Google の仕様上はっきりしないため、
+        // ナビゲーションは隠さず、通常の2タブも並べる。最初のタブで選べないときは、そちらで選び直してもらえる。
+        builder
+          .setTitle("追加するフォルダを確認して「Select」を押してください")
+          .addView(pasted.setIncludeFolders(true).setSelectFolderEnabled(true));
+        addBrowseViews();
+      } else {
+        // NAV_HIDDEN で左のナビゲーション（他のドライブへ移動する欄）を隠し、
+        // 「貼ったファイルを確認して Select を押すだけ」の画面にする。
+        builder
+          .setTitle("追加するファイルを確認して「Select」を押してください")
+          .enableFeature(picker.Feature.NAV_HIDDEN)
+          .addView(pasted);
+      }
+    } else {
+      builder.setTitle("ファイルボックスに追加するファイル・フォルダを選択");
+      addBrowseViews();
+    }
 
     const appId = import.meta.env.VITE_GOOGLE_APP_ID;
     if (appId) builder.setAppId(appId);
