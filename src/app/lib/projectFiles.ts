@@ -7,7 +7,9 @@ import type { FileShareMember } from "@/app/types";
 
 export type FileKind =
   | "pdf" | "excel" | "word" | "powerpoint" | "image" | "text" | "other"
-  | "gsheet" | "gdoc" | "gslide" | "drawio";
+  | "gsheet" | "gdoc" | "gslide" | "drawio"
+  // Googleドライブのフォルダ。元のフォルダのまま1行のリンクとして追加したもの（KAIZEN2611-007）
+  | "gfolder";
 
 // ── Googleドライブ上のファイル（docs/google-drive-integration-design.md）──
 // storage に実体を持たず、別タブで Google 上の編集画面を開く。
@@ -26,6 +28,11 @@ export type GoogleAppKind = keyof typeof GOOGLE_MIME;
 //   サーバーが取り込み時に file_type をこの値へ揃えるので、画面側はこれだけで判定できる。
 export const DRAWIO_MIME = "application/vnd.jgraph.mxfile";
 
+// Googleドライブのフォルダ（KAIZEN2611-007）。サーバーが「元のフォルダのまま追加」したときだけ、
+// file_type にこの値を入れて1行登録する（api/google/[action].ts の FOLDER_MIME と同じ値）。
+// DevTicket 側のフォルダ（is_folder = true の行）とは別物。
+export const GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder";
+
 /**
  * 「Googleアプリ」メニューから新規作成できる種別。
  * GoogleAppKind（Office文書の変換先）とは分けておく。draw.io は変換先にならないため、
@@ -38,6 +45,7 @@ const GOOGLE_MIME_KIND: Record<string, FileKind> = {
   [GOOGLE_MIME.document]: "gdoc",
   [GOOGLE_MIME.presentation]: "gslide",
   [DRAWIO_MIME]: "drawio",
+  [GOOGLE_FOLDER_MIME]: "gfolder",
 };
 
 /** Googleドライブ上のファイルか（storage に実体が無い＝署名付きURLもWebDAVも使えない） */
@@ -69,6 +77,7 @@ export const GOOGLE_KIND_LABEL: Partial<Record<FileKind, string>> = {
   gdoc: "Googleドキュメント",
   gslide: "Googleスライド",
   drawio: "draw.io（Googleドライブ）",
+  gfolder: "Googleドライブのフォルダ",
 };
 
 // Google形式ではないが Drive に置いてあるファイル（Office文書・PDF・画像など）の呼び名。
@@ -230,6 +239,8 @@ export const KIND_COLOR: Record<FileKind, string> = {
   // Google 各アプリのブランド色に寄せる（一覧で一目で見分けられるように）
   gsheet: "#0F9D58", gdoc: "#4285F4", gslide: "#F4B400",
   drawio: "#F08705",
+  // DevTicket 側のフォルダ（オレンジ）と見分けられるよう、Googleドライブのフォルダの既定の色（灰色）にする
+  gfolder: "#5F6368",
 };
 
 // 全ての storage 操作は api/project-files/[action] (service_role) 経由で行う。

@@ -149,6 +149,7 @@ export async function pickGoogleFiles(fileIds?: string[]): Promise<string[]> {
       //   Office文書でも PDF でも追加でき、どれも Drive で開く形に揃えているため、
       //   一覧に出ないファイルがあると「なぜか選べない」だけの状態になる。
       //   フォルダは中に入るために出すだけで、選択はできない（setSelectFolderEnabled を付けていない）。
+      //   フォルダをリンクで追加するのは別の経路（pickGoogleFolders）。
       builder
         .setTitle("ファイルボックスに追加するファイルを選択")
         .enableFeature(picker.Feature.MULTISELECT_ENABLED)
@@ -170,12 +171,83 @@ export async function pickGoogleFiles(fileIds?: string[]): Promise<string[]> {
 }
 
 /**
- * Googleドライブ上のファイルの URL からファイルIDを取り出す。
+ * Driveのフォルダを選ばせる（ファイルボックスへ「元のフォルダのままリンク」で追加する用。KAIZEN2611-007）。
+ *
+ * ★ drive.file スコープでは、ここでフォルダを選んでも中のファイルの一覧は読めない。
+ *   フォルダは1行のリンクとして登録し、中身は Googleドライブの画面で辿ってもらう。
+ *
+ * @param folderIds 指定すると、そのフォルダを最初のタブに出す（URL を貼って追加する経路）。
+ *   setFileIds でフォルダを出して選べるかは Google の仕様上はっきりしないため、
+ *   ナビゲーションは隠さず、通常の「マイドライブ・共有アイテム」「共有ドライブ」のタブも並べる。
+ *   最初のタブで選べないときは、そちらで選び直してもらえる。
+ * @returns 選ばれたフォルダのID。キャンセルされたら空配列
+ */
+export async function pickGoogleFolders(folderIds?: string[]): Promise<string[]> {
+  const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
+  if (!apiKey) throw new Error("VITE_GOOGLE_API_KEY が設定されていません");
+
+  const [{ accessToken }] = await Promise.all([fetchPickerToken(), loadPickerScript()]);
+  const picker = window.google?.picker;
+  if (!picker) throw new Error("Google Picker を利用できません");
+
+  return new Promise<string[]>(resolve => {
+    const builder = new picker.PickerBuilder()
+      .setOAuthToken(accessToken)
+      .setDeveloperKey(apiKey)
+      .enableFeature(picker.Feature.MULTISELECT_ENABLED)
+      .setCallback((data: { action: string; docs?: { id: string }[] }) => {
+        if (data.action === picker.Action.PICKED) {
+          resolve((data.docs ?? []).map(d => d.id).filter(Boolean));
+        } else if (data.action === picker.Action.CANCEL) {
+          resolve([]);
+        }
+      });
+
+    if (folderIds && folderIds.length > 0) {
+      // 貼られたURLのフォルダだけを出すタブ。
+      // ★ このビューに setEnableDrives(true) を付けてはいけない（pickGoogleFiles と同じ理由。
+      //   setEnableDrives はそれ以前の setFileIds の指定を上書きし、貼ったフォルダが消える）。
+      builder
+        .setTitle("追加するフォルダを確認して「Select」を押してください")
+        .addView(new picker.DocsView(picker.ViewId.DOCS)
+          .setIncludeFolders(true)
+          .setSelectFolderEnabled(true)
+          .setFileIds(folderIds.join(",")));
+    } else {
+      builder.setTitle("ファイルボックスにリンクで追加するフォルダを選択");
+    }
+
+    // フォルダだけを出し、フォルダそのものを選べるようにする。
+    // マイドライブ・共有アイテム用と共有ドライブ用でタブを分ける（pickGoogleFiles と同じ理由）
+    builder
+      .addView(new picker.DocsView(picker.ViewId.FOLDERS)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(true))
+      .addView(new picker.DocsView(picker.ViewId.FOLDERS)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(true)
+        .setEnableDrives(true));
+
+    const appId = import.meta.env.VITE_GOOGLE_APP_ID;
+    if (appId) builder.setAppId(appId);
+
+    builder.build().setVisible(true);
+  });
+}
+
+/** 貼られた URL が指しているもの。フォルダはリンクとしてだけ追加できる（KAIZEN2611-007） */
+export interface GoogleUrlTarget {
+  id: string;
+  type: "file" | "folder";
+}
+
+/**
+ * Googleドライブ上のファイル・フォルダの URL からIDを取り出す。
  * Google形式（スプレッドシート等）の編集画面、Drive のファイル画面（Office文書・PDF などはこの形）、
- * draw.io で開いているときの URL に対応する。
+ * draw.io で開いているときの URL、Drive のフォルダの画面（drive/folders/<id>・drive/u/<n>/folders/<id>）に対応する。
  * 対応していない URL なら null（呼び出し側で「このURLは追加できません」と伝える）。
  */
-export function parseGoogleFileUrl(raw: string): string | null {
+export function parseGoogleFileUrl(raw: string): GoogleUrlTarget | null {
   let url: URL;
   try { url = new URL(raw.trim()); } catch { return null; }
 
@@ -183,17 +255,21 @@ export function parseGoogleFileUrl(raw: string): string | null {
   // ファイルIDは # の後ろに G を付けて載っている
   if (/(^|\.)(diagrams\.net|draw\.io|drawio\.com)$/.test(url.hostname)) {
     const byHash = url.hash.match(/^#G([-\w]{20,})/);
-    return byHash ? byHash[1] : null;
+    return byHash ? { id: byHash[1], type: "file" } : null;
   }
 
   if (!/(^|\.)google\.com$/.test(url.hostname)) return null;
 
+  // drive.google.com/drive/folders/<id>、drive.google.com/drive/u/0/folders/<id> の形（フォルダ）
+  const byFolder = url.pathname.match(/^\/drive\/(?:u\/\d+\/)?folders\/([-\w]{10,})/);
+  if (byFolder) return { id: byFolder[1], type: "folder" };
+
   // docs.google.com/spreadsheets/d/<id>/edit などの形
   const byPath = url.pathname.match(/\/(?:spreadsheets|document|presentation|file)\/d\/([-\w]{20,})/);
-  if (byPath) return byPath[1];
+  if (byPath) return { id: byPath[1], type: "file" };
 
   // drive.google.com/open?id=<id> の形
   const byQuery = url.searchParams.get("id");
-  if (byQuery && /^[-\w]{20,}$/.test(byQuery)) return byQuery;
+  if (byQuery && /^[-\w]{20,}$/.test(byQuery)) return { id: byQuery, type: "file" };
   return null;
 }
