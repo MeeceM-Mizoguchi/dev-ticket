@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import {
-  ChevronDown, FileSpreadsheet, FileText, Presentation, Workflow, Loader2, AlertTriangle, FolderInput, FolderSymlink, Link2,
+  ChevronDown, FileSpreadsheet, FileText, Presentation, Workflow, Loader2, AlertTriangle, FolderInput, Link2,
 } from "lucide-react";
 import { escStack } from "@/app/lib/escStack";
 import { openPendingTab } from "@/app/lib/pendingTab";
@@ -13,7 +13,7 @@ import {
   createGoogleFile, importGoogleFiles, startGoogleOAuth, myDriveWarningKey, DRAWIO_OPEN_HINT,
   type GoogleDriveProjectConfig,
 } from "@/app/lib/googleDrive";
-import { pickGoogleFiles, pickGoogleFolders, parseGoogleFileUrl } from "@/app/lib/googlePicker";
+import { pickGoogleFiles, parseGoogleFileUrl } from "@/app/lib/googlePicker";
 import { GOOGLE_CREATE_LABEL, KIND_COLOR, type GoogleCreateKind } from "@/app/lib/projectFiles";
 
 // ファイルボックスの「Googleアプリ」ボタン（docs/google-drive-integration-design.md 5.1）
@@ -22,7 +22,7 @@ import { GOOGLE_CREATE_LABEL, KIND_COLOR, type GoogleCreateKind } from "@/app/li
 //   ・スプレッドシート / ドキュメント / スライド / draw.io の図を新規作成して別タブで開く
 //   ・もともと Drive にあるファイルを追加する（Picker で選ぶ / URL を貼る）
 //     種別は問わない。Office文書・PDF・画像なども追加でき、どれも Drive で開く
-//   ・Drive のフォルダを、元のフォルダのまま1行のリンクとして追加する（Picker で選ぶ / URL を貼る。KAIZEN2611-007）
+//   ・Drive のフォルダも同じ経路で選べ、元のフォルダのまま1行のリンクとして追加する（KAIZEN2611-007）
 //     クリックすると Googleドライブでそのフォルダが開く。中の階層は Googleドライブの画面で辿る
 
 const ITEMS: { kind: GoogleCreateKind; icon: typeof FileSpreadsheet; color: string }[] = [
@@ -41,10 +41,15 @@ type Action =
   | { type: "pick" }
   /** 貼られた URL のファイルを追加する（Picker で1回 Select してもらう） */
   | { type: "url"; fileId: string }
-  /** フォルダを Picker で選んで、リンクとして追加する */
-  | { type: "pickFolder" }
   /** 貼られた URL のフォルダを、リンクとして追加する（Picker で1回 Select してもらう） */
   | { type: "urlFolder"; folderId: string };
+
+/** Picker で選ばれたものを、ファイルとフォルダに分けたもの */
+interface ChooseTarget {
+  files: string[];
+  /** フォルダは元のフォルダのままリンクとして追加する（KAIZEN2611-007） */
+  folders: string[];
+}
 
 // トーストが画面を埋めないよう、先頭数件だけ出して残りは件数で伝える
 function summarize(items: string[], head = 3): string {
@@ -79,8 +84,8 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   const [urlOpen, setUrlOpen] = useState(false);
   const [urlText, setUrlText] = useState("");
   const [urlError, setUrlError] = useState<string | null>(null);
-  // Picker で選んだあと、追加のしかたを選ぶダイアログ（BRU20-002）。選ばれたファイルの ID を持つ
-  const [chooseFor, setChooseFor] = useState<string[] | null>(null);
+  // Picker で選んだあと、追加のしかたを選ぶダイアログ（BRU20-002）。選ばれたファイル・フォルダの ID を持つ
+  const [chooseFor, setChooseFor] = useState<ChooseTarget | null>(null);
   // false = コピーして追加（既定・従来どおり） / true = 元のファイルのまま追加（コピーしない）
   const [linkOnly, setLinkOnly] = useState(false);
 
@@ -150,54 +155,43 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   }, [projectId, parentId, onCreated, toast, handleError]);
 
   /**
-   * 既存の Driveファイルを選ぶ（種別は問わない）。選んだら、追加のしかたを選ぶダイアログを出す。
-   * @param fileIds URL から取り出したID。指定するとそのファイルだけを Picker に出す
+   * 追加のしかたを選んだあと（フォルダだけなら選ばずに）、選ばれたものを追加する。
+   * フォルダはコピーできないので、asLink に関係なく元のフォルダのままリンクとして追加する
+   * （external_linked = true。コピーしない・メンバーに権限を配らない。KAIZEN2611-007）。
    */
-  const runImport = useCallback(async (fileIds?: string[]) => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setImporting(true);
-    try {
-      const picked = await pickGoogleFiles(fileIds);
-      if (picked.length === 0) return; // Picker を閉じた
-      setLinkOnly(false);
-      setChooseFor(picked);
-    } catch (e) {
-      await handleError(e, "追加に失敗しました");
-    } finally {
-      busyRef.current = false;
-      setImporting(false);
-    }
-  }, [handleError]);
-
-  /**
-   * 追加のしかたを選んだあと、選ばれたファイルを追加する。
-   * @param folder フォルダをリンクとして追加するとき true（asLink も true で呼ぶ）。完了の文言だけが変わる
-   */
-  const runSave = useCallback(async (picked: string[], asLink: boolean, folder = false) => {
+  const runSave = useCallback(async (picked: ChooseTarget, asLink: boolean) => {
     if (busyRef.current) return;
     busyRef.current = true;
     setChooseFor(null);
-    setSavingImport(folder ? "folder" : "file");
+    setSavingImport(picked.files.length === 0 ? "folder" : "file");
     try {
-      const res = await importGoogleFiles(projectId, picked, parentId, asLink);
+      // ファイルとフォルダで追加のしかたが違うので、サーバーへは分けて送る
+      const fileRes = picked.files.length > 0
+        ? await importGoogleFiles(projectId, picked.files, parentId, asLink) : null;
+      const folderRes = picked.folders.length > 0
+        ? await importGoogleFiles(projectId, picked.folders, parentId, true) : null;
 
-      if (res.imported.length > 0) {
-        const copied = res.imported.filter(i => i.copied).length;
-        toast(folder
-          ? `${res.imported.length} 件のフォルダを追加しました。開けるかどうかは Googleドライブ側の共有設定で決まります`
-          : asLink
-          ? `${res.imported.length} 件を元のファイルのまま追加しました。開けるかどうかは Googleドライブ側の共有設定で決まります`
+      if (fileRes && fileRes.imported.length > 0) {
+        const n = fileRes.imported.length;
+        const copied = fileRes.imported.filter(i => i.copied).length;
+        toast(asLink
+          ? `${n} 件を元のファイルのまま追加しました。開けるかどうかは Googleドライブ側の共有設定で決まります`
           : copied > 0
-            ? `${res.imported.length} 件を追加しました。うち ${copied} 件は保存先の外にあったためコピーして追加しました。元のファイルは残っているので、今後は DevTicket 側のファイルを編集してください`
-            : `${res.imported.length} 件を追加しました`);
-        onCreated();
+            ? `${n} 件を追加しました。うち ${copied} 件は保存先の外にあったためコピーして追加しました。元のファイルは残っているので、今後は DevTicket 側のファイルを編集してください`
+            : `${n} 件を追加しました`);
       }
-      if (res.failed.length > 0) {
-        toast(`${res.failed.length} 件は追加できませんでした：${summarize(res.failed.map(f => `「${f.name}」（${f.reason}）`))}`, "error");
+      if (folderRes && folderRes.imported.length > 0) {
+        toast(`${folderRes.imported.length} 件のフォルダを追加しました。開けるかどうかは Googleドライブ側の共有設定で決まります`);
       }
-      if (res.shareFailed.length > 0) {
-        toast(`共有できなかった相手がいます：${summarize(res.shareFailed.map(f => f.name))}。Googleアカウントをお持ちか確認してください`, "error");
+      if ((fileRes?.imported.length ?? 0) + (folderRes?.imported.length ?? 0) > 0) onCreated();
+
+      const failed = [...(fileRes?.failed ?? []), ...(folderRes?.failed ?? [])];
+      if (failed.length > 0) {
+        toast(`${failed.length} 件は追加できませんでした：${summarize(failed.map(f => `「${f.name}」（${f.reason}）`))}`, "error");
+      }
+      const shareFailed = [...(fileRes?.shareFailed ?? []), ...(folderRes?.shareFailed ?? [])];
+      if (shareFailed.length > 0) {
+        toast(`共有できなかった相手がいます：${summarize(shareFailed.map(f => f.name))}。Googleアカウントをお持ちか確認してください`, "error");
       }
     } catch (e) {
       await handleError(e, "追加に失敗しました");
@@ -208,25 +202,38 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   }, [projectId, parentId, onCreated, toast, handleError]);
 
   /**
-   * Drive のフォルダを選んで、リンクとして追加する（KAIZEN2611-007）。
-   * フォルダはコピーできないので「追加のしかたを選ぶ」は出さず、元のフォルダのまま追加する
-   * （external_linked = true。コピーしない・メンバーに権限を配らない）。
-   * @param folderIds URL から取り出したID。指定するとそのフォルダを Picker の最初のタブに出す
+   * 既存の Driveファイル・フォルダを選ぶ（種別は問わない）。
+   * ファイルが含まれていたら、追加のしかたを選ぶダイアログを出す。
+   * フォルダだけなら、ダイアログを出さずにリンクとして追加する（KAIZEN2611-007）。
+   * @param ids URL から取り出したID。指定するとそのファイル（フォルダ）を Picker に出す
+   * @param folder ids がフォルダの URL から取り出したものなら true
    */
-  const runImportFolders = useCallback(async (folderIds?: string[]) => {
+  const runImport = useCallback(async (ids?: string[], folder = false) => {
     if (busyRef.current) return;
     busyRef.current = true;
     setImporting(true);
-    let picked: string[] = [];
+    let target: ChooseTarget | null = null;
     try {
-      picked = await pickGoogleFolders(folderIds);
+      const picked = await pickGoogleFiles(ids, folder);
+      if (picked.length > 0) {
+        target = {
+          files: picked.filter(p => !p.isFolder).map(p => p.id),
+          folders: picked.filter(p => p.isFolder).map(p => p.id),
+        };
+      }
     } catch (e) {
       await handleError(e, "追加に失敗しました");
     } finally {
       busyRef.current = false;
       setImporting(false);
     }
-    if (picked.length > 0) await runSave(picked, true, true);
+    if (!target) return; // Picker を閉じた
+    if (target.files.length === 0) {
+      await runSave(target, true);
+      return;
+    }
+    setLinkOnly(false);
+    setChooseFor(target);
   }, [handleError, runSave]);
 
   const closeChoose = useCallback(() => setChooseFor(null), []);
@@ -235,9 +242,8 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
     if (a.type === "create") void runCreate(a.kind);
     else if (a.type === "pick") void runImport();
     else if (a.type === "url") void runImport([a.fileId]);
-    else if (a.type === "pickFolder") void runImportFolders();
-    else void runImportFolders([a.folderId]);
-  }, [runCreate, runImport, runImportFolders]);
+    else void runImport([a.folderId], true);
+  }, [runCreate, runImport]);
 
   /** 個人ドライブ運用のときは、所有者が個人になることを先に知らせてから実行する */
   const request = useCallback((a: Action) => {
@@ -341,12 +347,6 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
             </span>
             URLを貼って追加
           </button>
-          <button role="menuitem" onClick={() => request({ type: "pickFolder" })} style={menuItemStyle} {...hover}>
-            <span style={{ width: 24, height: 24, borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#EFF6FF" }}>
-              <FolderSymlink style={{ width: 13, height: 13, color: "#2563EB" }} />
-            </span>
-            Driveのフォルダをリンクで追加
-          </button>
 
           <p style={{ margin: "6px 8px 4px", fontSize: 10.5, color: "#B0A9A4", lineHeight: 1.6 }}>
             {drive.mode === "shared_drive"
@@ -355,7 +355,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
             <br />既存のファイルは、保存先へコピーして追加するか、
             <br />コピーせず元のファイルのまま追加するかを選べます。
             <br />Excel・PDF なども追加できます（開くときはGoogleドライブが開きます）。
-            <br />フォルダはリンクとして追加され、Googleドライブで開きます。
+            <br />フォルダも選べます（リンクとして追加され、Googleドライブで開きます）。
           </p>
         </div>
       )}
@@ -417,8 +417,14 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
             </button>
           </>}>
           <p style={{ margin: "0 0 10px", fontSize: 12.5, color: "#1A1714", lineHeight: 1.7 }}>
-            選んだ {chooseFor.length} 件のファイルを、どのように追加しますか？
+            選んだ {chooseFor.files.length} 件のファイルを、どのように追加しますか？
           </p>
+          {/* フォルダはコピーできないので、どちらを選んでもリンクとして追加する（KAIZEN2611-007） */}
+          {chooseFor.folders.length > 0 && (
+            <p style={{ margin: "-4px 0 10px", fontSize: 11.5, color: "#6B6458", lineHeight: 1.7 }}>
+              フォルダ {chooseFor.folders.length} 件は、元のフォルダのままリンクとして追加します。
+            </p>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {([
               {
