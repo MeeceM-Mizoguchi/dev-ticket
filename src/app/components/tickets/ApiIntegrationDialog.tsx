@@ -87,12 +87,17 @@ const UPDATE_KEY_DAYS = 90;
  * AI はチケットを読み取り（GET /api/v1/ticket）、頼まれた項目だけを POST /api/v1/ticket-update で直す。
  * キーの読み込み・復号・その場での発行は「AIで実装」（AiImplementPanel）と同じ作り。
  */
-function AiUpdatePanel({ ticket, projectId, projectName, keysRevision, onKeyIssued }: {
+function AiUpdatePanel({ ticket, projectId, projectName, keysRevision, onKeyIssued, memberNames, categoryNames, candidatesLoading }: {
   ticket: { wbs: string; title: string; parentId?: string | null };
   projectId: string;
   projectName: string;
   keysRevision: number;
   onKeyIssued: (row: ApiKeyRow) => void;
+  /** 親チケットで子チケットを足すときの担当者・分類の候補（KAIZEN2611-011。「AIで子チケット登録」と同じもの） */
+  memberNames: string[];
+  categoryNames: string[];
+  /** 候補を読み込み中か。読み込む前にコピーすると「メンバー未設定」の手順になるので止める */
+  candidatesLoading: boolean;
 }) {
   const { userRole } = useAuth();
   const { toast } = useToast();
@@ -181,14 +186,16 @@ function AiUpdatePanel({ ticket, projectId, projectName, keysRevision, onKeyIssu
   };
 
   const selectedKey = keys.find(k => k.id === selectedKeyId) ?? null;
+  const isChild = !!ticket.parentId;
   const prompt = useMemo(() => buildTicketUpdatePrompt({
-    baseUrl, projectName, wbs: ticket.wbs, title: ticket.title, isChild: !!ticket.parentId, today,
-    plainKey: revealedKey ?? undefined,
-  }), [baseUrl, projectName, ticket.wbs, ticket.title, ticket.parentId, today, revealedKey]);
+    baseUrl, projectName, wbs: ticket.wbs, title: ticket.title, isChild, today,
+    plainKey: revealedKey ?? undefined, memberNames, categoryNames,
+  }), [baseUrl, projectName, ticket.wbs, ticket.title, isChild, today, revealedKey, memberNames, categoryNames]);
   const keyEmbedded = !!revealedKey;
   // キーを1本も見られない人（管理者以外。RLS で一覧が空になる）は、キー欄を空にした手順をコピーできる
   const blockedReason: string | null =
     loading || revealing ? "キーを読み込んでいます…"
+      : !isChild && candidatesLoading ? "担当者・分類の候補を読み込んでいます…"
       : selectedKey && !revealedKey ? (revealError ?? "キーを読み込めませんでした")
         : null;
 
@@ -231,6 +238,9 @@ function AiUpdatePanel({ ticket, projectId, projectName, keysRevision, onKeyIssu
           <li>タイトル・本文・ラベル・優先度・分類・担当者・開始日・期限日・PR不要を直す（担当者を変えても通知は送りません）</li>
           <li>ステータスを画面のボタンと同じく変える（保留・取下・未着手に戻すも可）。レビュー中にしてレビュアーを指定すると、レビュアーに通知が届きます</li>
           <li>画面で誰かが直したあとの古い内容では上書きしません</li>
+          {!isChild && (
+            <li>親チケットでは、このチケットの子チケットを足す・既にある子チケットを直すこともできます（例：「本文を直して、子を2つ足して、既存の子の期限を変えて」）。足す子チケットの親はこのチケットに決まっています</li>
+          )}
         </ul>
         <p style={{ fontSize: 10.5, color: "#9E9690", marginTop: 6, lineHeight: 1.7 }}>
           画像・添付ファイルの追加、スプリントの移動、親の変更、削除はできません。画面から操作してください。
@@ -1392,6 +1402,9 @@ export function ApiIntegrationDialog({
                 projectName={projectName}
                 keysRevision={keysRevision}
                 onKeyIssued={handleImplementKeyIssued}
+                memberNames={memberNames}
+                categoryNames={categoryNames}
+                candidatesLoading={loading}
               />
             </div>
           )}
