@@ -198,13 +198,25 @@ export function ReleaseNotesPage() {
     if (!isSupabaseEnabled) { setLoading(false); return; }
     setLoading(true);
     try {
-      const { data, error } = await (supabase as NonNullable<typeof supabase>)
-        .from("sprint_tickets")
-        .select("*, sprints!inner(id, project_id, projects!inner(id, slug, name))")
-        .in("status", ["waiting-release", "released"])
-        .order("created_at", { ascending: true });
+      // Supabase（PostgREST）は件数を指定しなくても1回に1000件までしか返さないので、
+      // 1000件ずつ range で読み、返る件数が1000件未満になるまで繰り返してつなげる（KAIZEN2611-012-1）。
+      // 1回だけ読んでいたときは、対象が1000件を超えると作成日の新しいチケットから表示されなかった。
+      // 繰り返し読んでも順番が崩れないよう、created_at に加えて id でも並べる（BUG-01）。
+      const PAGE = 1000;
+      const data: any[] = [];
+      for (let from = 0; ; from += PAGE) {
+        const { data: page, error } = await (supabase as NonNullable<typeof supabase>)
+          .from("sprint_tickets")
+          .select("*, sprints!inner(id, project_id, projects!inner(id, slug, name))")
+          .in("status", ["waiting-release", "released"])
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, from + PAGE - 1);
 
-      if (error) { console.error("[ReleaseNotes] load error:", error.message); return; }
+        if (error) { console.error("[ReleaseNotes] load error:", error.message); return; }
+        data.push(...(page ?? []));
+        if ((page ?? []).length < PAGE) break;
+      }
 
       // リリース不要（作業のみ）のチケットはリリースノートに出さない（KAIZEN2611-006）
       const mapped: ReleaseItem[] = (data ?? []).filter((r: any) => r.release_not_required !== true).map((r: any) => ({
