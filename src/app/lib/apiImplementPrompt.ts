@@ -37,6 +37,12 @@
 // 仕様を確認したいときは、質問を POST /api/v1/ticket-comment でチケットのコメントにさせる（BRU25-001）。
 // 1件用は質問して止まる。複数件用は質問したチケットを飛ばして次へ進む（仕様の確認以外の止まる条件は全体を止める）。
 //
+// 「マージ」を選んだときだけ、報告の前に「ローカルを最新にする」手順を置く（KAIZEN2611-009）。
+// 手順どおりに進めると、作業が終わったときの手元は作業用のブランチのままで、マージ先のブランチも
+// マージ前のまま残り、利用者が自分で切り替えて pull しないとマージした内容が手元に無かったため。
+// 手元の変更やコミットを失わせないよう、stash・reset・restore・merge・rebase は使わせず、うまくいかないときは止まらせる。
+// まとめて実装用は、次のチケットのブランチ作成でベースブランチを最新にしているので、最後に1回だけにする。
+//
 // ⚠️ ここに書く仕様は api/v1/[resource].ts・api/github/[resource].ts の実装と一致していなければならない
 //    （GET /api/v1/ticket の応答の形・POST /api/v1/ticket-status が受けるステータス・
 //      POST /api/github/ticket-pull-create・ticket-merge が受ける内容とエラー）。
@@ -97,7 +103,7 @@ export const IMPLEMENT_STEPS: { id: ImplementStep; label: string; description: s
   { id: "branch", label: "ブランチ作成", description: "ベースブランチを最新にして、チケット番号入りのブランチを作る", requires: ["implement"] },
   { id: "commit", label: "コミット", description: "チケット1件ごとにコミットする（push はしない）", requires: ["implement"] },
   { id: "pr", label: "PR作成", description: "ブランチを push して、プルリクエストを作る", requires: ["branch", "commit"] },
-  { id: "merge", label: "マージ", description: "CIが通ったことを確かめてから、プルリクエストをマージする", requires: ["pr"] },
+  { id: "merge", label: "マージ", description: "CIが通ったことを確かめてから、プルリクエストをマージし、手元のマージ先のブランチを最新にする", requires: ["pr"] },
 ];
 
 const stepLabel = (id: ImplementStep) => IMPLEMENT_STEPS.find(s => s.id === id)?.label ?? id;
@@ -280,6 +286,23 @@ function sqlBundleRules(baseName: string): string[] {
 const SQL_REPORT_ITEM = "- **（報告の最初に書く）**SQL をまとめたファイルを作ったときは、報告の最初の「結果」「お願い」の2行の中に、「本番DBで SQL の実行が必要（ファイルは報告の最後）」と1行で書く。SQL の追加が無いときは「本番DBで実行が必要な SQL はありません」と書く。";
 /** 「マージ」を選んだときだけ、報告の最後に置く項目（BRU25-014） */
 const SQL_REPORT_LAST_ITEM = "- **（報告の最後に書く）**SQL をまとめたファイルへのリンク（Markdown のリンクで、クリックして開ける形。例: " + c("[本番DB_手動実行SQL_YYYYMMDD.sql](<ファイルの絶対パス>)") + "）と、そのファイルの絶対パス。ファイルを作らなかったときは書かない。";
+
+/**
+ * 「マージ」を選んだときだけ、報告の前に置く「ローカルを最新にする」手順の中身（KAIZEN2611-009）。
+ * base は手順書の「マージ先は◯◯」と同じ書き方、baseName はコマンドに入れるブランチ名。
+ * mergedCommit は、最新になったかを確かめる目安のコミット（1件用と、まとめて実装用で言い方が違う）。
+ */
+function syncLocalRules(base: string, baseName: string, mergedCommit: string): string[] {
+  return [
+    "- " + c("git status --porcelain") + " で、コミットされていない変更が無いことを確かめる。あれば、切り替えずに止まって報告する（" + c("git stash") + "・" + c("git reset") + "・" + c("git restore") + " で片付けない）。",
+    `- ${c("git fetch origin")} → マージ先のブランチ（${base}）へ切り替え（${c("git switch " + baseName)}）→ ${c("git pull --ff-only")}。`,
+    "- " + c("git pull --ff-only") + " が失敗したとき（手元のマージ先のブランチに push していないコミットがある など）は、" + c("git merge") + "・" + c("git rebase") + "・" + c("git reset") + " で解消せず、止まって報告する。",
+    `- ${c("git log -1 --oneline")} で、最新のコミットが${mergedCommit}以降になっていることを確かめる。`,
+    "- 作業用のブランチは、ローカルから消さない。",
+  ];
+}
+/** 「マージ」を選んだときだけ、報告に足す項目（KAIZEN2611-009） */
+const SYNC_LOCAL_REPORT_ITEM = "- ローカルを最新にした結果（今のブランチと " + c("git log -1 --oneline") + " の出力。行わなかったときはその理由）";
 
 /**
  * 「PRの作成・マージの仕様」の節（BRU21-001）。1件用・まとめて実装用で共用する。
@@ -664,6 +687,13 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
     );
   }
 
+  if (sel.merge) {
+    step("ローカルを最新にする",
+      "- マージできたときだけ行う。マージの前に止まったとき（CIの失敗・409 など）は行わず、いまのブランチのまま報告する。",
+      ...syncLocalRules(base, ctx.defaultBranch ?? "<ベースブランチ>", "今回マージしたコミット（" + c("ticket-merge") + " の応答の " + c("sha") + "）"),
+    );
+  }
+
   step("報告する",
     ...(sel.merge ? [...sqlBundleRules(ctx.defaultBranch ?? "<ベースブランチ>"), ""] : []),
     "最後に、次の内容を利用者に報告する。",
@@ -681,6 +711,7 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
     ] : []),
     ...(sel.merge ? ["- マージの結果（マージした／止めた理由）"] : []),
     ...(sel.status ? ["- 変更したステータス（どのチケットを、何から何へ）と、応答の " + c("warnings")] : []),
+    ...(sel.merge ? [SYNC_LOCAL_REPORT_ITEM] : []),
     "- コメントで質問したときは、その質問と、登録したコメントの応答（" + c("url") + "・" + c("warnings") + "）",
     "- **行っていない作業**（上の表で ❌ のもの）",
     "- 判断に迷った点、本文とコメントの食い違い、確認してほしい点",
@@ -1040,6 +1071,18 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
 
   add(`ここまで終えたら、上の表の次のチケットへ進み、${c("1.")} から繰り返す。`, "");
 
+  // ── ローカルを最新にする（KAIZEN2611-009）。チケットごとではなく、最後に1回だけ ──
+  if (sel.merge) {
+    add(
+      "## すべてのチケットを終えたら1回だけ：ローカルを最新にする",
+      "",
+      "- チケットごとには行わない（次のチケットのブランチを作るときに、ベースブランチを最新にしているため）。",
+      "- 1件以上マージしていて、途中で止まっていないときだけ行う（質問して飛ばしたチケットがあっても行う）。途中で止まったときは行わず、止まった場所のまま報告する。",
+      ...syncLocalRules(base, ctx.defaultBranch ?? "<ベースブランチ>", "最後にマージしたコミット（最後に送った " + c("ticket-merge") + " の応答の " + c("sha") + "）"),
+      "",
+    );
+  }
+
   // ── 報告 ──
   add(
     "## 最後に報告する",
@@ -1060,6 +1103,7 @@ export function buildBulkImplementPrompt(ctx: BulkImplementPromptContext): strin
     ] : []),
     ...(sel.merge ? ["- マージの結果（マージした／止めた理由）"] : []),
     ...(sel.status ? ["- 変更したステータス（どのチケットを、何から何へ）と、応答の " + c("warnings")] : []),
+    ...(sel.merge ? [SYNC_LOCAL_REPORT_ITEM + "（チケットごとではなく、報告全体で1回だけ書く）"] : []),
     "- コメントで質問して飛ばしたチケットと、その質問・登録したコメントの応答（" + c("url") + "・" + c("warnings") + "）",
     "- **行っていない作業**（上の表で ❌ のもの）",
     "- 判断に迷った点、本文とコメントの食い違い、確認してほしい点",
