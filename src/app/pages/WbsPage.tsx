@@ -37,6 +37,7 @@ import { WbsSheetBar } from "@/app/components/wbs/WbsSheetBar";
 import { WbsSheetNameDialog } from "@/app/components/wbs/WbsSheetNameDialog";
 import { WbsVisibilityDialog } from "@/app/components/wbs/WbsVisibilityDialog";
 import { WbsManualDialog } from "@/app/components/wbs/WbsManualDialog";
+import { WbsAiUpdateDialog } from "@/app/components/wbs/WbsAiUpdateDialog";
 import { WbsWorkspace } from "@/app/components/wbs/WbsWorkspace";
 import type { WbsTicketRef } from "@/app/components/wbs/WbsTicketLinkDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
@@ -97,6 +98,8 @@ export function WbsPage() {
   const lockingRef = useRef(false);
   const [visibilityOpen, setVisibilityOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
+  // KAIZEN2611-013 「AIで更新」の手順書
+  const [aiUpdateOpen, setAiUpdateOpen] = useState(false);
   const [levelBlock, setLevelBlock] = useState<LevelBlock | null>(null);
   // 段数を減らせない理由になっている行。消すか「強調を消す」を押すまで残す
   const [highlightIds, setHighlightIds] = useState<string[]>([]);
@@ -468,6 +471,8 @@ export function WbsPage() {
               onArchive={current?.backupEnabled ? () => setArchiveOpen(true) : undefined}
               snapshots={snapshots} snapshotId={viewing?.meta.id ?? ""} snapshotLoadingId={viewLoadingId}
               onSelectSnapshot={backupOn ? (id => { void handleSelectSnapshot(id); }) : undefined}
+              // KAIZEN2611-013 API の更新は版の番号（バックアップの仕組み）を使うので、その仕組みがある環境だけで出す
+              onOpenAiUpdate={backupOn ? () => setAiUpdateOpen(true) : undefined}
               onSelect={selectSheet}
               onCreate={() => setNameDialog("create")}
               onRename={() => setNameDialog("rename")}
@@ -533,6 +538,8 @@ export function WbsPage() {
                 tickets={tickets} onOpenTicket={handleOpenTicket}
                 highlightIds={highlightIds} onHighlightChange={setHighlightIds}
                 focusItemId={focusItemId}
+                // KAIZEN2611-013 画面に戻ったときに API などでの更新を読み直したら、バックアップの一覧も読み直す
+                onExternalChange={() => { reloadSnapshots().catch(() => { }); }}
                 // 強調したら履歴から外す（ブラウザの再読み込みで、もう一度強調し直さないように）
                 onFocusDone={() => navigate(`${location.pathname}${location.search}`, { replace: true, state: null })} />
             )}
@@ -629,6 +636,10 @@ export function WbsPage() {
       )}
 
       {manualOpen && <WbsManualDialog canEdit={canEdit} onClose={() => setManualOpen(false)} />}
+
+      {aiUpdateOpen && current && project && (
+        <WbsAiUpdateDialog sheet={current} projectId={project.id} projectName={project.name} onClose={() => setAiUpdateOpen(false)} />
+      )}
 
       {visibilityOpen && current && (
         <WbsVisibilityDialog sheet={current} orgId={userOrgId} onSaved={load} onClose={() => setVisibilityOpen(false)} />

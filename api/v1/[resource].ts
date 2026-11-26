@@ -15,14 +15,18 @@
 //                               … 高度検索：AI が調査の開始・結果・失敗を伝える（ENHA2-055-1。本体は api/_lib/research.ts）
 //   GET  /api/v1/search / minutes / wiki / backlog-item / file-text
 //                               … 高度検索：横断検索と、議事録・Wiki・バックログ1件の本文（ENHA2-055-2。本体は api/_lib/researchSearch.ts）
+//   GET  /api/v1/wbs-sheets     … WBS（作業分解表）の一覧（KAIZEN2611-013。本体は api/_lib/wbsApi.ts）
+//   GET  /api/v1/wbs            … WBS 1つの中身（行・ステータス・メンバー・版の番号）
+//   POST /api/v1/wbs-update     … WBS の行の追加・変更・並べ替え・チケットの紐づけ（行の削除はできない）
+//                                 ※ ここでいう「WBS」は作業分解表。チケットの WBS 番号（?wbs=）とは別物
 //
 // PRの作成とマージを bot 名義で行うAPI（ticket-pull-create / ticket-merge）は、GitHub App の
 // ヘルパーがある api/github/[resource].ts 側に置いている（BRU21-001）。「AIで実装」の手順書はそちらを使う。
 //
 // 下の3つは「AIがチケットを読み取って実装する」ためのもの。キーの権限（scope）で使える範囲が変わる:
 //   write … 登録のみ（context / tickets / backlog の POST）    ← これまでに発行されたキーはすべてこれ
-//   read  … 読み取りのみ（context / tickets の GET / ticket / backlog の GET）
-//   full  … すべて（ticket-status / ticket-update / ticket-pull / ticket-comment はこの権限のみ）
+//   read  … 読み取りのみ（context / tickets の GET / ticket / backlog の GET / wbs-sheets / wbs）
+//   full  … すべて（ticket-status / ticket-update / ticket-pull / ticket-comment / wbs-update はこの権限のみ）
 //   ※ 例外として、高度検索の research-start / research-result / research-fail は read でも full でも POST できる
 //     （画面で一般メンバーが発行する読み取りのキーで、調査の記録だけを書けるようにするため。ENHA2-055-1）
 //
@@ -51,6 +55,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { authenticateApiKey, SCOPE_LABEL, type ApiKeyRow } from "../_lib/apiKeyAuth.js";
 import { handleResearchStart, handleResearchResult, handleResearchFail } from "../_lib/research.js";
 import { createDocHandlers } from "../_lib/researchSearch.js";
+import { createWbsHandlers } from "../_lib/wbsApi.js";
 import { htmlToText, decodeEntities, attrOf } from "../_lib/htmlText.js";
 // 検証用に、これまでどおりここからも export する
 export { htmlToText };
@@ -3022,8 +3027,12 @@ const DOC_HANDLERS: Record<string, (sb: SupabaseClient, key: ApiKeyRow, query: a
   "file-text": docHandlers.handleFileText,
 };
 
+// KAIZEN2611-013 WBS（作業分解表）の読み取りと更新。画面のURLは、このファイルの appPublicOrigin とそろえる
+const wbsHandlers = createWbsHandlers({ appOrigin: appPublicOrigin });
+
 const KNOWN_RESOURCES = [
   "tickets", "context", "ticket", "ticket-status", "ticket-update", "ticket-pull", "ticket-comment", "backlog",
+  "wbs-sheets", "wbs", "wbs-update",
   ...Object.keys(RESEARCH_HANDLERS), ...Object.keys(DOC_HANDLERS),
 ];
 
@@ -3129,6 +3138,33 @@ export default async function handler(req: any, res: any) {
     }
     try {
       return await handleCreateComment(sb, auth.key, commentBody, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+
+  // KAIZEN2611-013 WBS。読むのは「読み取りのみ」「すべて」、書くのは「すべて」だけ
+  if (resource === "wbs-sheets" || resource === "wbs") {
+    if (req.method !== "GET") return res.status(405).json({ error: "GET を使ってください" });
+    if (scope === "write") return denied("WBSを読み取り", "権限が「読み取りのみ」または「すべて」");
+    try {
+      return await (resource === "wbs" ? wbsHandlers.handleWbsDetail : wbsHandlers.handleWbsSheets)(sb, auth.key, req.query ?? {}, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+
+  if (resource === "wbs-update") {
+    if (req.method !== "POST") return res.status(405).json({ error: "POST を使ってください" });
+    if (scope !== "full") return denied("WBSを更新", "権限が「すべて」");
+    let wbsBody: any;
+    try {
+      wbsBody = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body ?? {});
+    } catch {
+      return res.status(400).json({ error: "リクエストボディが JSON として読めません" });
+    }
+    try {
+      return await wbsHandlers.handleWbsUpdate(sb, auth.key, wbsBody, res);
     } catch (e: any) {
       return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
     }

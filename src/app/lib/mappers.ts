@@ -256,7 +256,7 @@ export function mapWbsSheet(r: any): WbsSheet {
 export function mapWbsSnapshotMeta(r: any): WbsSnapshotMeta {
   return {
     id: r.id, sheetId: r.wbs_sheet_id, takenAt: r.taken_at,
-    kind: r.kind === "before_restore" ? "before_restore" : "daily",
+    kind: r.kind === "before_restore" || r.kind === "before_api" ? r.kind : "daily",
     // Storage へ移すときに data を空にして storage_path を入れる。storage_path があれば Storage にある
     inStorage: !!r.storage_path,
   };

@@ -1282,8 +1282,11 @@ export interface WbsSnapshotMeta {
   sheetId: string;
   /** 取った日時（ISO） */
   takenAt: string;
-  /** daily = 毎日のバックアップ / before_restore = 反映の直前に自動で保存したもの */
-  kind: "daily" | "before_restore";
+  /**
+   * daily = 毎日のバックアップ / before_restore = 反映の直前に自動で保存したもの /
+   * before_api = APIキーでの更新（POST /api/v1/wbs-update）の直前に自動で保存したもの（KAIZEN2611-013）
+   */
+  kind: "daily" | "before_restore" | "before_api";
   /** Storage へ移したもの（1年たったもの）。中身は API から取り出す */
   inStorage: boolean;
 }
