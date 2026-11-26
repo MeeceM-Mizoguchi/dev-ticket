@@ -1,8 +1,9 @@
 // ENHA2-053 WBS画面の上部の操作列。
 // WBSの切り替え・新規作成・名前変更・削除・段数・公開設定を並べる。
 // KAIZEN2611-004 バックアップの日付の選択（過去の時点の表示）と、アーカイブ・アーカイブ済みの入口も置く。
+// KAIZEN2611-013 「AIで更新」（会議の文字起こしなどから、AI が API で WBS を更新する手順書のコピー）の入口も置く。
 import type { ReactNode } from "react";
-import { Plus, Pencil, Trash2, Globe, Lock, BookOpen, Link2, CalendarRange, LockKeyhole, LockKeyholeOpen, Archive, History } from "lucide-react";
+import { Plus, Pencil, Trash2, Globe, Lock, BookOpen, Link2, CalendarRange, LockKeyhole, LockKeyholeOpen, Archive, History, Sparkles } from "lucide-react";
 import { WBS_LEVEL_OPTIONS, wbsSnapshotLabel } from "@/app/lib/wbsService";
 import type { WbsLevels, WbsSheet, WbsSnapshotMeta } from "@/app/types";
 import { PickerCell } from "@/app/components/tasks/TaskPickerCell";
@@ -17,7 +18,7 @@ const ARCHIVED_OPTION = "__archived__";
 export function WbsSheetBar({
   sheets, current, canEdit, canManage, onSelect, onCreate, onRename, onDelete, onLock, onUnlock, onChangeLevels, onOpenVisibility, onOpenManual, onCopyUrl, onOpenMaster,
   archivedCount = 0, archivedSelected = false, onOpenArchived, onArchive,
-  snapshots = [], snapshotId = "", snapshotLoadingId = null, onSelectSnapshot, children,
+  snapshots = [], snapshotId = "", snapshotLoadingId = null, onSelectSnapshot, onOpenAiUpdate, children,
 }: {
   /** 切り替えの候補（アーカイブしていないWBS） */
   sheets: WbsSheet[];
@@ -58,6 +59,8 @@ export function WbsSheetBar({
   snapshotLoadingId?: string | null;
   /** 日付を選んだ（"" は今の状態に戻る） */
   onSelectSnapshot?: (id: string) => void;
+  /** KAIZEN2611-013 「AIで更新」の手順書を開く。渡さなければボタンを出さない（編集可の人だけに渡す） */
+  onOpenAiUpdate?: () => void;
   /** 右側に足す操作（ステータス設定など） */
   children?: ReactNode;
 }) {
@@ -162,6 +165,13 @@ export function WbsSheetBar({
       {children}
 
       <div style={{ flex: 1 }} />
+      {canEdit && current && onOpenAiUpdate && (
+        <button type="button" onClick={onOpenAiUpdate}
+          title="会議の文字起こしなどと一緒にAIへ渡す手順をコピーします。AIが決まったこと（日程・担当・進捗・新しい作業）をこのWBSに反映します"
+          style={{ ...wbsToolBtn, color: "#7C3AED" }}>
+          <Sparkles style={{ width: 12, height: 12 }} />AIで更新
+        </button>
+      )}
       {current && (
         <button type="button" onClick={onOpenMaster} title="大項目だけを並べた全体の日程（マスタースケジュール）を見る" style={wbsToolBtn}>
           <CalendarRange style={{ width: 12, height: 12 }} />マスタースケジュール

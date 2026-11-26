@@ -542,11 +542,13 @@ export async function loadWbsEditVersion(sheetId: string): Promise<number | null
   return Number((data as { edit_version?: number }).edit_version ?? 0);
 }
 
-/** 日付の一覧に出す名前。例「2026/11/10 3:00」「2026/11/17 14:05 反映前に保存」 */
+/** 日付の一覧に出す名前。例「2026/11/10 3:00」「2026/11/17 14:05 反映前に保存」「2026/11/26 10:12 APIで更新する前に保存」 */
 export function wbsSnapshotLabel(meta: WbsSnapshotMeta): string {
   const d = new Date(meta.takenAt);
   const text = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
-  return meta.kind === "before_restore" ? `${text} 反映前に保存` : text;
+  if (meta.kind === "before_restore") return `${text} 反映前に保存`;
+  if (meta.kind === "before_api") return `${text} APIで更新する前に保存`;
+  return text;
 }
 
 /** バックアップの中身（DB の jsonb の形）を、画面で表示する形に直す */

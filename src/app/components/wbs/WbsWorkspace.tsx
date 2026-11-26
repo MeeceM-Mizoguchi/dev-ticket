@@ -12,7 +12,7 @@ import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 import { computeSortOrder } from "@/app/lib/taskService";
 import {
-  WBS_SORT_GAP, addWbsItemTickets, createWbsItem, deleteWbsItems, loadWbsHolidays, loadWbsItemTickets, loadWbsItems,
+  WBS_SORT_GAP, addWbsItemTickets, createWbsItem, deleteWbsItems, loadWbsEditVersion, loadWbsHolidays, loadWbsItemTickets, loadWbsItems,
   loadWbsStatuses, removeWbsItemTickets, renumberWbsItems, updateWbsItem,
 } from "@/app/lib/wbsService";
 import { buildWbsGantt, buildWbsRows, siblingsOf, todayStr } from "@/app/lib/wbsCalc";
@@ -54,7 +54,7 @@ function readColOrder(userId: string, sheetId: string): WbsColKey[] {
   return [];
 }
 
-export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange, focusItemId = null, onFocusDone, snapshot = null }: {
+export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange, focusItemId = null, onFocusDone, onExternalChange, snapshot = null }: {
   sheet: WbsSheet;
   project: Project;
   canEdit: boolean;
@@ -71,6 +71,8 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   focusItemId?: string | null;
   /** focusItemId の行を強調し終えたとき */
   onFocusDone?: () => void;
+  /** KAIZEN2611-013 画面に戻ったときに、ほかの人や API での更新を見つけて読み直したとき */
+  onExternalChange?: () => void;
 }) {
   const { userId } = useAuth();
   const { toast } = useToast();
@@ -83,6 +85,8 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   const [loading, setLoading] = useState(true);
   // 一度でもデータを読んだら、以後は再読み込みでスピナーに差し替えない（画面のちらつき防止）
   const initializedRef = useRef(false);
+  // KAIZEN2611-013 最後に読んだときの版の番号（画面に戻ったときに比べる）。バックアップの仕組みが無い環境では null
+  const loadedVersionRef = useRef<number | null>(null);
 
   // チェックを付けた行。行を選ぶ手段は、表の左端のチェックボックスだけ
   const [checkedIds, setCheckedIds] = useState<ReadonlySet<string>>(new Set());
@@ -183,20 +187,56 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
       setLoading(false);
       return;
     }
+    // 版の番号は中身より先に読む（読んでいる間に変わったら、次に画面へ戻ったときに読み直される）
+    const version = sheet.backupEnabled ? await loadWbsEditVersion(sheet.id) : null;
     const [its, sts, hols, lks] = await Promise.all([
       loadWbsItems(sheet.id), loadWbsStatuses(sheet.id), loadWbsHolidays(project.id, sheet.id), loadWbsItemTickets(sheet.id),
     ]);
+    loadedVersionRef.current = version;
     setItems(its);
     setStatuses(sts);
     setHolidays(hols);
     setLinks(lks);
     initializedRef.current = true;
     setLoading(false);
-  }, [sheet.id, project.id, snapshot]);
+  }, [sheet.id, sheet.backupEnabled, project.id, snapshot]);
 
   const reloadHolidays = useCallback(async () => { setHolidays(await loadWbsHolidays(project.id, sheet.id)); }, [project.id, sheet.id]);
 
   useEffect(() => { load().catch(() => setLoading(false)); }, [load]);
+
+  // ── KAIZEN2611-013 画面に戻ったときの読み直し ────────────────
+  // AI や別のシステムが API（POST /api/v1/wbs-update）で更新したあと、開いたままの画面が古い中身のまま
+  // 編集を続けないよう、ブラウザのタブ・ウィンドウに戻ったときに版の番号を確かめ、変わっていれば読み直す。
+  // 自分の編集でも版の番号は上がるので、そのときも読み直す（中身は同じなので見た目は変わらない）。
+  // セルを編集している間は読み直さない（打ちかけの値を消さないため）。
+  const editingRef = useRef<WbsEditing | null>(null);
+  editingRef.current = editing;
+  useEffect(() => {
+    if (snapshot || !sheet.backupEnabled) return;
+    let checking = false;
+    let disposed = false;
+    const check = async () => {
+      if (checking || document.visibilityState !== "visible" || editingRef.current) return;
+      checking = true;
+      try {
+        const version = await loadWbsEditVersion(sheet.id);
+        if (disposed || version === null || loadedVersionRef.current === null || version === loadedVersionRef.current) return;
+        await load();
+        if (!disposed) onExternalChange?.();
+      } catch { /* 読み直せなくても、今の表示のまま使える */ } finally {
+        checking = false;
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") void check(); };
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      disposed = true;
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [snapshot, sheet.backupEnabled, sheet.id, load, onExternalChange]);
 
   const today = todayStr();
   const rows = useMemo(() => buildWbsRows(items, sheet.levels, today, statuses), [items, sheet.levels, today, statuses]);
