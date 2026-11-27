@@ -6,6 +6,7 @@
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapWbsHoliday, mapWbsItem, mapWbsSheet, mapWbsSnapshotMeta, mapWbsStatus } from "@/app/lib/mappers";
 import type { WbsImportItem } from "@/app/lib/wbsImport";
+import type { WbsDiffOp } from "@/app/lib/wbsDiff";
 import type {
   AccessLevel, UserPermissions, WbsHoliday, WbsItem, WbsLevels, WbsSheet, WbsSnapshotContent, WbsSnapshotMeta, WbsStatus, WbsVisibility,
 } from "@/app/types";
@@ -577,7 +578,7 @@ type WbsApiResult<T> = { ok: true; data: T } | { ok: false; error: string; code?
  * `api/wbs/[action]` を呼ぶ。認証はログイン中ユーザーのアクセストークン。
  * Vite の開発サーバーは api/ を実行しないため、`npm run dev` ではHTMLが返る（その旨を伝える）。
  */
-async function postWbsApi<T>(action: "snapshot" | "restore" | "archive" | "unarchive" | "purge", body: unknown): Promise<WbsApiResult<T>> {
+async function postWbsApi<T>(action: "snapshot" | "restore" | "archive" | "unarchive" | "purge" | "proposal-apply" | "proposal-reject", body: unknown): Promise<WbsApiResult<T>> {
   if (!isSupabaseEnabled) return { ok: false, error: "Supabase が設定されていません" };
   const { data: { session } } = await supabase!.auth.getSession();
   if (!session?.access_token) return { ok: false, error: "ログインが必要です" };
@@ -655,4 +656,63 @@ export async function purgeWbsSheetFiles(projectId: string, sheetId: string): Pr
   const r = await postWbsApi("purge", { projectId, sheetId });
   if (!r.ok) console.error("[wbs] purge files failed:", r.error);
   return r.ok;
+}
+
+// ── KAIZEN2611-015 AI からの更新の案 ─────────────────────────────
+
+/** AI が API（POST /api/v1/wbs-proposal）で預けた更新の案。読めるのは、その WBS を見られる人（RLS） */
+export interface WbsProposal {
+  id: string;
+  sheetId: string;
+  /** wbs_api_apply に渡す形の操作（wbsDiff.ts の WbsDiffOp） */
+  ops: WbsDiffOp[];
+  changes: string[];
+  warnings: string[];
+  /** 案を作ったときの版の番号 */
+  baseVersion: number;
+  createdByName: string;
+  apiKeyName: string;
+  status: "pending" | "applied" | "rejected";
+  createdAt: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapWbsProposal(r: any): WbsProposal {
+  return {
+    id: String(r.id), sheetId: String(r.wbs_sheet_id),
+    ops: Array.isArray(r.ops) ? (r.ops as WbsDiffOp[]) : [],
+    changes: Array.isArray(r.changes) ? r.changes.map(String) : [],
+    warnings: Array.isArray(r.warnings) ? r.warnings.map(String) : [],
+    baseVersion: Number(r.base_version ?? 0),
+    createdByName: String(r.created_by_name ?? ""), apiKeyName: String(r.api_key_name ?? ""),
+    status: r.status === "applied" || r.status === "rejected" ? r.status : "pending",
+    createdAt: String(r.created_at ?? ""),
+  };
+}
+
+/** 反映していない案（新しい順）。テーブルが無い環境（SQL 未適用）では空を返す */
+export async function loadWbsPendingProposals(sheetId: string): Promise<WbsProposal[]> {
+  if (!isSupabaseEnabled || !sheetId) return [];
+  const { data, error } = await supabase!.from("wbs_proposals").select("*")
+    .eq("wbs_sheet_id", sheetId).eq("status", "pending")
+    .order("created_at", { ascending: false }).order("id", { ascending: true });
+  if (error) return [];
+  return (data ?? []).map(mapWbsProposal);
+}
+
+/** 案を1つ読む（反映済み・取り消し済みのものも読む。見られない・無いときは null） */
+export async function loadWbsProposal(id: string): Promise<WbsProposal | null> {
+  if (!isSupabaseEnabled || !id) return null;
+  const { data, error } = await supabase!.from("wbs_proposals").select("*").eq("id", id).maybeSingle();
+  if (error || !data) return null;
+  return mapWbsProposal(data);
+}
+
+/**
+ * 案を反映する／取り消す。押した人の権限で、DB が版の番号を比べてから反映する。
+ * conflict … 案のあとに WBS が変わった（反映していない）
+ */
+export async function decideWbsProposal(id: string, action: "apply" | "reject"): Promise<{ ok: true } | { ok: false; error: string; code?: string }> {
+  const r = await postWbsApi(action === "apply" ? "proposal-apply" : "proposal-reject", { proposalId: id });
+  return r.ok ? { ok: true } : { ok: false, error: r.error, code: r.code };
 }

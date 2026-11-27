@@ -2,7 +2,8 @@
 //
 // 会議の文字起こしなどと一緒に AI へ渡す手順書（APIキーと対象の WBS の sheetId 入り）をコピーする。
 // 利用者がやるのは「キーを選ぶ → コピー → 文字起こしと一緒に AI へ貼る」だけ。
-// AI は API（GET /api/v1/wbs・POST /api/v1/wbs-update）で WBS を読み、変更の案を利用者に見せて承認を得てから更新する。
+// AI は API（GET /api/v1/wbs・POST /api/v1/wbs-proposal）で WBS を読み、変更を「更新の案」として送って URL を返す。
+// 利用者がその URL（WBS 画面の比べる画面）で新旧を見比べ、「この内容で反映」を押したときだけ反映される（KAIZEN2611-015）。
 //
 // キーの選び方と平文の取り出しは「AIで実装」（src/app/components/tickets/AiImplementDialog.tsx）と同じ仕組み。
 // 書き込みに使うので、選べるのは権限が「すべて」のキーだけ。手順書の中身は src/app/lib/apiWbsPrompt.ts。
@@ -239,7 +240,8 @@ export function WbsAiUpdateDialog({ sheet, projectId, projectName, onClose }: {
           <div style={{ padding: "12px 14px", background: "#F5F3FF", border: `1px solid ${PURPLE}22`, borderRadius: 10 }}>
             <p style={{ fontSize: 11.5, fontWeight: 800, color: "#1A1714", marginBottom: 5 }}>AIが行うこと</p>
             <ul style={{ margin: 0, paddingLeft: 17, fontSize: 11.5, color: "#4B4640", lineHeight: 1.85 }}>
-              <li>更新する前に、変更の案を見せて確認を取ります（承認するまで WBS は変わりません）</li>
+              <li>すぐには反映せず「更新の案」として送り、確かめる画面の URL を渡します</li>
+              <li>URL を開くと変わる行が新旧で並びます。「この内容で反映」を押すまで WBS は変わりません</li>
               <li>文字起こしに無い日付・担当者は、推測で埋めません</li>
               <li>行の削除はしません（削除は画面で行ってください）</li>
               <li>更新の前の状態は「バックアップ」に残り、「APIで更新する前に保存」から元に戻せます</li>

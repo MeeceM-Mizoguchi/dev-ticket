@@ -18,6 +18,8 @@
 //   GET  /api/v1/wbs-sheets     … WBS（作業分解表）の一覧（KAIZEN2611-013。本体は api/_lib/wbsApi.ts）
 //   GET  /api/v1/wbs            … WBS 1つの中身（行・ステータス・メンバー・版の番号）
 //   POST /api/v1/wbs-update     … WBS の行の追加・変更・並べ替え・チケットの紐づけ（行の削除はできない）
+//   POST /api/v1/wbs-proposal   … 同じ形の変更を「更新の案」として預ける。画面で見比べて反映する（KAIZEN2611-015）
+//   GET  /api/v1/wbs-proposal   … ?id=… 案の状態
 //                                 ※ ここでいう「WBS」は作業分解表。チケットの WBS 番号（?wbs=）とは別物
 //
 // PRの作成とマージを bot 名義で行うAPI（ticket-pull-create / ticket-merge）は、GitHub App の
@@ -3032,7 +3034,7 @@ const wbsHandlers = createWbsHandlers({ appOrigin: appPublicOrigin });
 
 const KNOWN_RESOURCES = [
   "tickets", "context", "ticket", "ticket-status", "ticket-update", "ticket-pull", "ticket-comment", "backlog",
-  "wbs-sheets", "wbs", "wbs-update",
+  "wbs-sheets", "wbs", "wbs-update", "wbs-proposal",
   ...Object.keys(RESEARCH_HANDLERS), ...Object.keys(DOC_HANDLERS),
 ];
 
@@ -3165,6 +3167,31 @@ export default async function handler(req: any, res: any) {
     }
     try {
       return await wbsHandlers.handleWbsUpdate(sb, auth.key, wbsBody, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+
+  // KAIZEN2611-015 WBS の更新の案。作るのは「すべて」だけ、状態を読むのは「読み取りのみ」「すべて」
+  if (resource === "wbs-proposal") {
+    if (req.method === "GET") {
+      if (scope === "write") return denied("WBSの更新の案を読み取り", "権限が「読み取りのみ」または「すべて」");
+      try {
+        return await wbsHandlers.handleWbsProposalGet(sb, auth.key, req.query ?? {}, res);
+      } catch (e: any) {
+        return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+      }
+    }
+    if (req.method !== "POST") return res.status(405).json({ error: "GET か POST を使ってください" });
+    if (scope !== "full") return denied("WBSの更新の案を作成", "権限が「すべて」");
+    let proposalBody: any;
+    try {
+      proposalBody = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body ?? {});
+    } catch {
+      return res.status(400).json({ error: "リクエストボディが JSON として読めません" });
+    }
+    try {
+      return await wbsHandlers.handleWbsProposalCreate(sb, auth.key, proposalBody, res);
     } catch (e: any) {
       return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
     }

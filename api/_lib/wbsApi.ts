@@ -3,6 +3,9 @@
 //   GET  /api/v1/wbs-sheets          … プロジェクトの WBS の一覧（キーの発行者が見られるものだけ）
 //   GET  /api/v1/wbs?sheetId=…       … 1つの WBS の中身（行・ステータス・メンバー・版の番号）。並びは画面と同じ
 //   POST /api/v1/wbs-update          … {sheetId, expectedVersion, operations} 行の追加・変更・並べ替え・チケットの紐づけ
+//   POST /api/v1/wbs-proposal        … wbs-update と同じ形。すぐには反映せず「更新の案」として預ける（KAIZEN2611-015）
+//   GET  /api/v1/wbs-proposal?id=…   … 案の状態（反映待ち・反映済み・取り消し）
+//   案の反映・取り消しは、WBS 画面から（api/wbs/[action].ts の proposal-apply / proposal-reject）。
 //
 // 振り分けと APIキーの認証・権限（scope）の判定は api/v1/[resource].ts が行い、ここは中身だけを持つ。
 //   読む API … 権限「読み取りのみ」「すべて」 / 書く API … 権限「すべて」だけ
@@ -35,6 +38,9 @@ const LEVEL_LABELS = ["大項目", "中項目", "小項目"];
 
 const MISSING_FUNCTION_ERROR =
   "WBS を API で更新する仕組み（supabase/add_wbs_api_KAIZEN2611-013.sql）が、まだデータベースに作られていません。管理者に SQL の適用を依頼してください";
+
+const PROPOSAL_MISSING_ERROR =
+  "WBS の更新の案を預ける仕組み（supabase/add_wbs_proposals_KAIZEN2611-015.sql）が、まだデータベースに作られていません。管理者に SQL の適用を依頼してください";
 
 // ── 共通 ─────────────────────────────────────────────────────
 
@@ -327,31 +333,36 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
     });
   }
 
-  // ── POST /api/v1/wbs-update ──
-  async function handleWbsUpdate(sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) {
-    const ownerRes = await resolveOwner(sb, key);
-    if (!ownerRes.ok) return res.status(ownerRes.status).json(ownerRes.body);
-    const owner = ownerRes.owner;
-
+  /**
+   * wbs-update と wbs-proposal（KAIZEN2611-015）で共通の確かめ。
+   * 送られた操作を今の中身に当てはめ、wbs_api_apply に渡す形（sqlOps）と、errors・warnings・変更の一覧を作る。
+   * 確かめの処理はここ1か所にまとめる（どちらの入口からでも同じ結果になるように）
+   */
+  async function prepareWbsUpdate(sb: SupabaseClient, key: ApiKeyRow, owner: KeyOwner, body: any): Promise<Fail | {
+    ok: true; sheet: SheetRow; expectedVersion: number;
+    errors: string[]; warnings: string[]; changes: string[];
+    created: { ref: string | null; id: string; name: string; level: number }[];
+    sqlOps: Record<string, unknown>[];
+  }> {
     const expectedVersion = Number(body?.expectedVersion);
     if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
-      return res.status(400).json({ error: "expectedVersion は 0 以上の整数で指定してください（GET /api/v1/wbs の version）" });
+      return fail(400, "expectedVersion は 0 以上の整数で指定してください（GET /api/v1/wbs の version）");
     }
     const operations = body?.operations;
-    if (!Array.isArray(operations) || operations.length === 0) return res.status(400).json({ error: "operations は1件以上の配列で指定してください" });
-    if (operations.length > MAX_OPERATIONS) return res.status(400).json({ error: `operations は1回に ${MAX_OPERATIONS} 件までです` });
+    if (!Array.isArray(operations) || operations.length === 0) return fail(400, "operations は1件以上の配列で指定してください");
+    if (operations.length > MAX_OPERATIONS) return fail(400, `operations は1回に ${MAX_OPERATIONS} 件までです`);
 
     // 版の番号を最初に読む。このあとに読む中身は、版の番号が expectedVersion のときのもの
     // （途中で編集されれば DB の確認で 409 になる）
     const sheetRes = await loadSheet(sb, key, owner, str(body?.sheetId));
-    if (!sheetRes.ok) return res.status(sheetRes.status).json(sheetRes.body);
+    if (!sheetRes.ok) return sheetRes;
     const sheet = sheetRes.sheet;
-    if (!(await rpcBool(sb, "wbs_user_can_edit", owner.id, sheet.id))) return res.status(403).json(reasonFailure({ reason: "forbidden" }).body);
-    if (sheet.archived_at) return res.status(409).json(reasonFailure({ reason: "archived" }).body);
-    if (isLocked(sheet)) return res.status(409).json(reasonFailure({ reason: "locked" }).body);
+    if (!(await rpcBool(sb, "wbs_user_can_edit", owner.id, sheet.id))) return reasonFailure({ reason: "forbidden" });
+    if (sheet.archived_at) return reasonFailure({ reason: "archived" });
+    if (isLocked(sheet)) return reasonFailure({ reason: "locked" });
     if (Number(sheet.edit_version ?? 0) !== expectedVersion) {
       const f = reasonFailure({ reason: "conflict", editedByName: (sheet as any).last_edited_by_name ?? "", editedAt: (sheet as any).last_edited_at ?? null });
-      return res.status(f.status).json({ ...f.body, version: Number(sheet.edit_version ?? 0) });
+      return { ...f, body: { ...f.body, version: Number(sheet.edit_version ?? 0) } };
     }
 
     const levels = sheetLevels(sheet);
@@ -375,13 +386,13 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
     const ticketByNumber = new Map<string, { id: string; wbs: string }[]>();
     if (ticketNumbers.size > 0) {
       const { data: sprintRows, error: spErr } = await sb.from("sprints").select("id").eq("project_id", key.project_id);
-      if (spErr) return res.status(500).json({ error: spErr.message });
+      if (spErr) return fail(500, spErr.message);
       const sprintIds = (sprintRows ?? []).map((s: any) => s.id);
       const wanted = [...new Set([...ticketNumbers].flatMap(n => [n, n.toUpperCase()]))];
       if (sprintIds.length > 0) {
         const { data: tRows, error: tErr } = await sb.from("sprint_tickets").select("id, wbs")
           .in("sprint_id", sprintIds).in("wbs", wanted).order("id", { ascending: true });
-        if (tErr) return res.status(500).json({ error: tErr.message });
+        if (tErr) return fail(500, tErr.message);
         for (const t of (tRows ?? []) as any[]) {
           const list = ticketByNumber.get(String(t.wbs).toUpperCase());
           if (list) list.push({ id: String(t.id), wbs: String(t.wbs) }); else ticketByNumber.set(String(t.wbs).toUpperCase(), [{ id: String(t.id), wbs: String(t.wbs) }]);
@@ -487,12 +498,13 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
         if (mode === "link") {
           if (set.has(t.id)) continue;
           set.add(t.id);
-          sqlOps.push({ t: "link", item_id: it.id, ticket_id: t.id });
+          // ticket_wbs は比べる画面（KAIZEN2611-015）で番号を出すため。DB の関数は読まない
+          sqlOps.push({ t: "link", item_id: it.id, ticket_id: t.id, ticket_wbs: t.wbs });
           changes.push(`${labelOf(it)}：チケット ${t.wbs} を紐づけ`);
         } else {
           if (!set.has(t.id)) { warnings.push(`${where}：チケット ${t.wbs} は紐づいていません（何もしていません）`); continue; }
           set.delete(t.id);
-          sqlOps.push({ t: "unlink", item_id: it.id, ticket_id: t.id });
+          sqlOps.push({ t: "unlink", item_id: it.id, ticket_id: t.id, ticket_wbs: t.wbs });
           changes.push(`${labelOf(it)}：チケット ${t.wbs} の紐づけを外す`);
         }
       }
@@ -622,6 +634,19 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
       errors.push(`${where}：op「${String(op.op ?? "")}」は使えません（add / update / move / link / unlink のいずれか）`);
     });
 
+    return { ok: true, sheet, expectedVersion, errors, warnings, changes, created, sqlOps };
+  }
+
+  // ── POST /api/v1/wbs-update ──
+  async function handleWbsUpdate(sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) {
+    const ownerRes = await resolveOwner(sb, key);
+    if (!ownerRes.ok) return res.status(ownerRes.status).json(ownerRes.body);
+    const owner = ownerRes.owner;
+
+    const prep = await prepareWbsUpdate(sb, key, owner, body);
+    if (!prep.ok) return res.status(prep.status).json(prep.body);
+    const { sheet, expectedVersion, errors, warnings, changes, created, sqlOps } = prep;
+
     if (errors.length > 0) {
       return res.status(400).json({ error: "反映できない操作があるため、WBS は何も変えていません", errors, warnings });
     }
@@ -640,5 +665,83 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
     return res.status(200).json({ ok: true, version: Number(result.version ?? 0), changes, created, warnings, applied: true });
   }
 
-  return { handleWbsSheets, handleWbsDetail, handleWbsUpdate };
+  // ── POST /api/v1/wbs-proposal（KAIZEN2611-015） ──
+  // wbs-update と同じ確かめをして、WBS は変えずに「更新の案」として預ける。
+  // 利用者が WBS 画面で新旧を見比べ、「この内容で反映」を押したときだけ反映する（api/wbs の proposal-apply）
+  async function handleWbsProposalCreate(sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) {
+    const ownerRes = await resolveOwner(sb, key);
+    if (!ownerRes.ok) return res.status(ownerRes.status).json(ownerRes.body);
+    const owner = ownerRes.owner;
+
+    const prep = await prepareWbsUpdate(sb, key, owner, body);
+    if (!prep.ok) return res.status(prep.status).json(prep.body);
+    const { sheet, expectedVersion, errors, warnings, changes, created, sqlOps } = prep;
+
+    if (errors.length > 0) {
+      return res.status(400).json({ error: "反映できない操作があるため、案を作っていません", errors, warnings });
+    }
+    if (sqlOps.length === 0) {
+      return res.status(400).json({ error: "変わるところが1つも無いため、案を作っていません", errors: [], warnings });
+    }
+
+    const { data: row, error } = await sb.from("wbs_proposals").insert({
+      wbs_sheet_id: sheet.id, project_id: sheet.project_id, ops: sqlOps, changes, warnings,
+      base_version: expectedVersion, created_by: owner.id, created_by_name: owner.name,
+      api_key_id: key.id, api_key_name: key.name ?? "",
+    }).select("id, created_at").single();
+    if (error) {
+      if (error.code === "42P01" || error.code === "PGRST205" || /wbs_proposals/.test(error.message ?? "")) {
+        return res.status(503).json({ error: PROPOSAL_MISSING_ERROR });
+      }
+      return res.status(500).json({ error: `案を保存できませんでした: ${error.message}` });
+    }
+
+    const project = await projectSlug(sb, key.project_id);
+    const base = sheetUrl(project.slug, sheet.id);
+    const updatedRows = new Set(sqlOps.filter(o => o.t !== "insert").map(o => String(o.id ?? o.item_id))).size;
+    return res.status(200).json({
+      ok: true,
+      proposalId: row.id,
+      status: "pending",
+      url: base ? `${base}?proposal=${row.id}` : null,
+      version: expectedVersion,
+      counts: { changedRows: updatedRows, addedRows: created.length, warnings: warnings.length },
+      changes, created, warnings,
+    });
+  }
+
+  // ── GET /api/v1/wbs-proposal?id=…（KAIZEN2611-015） ──
+  async function handleWbsProposalGet(sb: SupabaseClient, key: ApiKeyRow, query: any, res: any) {
+    const ownerRes = await resolveOwner(sb, key);
+    if (!ownerRes.ok) return res.status(ownerRes.status).json(ownerRes.body);
+    const id = str(query?.id);
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: "id（案の id）を指定してください" });
+    const { data, error } = await sb.from("wbs_proposals")
+      .select("id, wbs_sheet_id, project_id, status, changes, warnings, created_at, decided_by_name, decided_at")
+      .eq("id", id).eq("project_id", key.project_id).maybeSingle();
+    if (error) {
+      if (error.code === "42P01" || error.code === "PGRST205") return res.status(503).json({ error: PROPOSAL_MISSING_ERROR });
+      return res.status(500).json({ error: error.message });
+    }
+    if (!data || !(await rpcBool(sb, "wbs_user_can_view", ownerRes.owner.id, String(data.wbs_sheet_id)))) {
+      return res.status(404).json({ error: "案が見つかりません" });
+    }
+    const project = await projectSlug(sb, key.project_id);
+    const base = sheetUrl(project.slug, String(data.wbs_sheet_id));
+    return res.status(200).json({
+      id: data.id,
+      sheetId: data.wbs_sheet_id,
+      // pending＝反映待ち / applied＝反映済み / rejected＝取り消し
+      status: data.status,
+      statusLabel: data.status === "applied" ? "反映済み" : data.status === "rejected" ? "取り消し" : "反映待ち",
+      url: base ? `${base}?proposal=${data.id}` : null,
+      createdAt: data.created_at,
+      decidedByName: data.decided_by_name || null,
+      decidedAt: data.decided_at ?? null,
+      changes: data.changes ?? [],
+      warnings: data.warnings ?? [],
+    });
+  }
+
+  return { handleWbsSheets, handleWbsDetail, handleWbsUpdate, handleWbsProposalCreate, handleWbsProposalGet };
 }
