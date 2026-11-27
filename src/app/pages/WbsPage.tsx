@@ -124,6 +124,9 @@ export function WbsPage() {
   const busyRef = useRef(false);
   // 反映したあと・今の状態に戻ったあと、今のデータを読み直すために作業領域を作り直す
   const [liveKey, setLiveKey] = useState(0);
+  // KAIZEN2611-019 全画面（上の見出し・タブ・WBSの操作の列を隠して、表の領域を広げる）。
+  // 作業領域（WbsWorkspace）は時点の切り替えで作り直されるので、オン・オフはここで持つ
+  const [fullscreen, setFullscreen] = useState(false);
 
   const isAdminRole = userRole === "owner" || userRole === "admin";
   const canEdit = perm === "edit";
@@ -446,8 +449,13 @@ export function WbsPage() {
   if (loading && !initializedRef.current) return <PageLoader label="WBSを読み込み中..." />;
   if (!loading && perm === "none") return <NotFoundView kind="no-permission" label="WBS" />;
 
+  // 全画面で隠すのは、表とガントが出ているときだけ（アーカイブ済み・案の比べる画面では隠さない）
+  const workspaceShown = activeSheets.length > 0 && !currentArchived && !(proposalId && !viewing);
+  const hideChrome = fullscreen && workspaceShown;
+
   return (
-    <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", padding: "24px 24px 16px", minWidth: 1280, overflow: "hidden" }}>
+    <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", padding: hideChrome ? "12px 24px 16px" : "24px 24px 16px", minWidth: 1280, overflow: "hidden" }}>
+      {!hideChrome && (<>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12, flexShrink: 0 }}>
         <button onClick={() => navigate("/projects")}
           style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
@@ -475,6 +483,7 @@ export function WbsPage() {
         </div>
         <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="wbs" marginBottom={0} />
       </div>
+      </>)}
 
       {activeSheets.length === 0 && !currentArchived ? (
         // 1つも無いときは作成を促す
@@ -500,7 +509,7 @@ export function WbsPage() {
         </div>
       ) : (
         <>
-          <div style={{ flexShrink: 0 }}>
+          <div style={{ flexShrink: 0, display: hideChrome ? "none" : undefined }}>
             <WbsSheetBar
               sheets={activeSheets} current={currentArchived ? null : current}
               // 過去の時点を表示している間は、WBSの変更の操作（名前変更・段数・ロック・削除など）も使えなくする
@@ -603,6 +612,7 @@ export function WbsPage() {
                 tickets={tickets} onOpenTicket={handleOpenTicket}
                 highlightIds={highlightIds} onHighlightChange={setHighlightIds}
                 focusItemId={focusItemId}
+                fullscreen={hideChrome} onFullscreenChange={setFullscreen}
                 // KAIZEN2611-013 画面に戻ったときに API などでの更新を読み直したら、バックアップの一覧も読み直す
                 onExternalChange={() => { reloadSnapshots().catch(() => { }); }}
                 // 強調したら履歴から外す（ブラウザの再読み込みで、もう一度強調し直さないように）
