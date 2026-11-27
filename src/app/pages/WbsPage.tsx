@@ -9,8 +9,8 @@
 // KAIZEN2611-004 バックアップの日付を選ぶと、表・ガント・集計がその時点のデータになる（編集はできない）。
 // 「反映」でWBS全体をその時点に戻す。アーカイブしたWBSは、プルダウンの「アーカイブ済み」から戻せる。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router";
-import { FolderKanban, ChevronRight, GanttChartSquare, Plus, Archive, History, LockKeyhole } from "lucide-react";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
+import { FolderKanban, ChevronRight, GanttChartSquare, Plus, Archive, History, LockKeyhole, Sparkles } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -30,8 +30,9 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import {
   WBS_FOCUS_STATE_KEY, WBS_LEVEL_LABELS, createWbsSheet, deleteWbsSheet, loadWbsItemsBelowLevel, loadWbsPermission, loadWbsSheets, updateWbsSheet,
   archiveWbsSheet, loadWbsEditVersion, loadWbsSnapshotContent, loadWbsSnapshots, purgeWbsSheetFiles, restoreWbsSnapshot, unarchiveWbsSheet,
-  wbsSnapshotLabel, type WbsRestoreConflict,
+  wbsSnapshotLabel, type WbsRestoreConflict, loadWbsPendingProposals, type WbsProposal,
 } from "@/app/lib/wbsService";
+import { WbsProposalPanel } from "@/app/components/wbs/WbsProposalPanel";
 import { WbsArchivedView } from "@/app/components/wbs/WbsArchivedView";
 import { WbsSheetBar } from "@/app/components/wbs/WbsSheetBar";
 import { WbsSheetNameDialog } from "@/app/components/wbs/WbsSheetNameDialog";
@@ -69,6 +70,9 @@ export function WbsPage() {
   const { projectSlug, wbsId } = useParams<{ projectSlug: string; wbsId?: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  // KAIZEN2611-015 ?proposal=<案のid> のときは、表の代わりに比べる画面を出す
+  const [searchParams, setSearchParams] = useSearchParams();
+  const proposalId = searchParams.get("proposal");
   const { userId, userName, userRole, userOrgId } = useAuth();
   // マスタースケジュールの行を押して来たときの、強調する行（大項目）
   const focusItemId = ((location.state as Record<string, unknown> | null)?.[WBS_FOCUS_STATE_KEY] as string | undefined) ?? null;
@@ -215,6 +219,40 @@ export function WbsPage() {
     setSnapshots([]);
     reloadSnapshots().catch(() => { });
   }, [reloadSnapshots]);
+
+  // ── KAIZEN2611-015 AI からの更新の案 ─────────────────────────
+  const [proposals, setProposals] = useState<WbsProposal[]>([]);
+  const proposalSheetRef = useRef<string | null>(null);
+  proposalSheetRef.current = backupOn ? currentId : null;
+  const reloadProposals = useCallback(async () => {
+    if (!backupOn || !currentId) { setProposals([]); return; }
+    const list = await loadWbsPendingProposals(currentId);
+    if (proposalSheetRef.current === currentId) setProposals(list);
+  }, [backupOn, currentId]);
+  useEffect(() => {
+    setProposals([]);
+    reloadProposals().catch(() => { });
+  }, [reloadProposals, liveKey]);
+
+  const openProposal = (id: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("proposal", id);
+    setSearchParams(next);
+  };
+  const closeProposal = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("proposal");
+    setSearchParams(next, { replace: true });
+  };
+  const handleProposalDecided = (applied: boolean) => {
+    closeProposal();
+    reloadProposals().catch(() => { });
+    if (applied) {
+      setLiveKey(k => k + 1);
+      reloadSnapshots().catch(() => { });
+      load().catch(() => { });
+    }
+  };
 
   // WBSを切り替えたら、表示中の時点も持ち越さない
   useEffect(() => {
@@ -528,8 +566,35 @@ export function WbsPage() {
             </div>
           )}
 
+          {/* KAIZEN2611-015 反映していない AI からの更新の案があるときの帯。押すと比べる画面を開く */}
+          {!currentArchived && !viewing && !proposalId && proposals.length > 0 && (
+            <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "7px 12px", background: "#F5F3FF", border: "1px solid #DDD6FE", borderRadius: 8, flexWrap: "wrap" }}>
+              <Sparkles style={{ width: 14, height: 14, color: "#7C3AED", flexShrink: 0 }} />
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#3B0764" }}>AIからの更新の案があります（{proposals.length}件）</span>
+              <div style={{ flex: 1 }} />
+              {proposals.slice(0, 3).map(p => {
+                const d = new Date(p.createdAt);
+                return (
+                  <button key={p.id} type="button" onClick={() => openProposal(p.id)}
+                    title="変わる行を新旧で見比べてから、反映するか決められます"
+                    style={{ ...wbsToolBtn, color: "#5B21B6", borderColor: "#C4B5FD" }}>
+                    {`${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`}
+                    {p.createdByName ? `（${p.createdByName}）` : ""} の案を開く
+                  </button>
+                );
+              })}
+              {proposals.length > 3 && <span style={{ fontSize: 11, color: "#6B6458" }}>ほか {proposals.length - 3} 件</span>}
+            </div>
+          )}
+
+          {/* KAIZEN2611-015 案を開いているときは、表の代わりに比べる画面を出す */}
+          {!currentArchived && !viewing && proposalId && current && (
+            <WbsProposalPanel key={proposalId} sheet={current} proposalId={proposalId} canEdit={canEdit}
+              tickets={tickets} onDecided={handleProposalDecided} onClose={closeProposal} />
+          )}
+
           {/* 表とガントの領域。画面の残りの高さいっぱいを使う */}
-          {!currentArchived && (
+          {!currentArchived && !(proposalId && !viewing) && (
           <div style={{ flex: 1, minHeight: 0, background: "#FFFFFF", border: `1px solid ${viewing ? "#BFDBFE" : WBS_COLORS.border}`, borderRadius: 12, overflow: "hidden" }}>
             {current && project && (
               // 表示する時点を切り替えたら作り直す（今のデータと、その時点のデータを混ぜない）
