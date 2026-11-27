@@ -58,8 +58,14 @@ function readColOrder(userId: string, sheetId: string): WbsColKey[] {
   return [];
 }
 
-export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange, focusItemId = null, onFocusDone, onExternalChange, snapshot = null }: {
+export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange, focusItemId = null, onFocusDone, onExternalChange, snapshot = null, fullscreen = false, onFullscreenChange }: {
   sheet: WbsSheet;
+  /**
+   * KAIZEN2611-019 全画面（上の見出し・タブ・WBSの操作の列を隠して、表の領域を広げる）か。
+   * 時点の切り替えでこの部品は key で作り直されるので、オン・オフは親（WbsPage）が持つ
+   */
+  fullscreen?: boolean;
+  onFullscreenChange?: (on: boolean) => void;
   project: Project;
   canEdit: boolean;
   /** KAIZEN2611-004 過去の時点を表示するときの中身。null なら今のデータ */
@@ -141,42 +147,21 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     return () => rootEl.removeEventListener("wheel", onWheel);
   }, [rootEl]);
 
-  // ── 全画面 ──────────────────────────────────────────────────
-  // ブラウザの全画面はページ全体（document.documentElement）にかけ、WBSの部分はアプリの中で
-  // 画面いっぱいに広げる（position:fixed）。WBSの要素そのものを全画面にすると、その外（document.body）へ
-  // 出しているプルダウン・日付の選択・ダイアログが表示されなくなるため。
-  const [fullscreen, setFullscreen] = useState(false);
-  const fullscreenRef = useRef(false);
-  const enterFullscreen = () => {
-    fullscreenRef.current = true;
-    setFullscreen(true);
-    // ブラウザが全画面を許さないときも、画面いっぱいの表示だけは行う
-    document.documentElement.requestFullscreen?.().catch(() => { });
-  };
-  const exitFullscreen = useCallback(() => {
-    fullscreenRef.current = false;
-    setFullscreen(false);
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => { });
-  }, []);
+  // ── 全画面（KAIZEN2611-019） ─────────────────────────────────
+  // ブラウザの全画面にはしない。アプリのヘッダーと左メニューは出したまま、WBS画面の上部
+  // （パンくず・見出しとタブ・WBSの操作の列）だけを親が隠し、空いた高さを表とガントに回す。
+  // position:fixed で広げないので、プルダウン・日付の選択・ダイアログ・チケット詳細の重なり方は、全画面でないときと同じ
+  const enterFullscreen = () => onFullscreenChange?.(true);
+  const exitFullscreen = useCallback(() => onFullscreenChange?.(false), [onFullscreenChange]);
   useEffect(() => {
     if (!fullscreen) return;
-    // Esc などでブラウザの全画面が終わったら、画面いっぱいの表示も戻す
-    const onChange = () => { if (!document.fullscreenElement) exitFullscreen(); };
-    // ブラウザの全画面になれなかったときは Esc がブラウザに使われないので、ここで受ける
+    // Esc で戻る。ダイアログなどが Esc を使ったとき（defaultPrevented）は戻さない
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !e.defaultPrevented && !document.fullscreenElement) exitFullscreen();
+      if (e.key === "Escape" && !e.defaultPrevented) exitFullscreen();
     };
-    document.addEventListener("fullscreenchange", onChange);
     document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("fullscreenchange", onChange);
-      document.removeEventListener("keydown", onKey);
-    };
+    return () => document.removeEventListener("keydown", onKey);
   }, [fullscreen, exitFullscreen]);
-  // 全画面のまま画面を離れたら、ブラウザの全画面も終える
-  useEffect(() => () => {
-    if (fullscreenRef.current && document.fullscreenElement) document.exitFullscreen().catch(() => { });
-  }, []);
 
   const load = useCallback(async () => {
     if (snapshot) {
@@ -670,8 +655,7 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   // KAIZEN2611-016 比べる画面。「この内容で反映」を押すまで WBS は変えない。「閉じる」は何も反映せずに戻る
   if (importDiff && importDiffModel) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, padding: 10, boxSizing: "border-box",
-        ...(fullscreen ? { position: "fixed", inset: 0, zIndex: 250, background: "#FFFFFF" } : null) }}>
+      <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, padding: 10, boxSizing: "border-box" }}>
         <WbsDiffView
           title="インポート：変わったところだけ反映する"
           meta="ファイルの行を ID で今の行と結びつけた結果です。「この内容で反映」を押すまで WBS は変わりません"
@@ -690,9 +674,7 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   }
 
   return (
-    <div ref={setRootEl} style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0,
-      // 全画面中は画面いっぱいに広げる。重なり順はダイアログとチケット詳細のパネル（300）より下
-      ...(fullscreen ? { position: "fixed", inset: 0, zIndex: 250, background: "#FFFFFF" } : null) }}>
+    <div ref={setRootEl} style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <WbsSummary rows={rows} statuses={statuses} gantt={gantt} />
 
       <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: "1px solid #E2E6EC", flexWrap: "wrap" }}>
@@ -743,7 +725,7 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
         )}
         {/* 閲覧のみの人にも出す */}
         <button type="button" onClick={fullscreen ? exitFullscreen : enterFullscreen}
-          title={fullscreen ? "全画面表示を終了します（Esc でも戻ります）" : "WBSを画面いっぱいに表示します"} style={wbsToolBtn}>
+          title={fullscreen ? "全画面を終了して、上の見出しとWBSの操作を表示します（Esc でも戻ります）" : "上の見出しとWBSの操作を隠して、表を広く表示します（Esc でも戻ります）"} style={wbsToolBtn}>
           {fullscreen
             ? <><Minimize2 style={{ width: 12, height: 12 }} />全画面を終了</>
             : <><Maximize2 style={{ width: 12, height: 12 }} />全画面</>}
