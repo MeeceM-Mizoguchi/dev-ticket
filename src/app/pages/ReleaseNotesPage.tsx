@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router";
-import { ChevronLeft, ChevronRight, Info, CheckCircle2, X, GripVertical, FolderKanban } from "lucide-react";
+import { ChevronLeft, ChevronRight, Info, CheckCircle2, X, GripVertical, FolderKanban, CalendarDays, BarChart2 } from "lucide-react";
+import type { ElementType } from "react";
+import { ReleaseGanttView } from "@/app/components/releases/ReleaseGanttView";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { closeWaivedIfDue } from "@/app/lib/releaseAutoClose";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -29,6 +31,17 @@ interface ReleaseItem {
   projectName: string;
 }
 
+/** カレンダー／ガントチャートの切り替え（KAIZEN2611-014）。最後に選んだ表示をブラウザに覚えておく */
+type ReleaseView = "calendar" | "gantt";
+const VIEW_STORAGE_KEY = "releaseNotes:view";
+function readStoredView(): ReleaseView {
+  try {
+    return localStorage.getItem(VIEW_STORAGE_KEY) === "gantt" ? "gantt" : "calendar";
+  } catch {
+    return "calendar";
+  }
+}
+
 const MONTH_NAMES = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
 const DOW = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -55,6 +68,11 @@ export function ReleaseNotesPage() {
 
   const [year, setYear] = useState(todayObj.getFullYear());
   const [month, setMonth] = useState(todayObj.getMonth());
+  const [viewMode, setViewModeState] = useState<ReleaseView>(readStoredView);
+  const setViewMode = (v: ReleaseView) => {
+    setViewModeState(v);
+    try { localStorage.setItem(VIEW_STORAGE_KEY, v); } catch { /* 保存できなくても表示は切り替える */ }
+  };
 
   const { userId, userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
@@ -438,8 +456,22 @@ export function ReleaseNotesPage() {
   const listItems = selectedDate ? (byDate.get(selectedDate) ?? []) : [];
 
   // 「今日」＋月送り。サイドメニュー版・プロジェクト内タブ版のどちらのヘッダーにも出す
+  const viewBtns: { mode: ReleaseView; label: string; Icon: ElementType }[] = [
+    { mode: "calendar", label: "カレンダー", Icon: CalendarDays },
+    { mode: "gantt", label: "ガントチャート", Icon: BarChart2 },
+  ];
+
   const monthControls = (
     <>
+          {/* カレンダー／ガントチャートの切り替え。見た目はスプリント管理の切り替えと同じ */}
+          <div style={{ display: "flex", gap: 2, background: "#F0F0EE", border: "1px solid rgba(26,23,20,0.06)", borderRadius: 9, padding: 3, flexShrink: 0 }}>
+            {viewBtns.map(({ mode, label, Icon }) => (
+              <button key={mode} onClick={() => setViewMode(mode)}
+                style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 12px", fontSize: 11, fontWeight: 500, borderRadius: 6, border: "none", cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap", background: viewMode === mode ? "#FFFFFF" : "transparent", color: viewMode === mode ? "#1A1714" : "#9E9690", boxShadow: viewMode === mode ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}>
+                <Icon style={{ width: 12, height: 12 }} />{label}
+              </button>
+            ))}
+          </div>
           {/* 今日ボタン */}
           <button
             onClick={goToday}
@@ -779,6 +811,22 @@ export function ReleaseNotesPage() {
       ) : (
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: projectMode ? "10px 24px 18px" : "10px 20px 14px", minHeight: 0, minWidth: 0 }}>
 
+        {viewMode === "gantt" ? (
+          // ガントチャート（KAIZEN2611-014）。見るだけで、ドラッグでリリース日は変えない。
+          // データ・詳細パネル・下のリリース日未定エリアはカレンダーと共通
+          <ReleaseGanttView
+            year={year}
+            month={month}
+            items={filteredItems}
+            todayStr={todayStr}
+            groupByProject={!projectMode}
+            onSelect={item => {
+              setSelectedTicketMeta({ sprintId: item.sprintId, projectId: item.projectId, projectSlug: item.projectSlug });
+              setSelectedTicket(item.ticket);
+              setListPanelOpen(false);
+            }}
+          />
+        ) : (<>
         {/* Day-of-week header */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 4, flexShrink: 0 }}>
           {DOW.map((d, i) => (
@@ -952,6 +1000,7 @@ export function ReleaseNotesPage() {
             );
           })}
         </div>
+        </>)}
 
         {/* リリース日未定 zone */}
         <div
