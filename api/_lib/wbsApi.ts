@@ -143,6 +143,8 @@ async function rpcBool(sb: SupabaseClient, fn: "wbs_user_can_view" | "wbs_user_c
 interface SheetRow {
   id: string; project_id: string; name: string; levels: number; sort_order: number;
   edit_version?: number; is_locked?: boolean; archived_at?: string | null;
+  /** KAIZEN2611-022 削除済み（論理削除）。列が無い環境では無い */
+  deleted_at?: string | null;
 }
 
 interface ItemState {
@@ -165,7 +167,8 @@ async function loadSheet(sb: SupabaseClient, key: ApiKeyRow, owner: KeyOwner, sh
   if (!/^[0-9a-f-]{36}$/i.test(sheetId)) return fail(400, `sheetId の形式が正しくありません: ${sheetId}`);
   const { data, error } = await sb.from("wbs_sheets").select("*").eq("id", sheetId).eq("project_id", key.project_id).maybeSingle();
   if (error) return fail(500, error.message);
-  if (!data || !(await rpcBool(sb, "wbs_user_can_view", owner.id, sheetId))) return fail(404, "WBSが見つかりません", { code: "not_found" });
+  // KAIZEN2611-022 削除済みの WBS も「見つからない」と返す
+  if (!data || (data as SheetRow).deleted_at || !(await rpcBool(sb, "wbs_user_can_view", owner.id, sheetId))) return fail(404, "WBSが見つかりません", { code: "not_found" });
   const sheet = data as SheetRow;
   if (!("edit_version" in sheet)) {
     return fail(503, "WBS の版の番号（supabase/add_wbs_snapshots.sql）が、まだデータベースに作られていません。管理者に SQL の適用を依頼してください");
@@ -270,7 +273,8 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
     const { data, error } = await sb.from("wbs_sheets").select("*").eq("project_id", key.project_id)
       .order("sort_order", { ascending: true }).order("id", { ascending: true });
     if (error) return res.status(500).json({ error: error.message });
-    const sheets = (data ?? []) as SheetRow[];
+    // KAIZEN2611-022 削除済みの WBS は一覧に出さない
+    const sheets = ((data ?? []) as SheetRow[]).filter(s => !s.deleted_at);
     const visible = await Promise.all(sheets.map(async s => {
       if (!(await rpcBool(sb, "wbs_user_can_view", owner.id, s.id))) return null;
       return { s, canEdit: await rpcBool(sb, "wbs_user_can_edit", owner.id, s.id) };

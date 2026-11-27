@@ -1274,6 +1274,13 @@ export interface WbsSheet {
   /** アーカイブした日時。null ならアーカイブしていない */
   archivedAt: string | null;
   archivedByName: string;
+  /**
+   * KAIZEN2611-022 削除した日時（論理削除）。null なら削除していない。
+   * softDeleteEnabled が false（deleted_at の列が無い環境）のときは、今までどおりの物理削除で動く
+   */
+  deletedAt: string | null;
+  deletedByName: string;
+  softDeleteEnabled: boolean;
 }
 
 /** KAIZEN2611-004 WBSのバックアップ（日付の一覧に出す1件。中身は含まない） */

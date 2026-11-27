@@ -10,7 +10,7 @@
 // 「反映」でWBS全体をその時点に戻す。アーカイブしたWBSは、プルダウンの「アーカイブ済み」から戻せる。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
-import { FolderKanban, ChevronRight, GanttChartSquare, Plus, Archive, History, LockKeyhole, Sparkles } from "lucide-react";
+import { FolderKanban, ChevronRight, GanttChartSquare, Plus, Archive, History, LockKeyhole, Sparkles, Trash2 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -30,8 +30,9 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import {
   WBS_FOCUS_STATE_KEY, WBS_LEVEL_LABELS, createWbsSheet, deleteWbsSheet, loadWbsItemsBelowLevel, loadWbsPermission, loadWbsSheets, updateWbsSheet,
   archiveWbsSheet, loadWbsEditVersion, loadWbsSnapshotContent, loadWbsSnapshots, purgeWbsSheetFiles, restoreWbsSnapshot, unarchiveWbsSheet,
-  wbsSnapshotLabel, type WbsRestoreConflict, loadWbsPendingProposals, type WbsProposal,
+  wbsSnapshotLabel, type WbsRestoreConflict, loadWbsPendingProposals, type WbsProposal, softDeleteWbsSheet, undeleteWbsSheet,
 } from "@/app/lib/wbsService";
+import { WbsDeletedView } from "@/app/components/wbs/WbsDeletedView";
 import { WbsProposalPanel } from "@/app/components/wbs/WbsProposalPanel";
 import { WbsSettingsDialog } from "@/app/components/wbs/WbsSettingsDialog";
 import { WbsArchivedView } from "@/app/components/wbs/WbsArchivedView";
@@ -121,6 +122,9 @@ export function WbsPage() {
   const [conflict, setConflict] = useState<WbsRestoreConflict | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [unarchivingId, setUnarchivingId] = useState<string | null>(null);
+  // KAIZEN2611-022 削除済みの一覧で、元に戻している・完全に削除している途中のWBSと、完全に削除の確認
+  const [deletedBusyId, setDeletedBusyId] = useState<string | null>(null);
+  const [purgeTarget, setPurgeTarget] = useState<WbsSheet | null>(null);
   // BUG-05 反映・アーカイブ・アーカイブから戻すは await を含むので ref で二重起動を止める
   const busyRef = useRef(false);
   // 反映したあと・今の状態に戻ったあと、今のデータを読み直すために作業領域を作り直す
@@ -175,9 +179,17 @@ export function WbsPage() {
 
   const current = sheets.find(s => s.id === wbsId) ?? null;
   // アーカイブしたWBSは切り替えの候補に出さず、「アーカイブ済み」の一覧にまとめる
-  const activeSheets = useMemo(() => sheets.filter(s => !s.archivedAt), [sheets]);
-  const archivedSheets = useMemo(() => sheets.filter(s => !!s.archivedAt), [sheets]);
-  const currentArchived = !!current?.archivedAt;
+  // KAIZEN2611-022 削除済み（論理削除）のWBSも切り替えの候補に出さず、「削除済み」の一覧にまとめる。
+  // 削除済みの一覧を見られるのは、今「削除」を押せる人（そのWBSの作成者とオーナー）だけ
+  const canManageSheet = useCallback((s: WbsSheet) => userRole === "owner" || (!!userId && s.createdBy === userId), [userRole, userId]);
+  const activeSheets = useMemo(() => sheets.filter(s => !s.archivedAt && !s.deletedAt), [sheets]);
+  const archivedSheets = useMemo(() => sheets.filter(s => !!s.archivedAt && !s.deletedAt), [sheets]);
+  const deletedSheets = useMemo(() => sheets.filter(s => !!s.deletedAt && canManageSheet(s))
+    .sort((a, b) => (b.deletedAt ?? "").localeCompare(a.deletedAt ?? "") || a.id.localeCompare(b.id)), [sheets, canManageSheet]);
+  const currentArchived = !!current?.archivedAt && !current?.deletedAt;
+  const currentDeleted = !!current?.deletedAt;
+  // 中身の無い（アーカイブ済み・削除済みの）WBSを開いているか。表・ガント・WBSの操作を出さない
+  const currentAway = currentArchived || currentDeleted;
   // 公開設定の変更と削除ができるのは、作成者とオーナー
   const canManage = canEdit && !!current && (userRole === "owner" || (!!userId && current.createdBy === userId));
 
@@ -185,10 +197,10 @@ export function WbsPage() {
   // アーカイブ済みのWBSの id で来たときは、そのまま「アーカイブ済み」の一覧を出す
   useEffect(() => {
     if (loading || !projectSlug) return;
-    if (wbsId && sheets.some(s => s.id === wbsId)) return;
+    if (wbsId && sheets.some(s => s.id === wbsId && (!s.deletedAt || canManageSheet(s)))) return;
     if (activeSheets.length > 0) navigate(`/${projectSlug}/wbs/${activeSheets[0].id}`, { replace: true });
     else if (wbsId) navigate(`/${projectSlug}/wbs`, { replace: true });
-  }, [loading, projectSlug, wbsId, sheets, activeSheets, navigate]);
+  }, [loading, projectSlug, wbsId, sheets, activeSheets, navigate, canManageSheet]);
 
   // ── チケット ────────────────────────────────────────────────
   const tickets = useMemo<WbsTicketRef[]>(
@@ -209,7 +221,7 @@ export function WbsPage() {
   useEffect(() => { setHighlightIds([]); }, [wbsId]);
 
   // ── バックアップ（KAIZEN2611-004） ──────────────────────────
-  const backupOn = !!current && current.backupEnabled && !currentArchived;
+  const backupOn = !!current && current.backupEnabled && !currentAway;
   const currentId = current?.id ?? null;
 
   // 一覧を読んでいる間にWBSを切り替えたら、前のWBSの一覧で上書きしない
@@ -354,6 +366,9 @@ export function WbsPage() {
   const openArchived = () => {
     if (projectSlug && archivedSheets.length) navigate(`/${projectSlug}/wbs/${archivedSheets[0].id}`);
   };
+  const openDeleted = () => {
+    if (projectSlug && deletedSheets.length) navigate(`/${projectSlug}/wbs/${deletedSheets[0].id}`);
+  };
 
   // ── WBS本体の操作 ───────────────────────────────────────────
   const selectSheet = (id: string) => { if (projectSlug && id) navigate(`/${projectSlug}/wbs/${id}`); };
@@ -390,6 +405,28 @@ export function WbsPage() {
     if (!current) return;
     // ロック中は削除させない（ボタンも押せないが、念のためここでも止める。DB も拒否する）
     if (current.isLocked) { toast("このWBSはロックされているため削除できません。削除する場合はロックを解除してください", "error"); return; }
+    // KAIZEN2611-022 論理削除。中身とバックアップを保管して、「削除済み」から元に戻せるようにする。
+    // deleted_at の列が無い環境（SQL 未適用）では、下の今までどおりの物理削除で動く
+    if (current.softDeleteEnabled) {
+      if (busyRef.current) return;
+      busyRef.current = true;
+      try {
+        const r = await softDeleteWbsSheet(current.id);
+        if (!r.ok) {
+          toast(r.code === "locked" ? "このWBSはロックされているため削除できません。削除する場合はロックを解除してください" : `WBSを削除できませんでした（${r.error}）`, "error");
+          // 別の人が直前にロックした・権限が変わった などに合わせて読み直す
+          load().catch(() => { });
+          return;
+        }
+        const rest = activeSheets.filter(s => s.id !== current.id);
+        navigate(rest.length ? `/${projectSlug}/wbs/${rest[0].id}` : `/${projectSlug}/wbs`, { replace: true });
+        toast(`「${current.name}」を削除しました（プルダウンの「削除済み」から元に戻せます）`);
+        await load();
+      } finally {
+        busyRef.current = false;
+      }
+      return;
+    }
     const ok = await deleteWbsSheet(current.id);
     if (ok === "locked") {
       // 別の人が直前にロックした。画面の状態を読み直して合わせる
@@ -404,6 +441,46 @@ export function WbsPage() {
     toast(`「${current.name}」を削除しました`);
     // KAIZEN2611-004 DB のバックアップは一緒に消えている。Storage へ移したバックアップのファイルもここで消す
     if (current.backupEnabled && project) void purgeWbsSheetFiles(project.id, current.id);
+  };
+
+  /** KAIZEN2611-022 削除済みのWBSを元に戻す。戻したWBSを開く */
+  const handleUndelete = async (sheet: WbsSheet) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setDeletedBusyId(sheet.id);
+    try {
+      const r = await undeleteWbsSheet(sheet.id);
+      if (!r.ok) { toast(`元に戻せませんでした（${r.error}）`, "error"); return; }
+      await load();
+      navigate(`/${projectSlug}/wbs/${sheet.id}`, { replace: true });
+      toast(`「${sheet.name}」を元に戻しました`);
+    } finally {
+      busyRef.current = false;
+      setDeletedBusyId(null);
+    }
+  };
+
+  /** KAIZEN2611-022 完全に削除。今までの削除と同じく、wbs_sheets の行を消してから Storage のファイルを消す */
+  const handlePurge = async (sheet: WbsSheet) => {
+    if (busyRef.current || !project) return;
+    busyRef.current = true;
+    setDeletedBusyId(sheet.id);
+    try {
+      const ok = await deleteWbsSheet(sheet.id);
+      if (ok !== true) {
+        toast(ok === "locked" ? "このWBSはロックされているため削除できません" : "完全に削除できませんでした", "error");
+        return;
+      }
+      setSheets(prev => prev.filter(s => s.id !== sheet.id));
+      const restDeleted = deletedSheets.filter(s => s.id !== sheet.id);
+      navigate(restDeleted.length ? `/${projectSlug}/wbs/${restDeleted[0].id}`
+        : activeSheets.length ? `/${projectSlug}/wbs/${activeSheets[0].id}` : `/${projectSlug}/wbs`, { replace: true });
+      toast(`「${sheet.name}」を完全に削除しました`);
+      void purgeWbsSheetFiles(project.id, sheet.id);
+    } finally {
+      busyRef.current = false;
+      setDeletedBusyId(null);
+    }
   };
 
   /** BRU22-008 ロックする／解除する。ロックの状態はDBに持つので、再読み込みや別の人が開いても残る */
@@ -454,7 +531,7 @@ export function WbsPage() {
   if (!loading && perm === "none") return <NotFoundView kind="no-permission" label="WBS" />;
 
   // 全画面で隠すのは、表とガントが出ているときだけ（アーカイブ済み・案の比べる画面では隠さない）
-  const workspaceShown = activeSheets.length > 0 && !currentArchived && !(proposalId && !viewing);
+  const workspaceShown = activeSheets.length > 0 && !currentAway && !(proposalId && !viewing);
   const hideChrome = fullscreen && workspaceShown;
 
   return (
@@ -489,7 +566,7 @@ export function WbsPage() {
       </div>
       </>)}
 
-      {activeSheets.length === 0 && !currentArchived ? (
+      {activeSheets.length === 0 && !currentAway ? (
         // 1つも無いときは作成を促す
         <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, background: "#FFFFFF", border: `1px solid ${WBS_COLORS.border}`, borderRadius: 12 }}>
           <GanttChartSquare style={{ width: 36, height: 36, color: "#C9C4BB" }} />
@@ -510,17 +587,23 @@ export function WbsPage() {
               <Archive style={{ width: 12, height: 12 }} />アーカイブ済み（{archivedSheets.length}件）を見る
             </button>
           )}
+          {deletedSheets.length > 0 && (
+            <button type="button" onClick={openDeleted} style={wbsToolBtn}>
+              <Trash2 style={{ width: 12, height: 12 }} />削除済み（{deletedSheets.length}件）を見る
+            </button>
+          )}
         </div>
       ) : (
         <>
           <div style={{ flexShrink: 0, display: hideChrome ? "none" : undefined }}>
             <WbsSheetBar
-              sheets={activeSheets} current={currentArchived ? null : current}
+              sheets={activeSheets} current={currentAway ? null : current}
               canEdit={canEdit && !viewing}
               archivedCount={archivedSheets.length} archivedSelected={currentArchived} onOpenArchived={openArchived}
+              deletedCount={deletedSheets.length} deletedSelected={currentDeleted} onOpenDeleted={openDeleted}
               // KAIZEN2611-021 名前変更・段数・公開設定・ステータス設定・休日設定・ロック・アーカイブ・削除は「設定」から。
               // 閲覧のみの人には出さない（使える項目が無いため）
-              onOpenSettings={canEdit && !currentArchived ? () => setSettingsOpen(true) : undefined}
+              onOpenSettings={canEdit && !currentAway ? () => setSettingsOpen(true) : undefined}
               snapshots={snapshots} snapshotId={viewing?.meta.id ?? ""} snapshotLoadingId={viewLoadingId}
               onSelectSnapshot={backupOn ? (id => { void handleSelectSnapshot(id); }) : undefined}
               // KAIZEN2611-013 API の更新は版の番号（バックアップの仕組み）を使うので、その仕組みがある環境だけで出す
@@ -539,7 +622,12 @@ export function WbsPage() {
           )}
 
           {/* KAIZEN2611-004 過去の時点を表示している間の帯 */}
-          {viewing && current && !currentArchived && (
+          {currentDeleted && (
+            <WbsDeletedView sheets={deletedSheets} selectedId={current?.id ?? null} busyId={deletedBusyId}
+              onUndelete={s => { void handleUndelete(s); }} onPurge={s => setPurgeTarget(s)} />
+          )}
+
+          {viewing && current && !currentAway && (
             <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "7px 12px", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 8, flexWrap: "wrap" }}>
               <History style={{ width: 14, height: 14, color: "#1D4ED8", flexShrink: 0 }} />
               <span style={{ fontSize: 13, fontWeight: 700, color: "#1E3A8A" }}>
@@ -567,7 +655,7 @@ export function WbsPage() {
             </div>
           )}
 
-          {!currentArchived && highlightIds.length > 0 && (
+          {!currentAway && highlightIds.length > 0 && (
             <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "6px 10px", background: WBS_COLORS.delayBg, borderRadius: 8, fontSize: 12, color: WBS_COLORS.delayText }}>
               <span>段数を減らせない理由になっている行（{highlightIds.length}行）を赤く表示しています。</span>
               <button type="button" onClick={() => setHighlightIds([])} style={{ ...wbsToolBtn, height: 24 }}>強調を消す</button>
@@ -575,7 +663,7 @@ export function WbsPage() {
           )}
 
           {/* KAIZEN2611-015 反映していない AI からの更新の案があるときの帯。押すと比べる画面を開く */}
-          {!currentArchived && !viewing && !proposalId && proposals.length > 0 && (
+          {!currentAway && !viewing && !proposalId && proposals.length > 0 && (
             <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "7px 12px", background: "#F5F3FF", border: "1px solid #DDD6FE", borderRadius: 8, flexWrap: "wrap" }}>
               <Sparkles style={{ width: 14, height: 14, color: "#7C3AED", flexShrink: 0 }} />
               <span style={{ fontSize: 13, fontWeight: 700, color: "#3B0764" }}>AIからの更新の案があります（{proposals.length}件）</span>
@@ -596,13 +684,13 @@ export function WbsPage() {
           )}
 
           {/* KAIZEN2611-015 案を開いているときは、表の代わりに比べる画面を出す */}
-          {!currentArchived && !viewing && proposalId && current && (
+          {!currentAway && !viewing && proposalId && current && (
             <WbsProposalPanel key={proposalId} sheet={current} proposalId={proposalId} canEdit={canEdit}
               tickets={tickets} onDecided={handleProposalDecided} onClose={closeProposal} />
           )}
 
           {/* 表とガントの領域。画面の残りの高さいっぱいを使う */}
-          {!currentArchived && !(proposalId && !viewing) && (
+          {!currentAway && !(proposalId && !viewing) && (
           <div style={{ flex: 1, minHeight: 0, background: "#FFFFFF", border: `1px solid ${viewing ? "#BFDBFE" : WBS_COLORS.border}`, borderRadius: 12, overflow: "hidden" }}>
             {current && project && (
               // 表示する時点を切り替えたら作り直す（今のデータと、その時点のデータを混ぜない）
@@ -666,9 +754,21 @@ export function WbsPage() {
       {deleteOpen && current && !current.isLocked && (
         <ConfirmDialog
           title="WBSの削除"
-          message={`「${current.name}」を削除しますか？\nこのWBSの行・ステータス・チケットの紐づけもすべて削除されます（チケット自体は消えません）。`}
+          message={current.softDeleteEnabled
+            ? `「${current.name}」を削除しますか？\nこのWBSの行・ステータス・チケットの紐づけ・バックアップは、一覧から消えます（チケット自体は消えません）。\n削除した WBS は、プルダウンの「削除済み」から元に戻せます。`
+            : `「${current.name}」を削除しますか？\nこのWBSの行・ステータス・チケットの紐づけもすべて削除されます（チケット自体は消えません）。`}
           onConfirm={handleDelete}
           onClose={() => setDeleteOpen(false)}
+        />
+      )}
+
+      {purgeTarget && (
+        <ConfirmDialog
+          title="WBSの完全な削除"
+          message={`「${purgeTarget.name}」を完全に削除しますか？\n保管している行・ステータス・チケットの紐づけ・休日・バックアップもすべて消えます（チケット自体は消えません）。\n元に戻せません。`}
+          confirmLabel="完全に削除する"
+          onConfirm={() => handlePurge(purgeTarget)}
+          onClose={() => setPurgeTarget(null)}
         />
       )}
 
@@ -699,7 +799,7 @@ export function WbsPage() {
         </DialogShell>
       )}
 
-      {archiveOpen && current && !currentArchived && (
+      {archiveOpen && current && !currentAway && (
         <ConfirmDialog
           title="WBSのアーカイブ"
           message={`「${current.name}」をアーカイブしますか？\nこのWBSの行・ステータス・チケットの紐づけ・バックアップを圧縮して保管し、WBSの一覧から外します。\nWBSを切り替えるプルダウンの「アーカイブ済み」から、いつでも元に戻せます。`}
@@ -711,7 +811,7 @@ export function WbsPage() {
         />
       )}
 
-      {settingsOpen && current && !currentArchived && (
+      {settingsOpen && current && !currentAway && (
         <WbsSettingsDialog
           sheet={current} canEdit={canEdit} canManage={canManage} viewing={!!viewing}
           onClose={() => setSettingsOpen(false)}

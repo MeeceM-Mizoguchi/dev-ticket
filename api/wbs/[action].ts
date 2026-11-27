@@ -7,6 +7,8 @@
 //   POST /api/wbs/archive       {sheetId}                    … WBSをアーカイブする（中身とバックアップを Storage へ移す）
 //   POST /api/wbs/unarchive     {sheetId}                    … アーカイブから戻す
 //   POST /api/wbs/purge         {projectId, sheetId}         … 削除したWBSの、Storage に残ったファイルを消す
+//   POST /api/wbs/delete        {sheetId}                    … WBSを削除する（論理削除。中身とバックアップを Storage へ。KAIZEN2611-022）
+//   POST /api/wbs/undelete      {sheetId}                    … 削除したWBSを元に戻す（KAIZEN2611-022）
 //   POST /api/wbs/proposal-apply  {proposalId}               … AI からの更新の案を反映する（KAIZEN2611-015）
 //   POST /api/wbs/proposal-reject {proposalId}               … AI からの更新の案を取り消す（KAIZEN2611-015）
 //   POST /api/wbs/apply-ops {sheetId, expectedVersion, ops}  … インポートの「変わったところだけ反映する」（KAIZEN2611-016）
@@ -214,6 +216,78 @@ async function handleUnarchive(sb: SupabaseClient, userId: string, body: any, re
   return res.status(200).json({ ok: true });
 }
 
+// ── POST /api/wbs/delete（KAIZEN2611-022） ──────────────────
+// WBSの削除を論理削除にする。アーカイブと同じ2段階で、中身とバックアップを Storage に圧縮して保管し、
+// wbs_sheets の行だけを「削除済み」の印つきで残す。権限（作成者かオーナー）・ロック中でないことは DB が確かめる
+async function handleDelete(sb: SupabaseClient, userId: string, body: any, res: any) {
+  const sheetId = typeof body?.sheetId === "string" ? body.sheetId.trim() : "";
+  if (!sheetId) return res.status(400).json({ error: "sheetId は必須です" });
+
+  const { data: prep, error } = await sb.rpc("wbs_delete_payload", { p_user_id: userId, p_sheet_id: sheetId });
+  if (error) {
+    if (error.code === "PGRST202" || error.code === "42883") return res.status(503).json({ error: SOFT_DELETE_MISSING, code: "missing" });
+    return res.status(500).json({ error: `削除に失敗しました: ${error.message}` });
+  }
+  if (!prep?.ok) return deleteFailure(res, prep);
+
+  const path = `${sheetFolder(String(prep.projectId), sheetId)}/deleted-${stamp()}.json.gz`;
+  const upErr = await uploadJson(sb, path, prep.payload);
+  if (upErr) return res.status(500).json({ error: `削除するWBSの中身を保管できませんでした: ${upErr}` });
+
+  const { data: done, error: finErr } = await sb.rpc("wbs_delete_finish", {
+    p_user_id: userId, p_sheet_id: sheetId, p_expected_version: prep.version, p_snapshot_count: prep.snapshotCount, p_path: path,
+  });
+  if (finErr || !done?.ok) {
+    // DB 側を変えられなかったので、置いたファイルは片付ける（WBSは元のまま）
+    await sb.storage.from(BUCKET).remove([path]);
+    if (finErr) return res.status(500).json({ error: `削除に失敗しました: ${finErr.message}` });
+    if (done?.reason === "conflict") {
+      return res.status(409).json({ error: "削除の途中で、このWBSが編集されました。もう一度お試しください", code: "conflict" });
+    }
+    return deleteFailure(res, done);
+  }
+  return res.status(200).json({ ok: true });
+}
+
+// ── POST /api/wbs/undelete（KAIZEN2611-022） ────────────────
+// 削除済みのWBSを元に戻す。保管したファイルから中身とバックアップを元の id のまま戻し、削除済みの印を外す
+async function handleUndelete(sb: SupabaseClient, userId: string, body: any, res: any) {
+  const sheetId = typeof body?.sheetId === "string" ? body.sheetId.trim() : "";
+  if (!sheetId) return res.status(400).json({ error: "sheetId は必須です" });
+  if (!(await canView(sb, userId, sheetId))) return res.status(404).json({ error: "WBSが見つかりません" });
+
+  const { data: sheet, error } = await sb.from("wbs_sheets").select("*").eq("id", sheetId).maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!sheet) return res.status(404).json({ error: "WBSが見つかりません" });
+  if (!("deleted_at" in sheet)) return res.status(503).json({ error: SOFT_DELETE_MISSING, code: "missing" });
+  if (!sheet.deleted_at) return res.status(409).json({ error: "このWBSは削除されていません", code: "not_deleted" });
+  if (!sheet.delete_path) return res.status(500).json({ error: "削除したWBSのファイルの場所が記録されていません" });
+
+  const payload = await downloadJson(sb, String(sheet.delete_path));
+  const { data: result, error: rpcErr } = await sb.rpc("wbs_undelete", { p_user_id: userId, p_sheet_id: sheetId, p_payload: payload });
+  if (rpcErr) return res.status(500).json({ error: `元に戻せませんでした: ${rpcErr.message}` });
+  if (!result?.ok) return deleteFailure(res, result);
+
+  // 戻し終えたので、保管していたファイルは消す（消せなくても WBS は戻っている）
+  const { error: rmErr } = await sb.storage.from(BUCKET).remove([String(sheet.delete_path)]);
+  if (rmErr) console.warn("[wbs undelete] 保管していたファイルを消せませんでした:", rmErr.message);
+  return res.status(200).json({ ok: true });
+}
+
+const SOFT_DELETE_MISSING = "WBSを元に戻せる削除の仕組み（supabase/add_wbs_soft_delete.sql）が、まだデータベースに作られていません。管理者に SQL の適用を依頼してください";
+
+/** 削除・元に戻すの「できなかった理由」。権限は作成者とオーナー（RLS の wbs_sheets_delete と同じ） */
+function deleteFailure(res: any, result: any) {
+  const reason = String(result?.reason ?? "");
+  if (reason === "forbidden") return res.status(403).json({ error: "WBSの削除・元に戻すができるのは、作成者とオーナーです", code: reason });
+  if (reason === "locked") return res.status(409).json({ error: "このWBSはロックされているため削除できません。削除する場合はロックを解除してください", code: reason });
+  if (reason === "deleted") return res.status(409).json({ error: "このWBSはすでに削除されています", code: reason });
+  if (reason === "not_deleted") return res.status(409).json({ error: "このWBSは削除されていません", code: reason });
+  if (reason === "invalid") return res.status(422).json({ error: "保管していたファイルを読み取れませんでした", code: reason });
+  const f = failure(result);
+  return res.status(f.status).json(f.body);
+}
+
 // ── POST /api/wbs/purge ─────────────────────────────────────
 // WBSの削除は今までどおり画面から行い（DB のバックアップは on delete cascade で消える）、
 // そのあとで Storage に残ったファイル（1年たったバックアップ・アーカイブ）をここで消す。
@@ -386,6 +460,7 @@ export default async function handler(req: any, res: any) {
     "proposal-apply": (s, u, b, r) => handleProposalDecide(s, u, b, r, "apply"),
     "proposal-reject": (s, u, b, r) => handleProposalDecide(s, u, b, r, "reject"),
     "apply-ops": handleApplyOps,
+    delete: handleDelete, undelete: handleUndelete,
   };
   const run = handlers[action];
   if (!run) return res.status(404).json({ error: `不明なエンドポイントです: /api/wbs/${action}` });

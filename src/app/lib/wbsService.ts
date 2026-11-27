@@ -578,7 +578,7 @@ type WbsApiResult<T> = { ok: true; data: T } | { ok: false; error: string; code?
  * `api/wbs/[action]` を呼ぶ。認証はログイン中ユーザーのアクセストークン。
  * Vite の開発サーバーは api/ を実行しないため、`npm run dev` ではHTMLが返る（その旨を伝える）。
  */
-async function postWbsApi<T>(action: "snapshot" | "restore" | "archive" | "unarchive" | "purge" | "proposal-apply" | "proposal-reject" | "apply-ops", body: unknown): Promise<WbsApiResult<T>> {
+async function postWbsApi<T>(action: "snapshot" | "restore" | "archive" | "unarchive" | "purge" | "proposal-apply" | "proposal-reject" | "apply-ops" | "delete" | "undelete", body: unknown): Promise<WbsApiResult<T>> {
   if (!isSupabaseEnabled) return { ok: false, error: "Supabase が設定されていません" };
   const { data: { session } } = await supabase!.auth.getSession();
   if (!session?.access_token) return { ok: false, error: "ログインが必要です" };
@@ -639,6 +639,21 @@ export async function restoreWbsSnapshot(snapshotId: string, expectedVersion: nu
 /** WBSをアーカイブする（中身とバックアップを圧縮して Storage へ移し、一覧から外す） */
 export async function archiveWbsSheet(sheetId: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postWbsApi("archive", { sheetId });
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
+}
+
+/**
+ * KAIZEN2611-022 WBSを削除する（論理削除）。中身とバックアップを圧縮して保管し、「削除済み」から元に戻せる。
+ * code: "locked"（ロック中）・"missing"（SQL 未適用）など
+ */
+export async function softDeleteWbsSheet(sheetId: string): Promise<{ ok: true } | { ok: false; error: string; code?: string }> {
+  const r = await postWbsApi("delete", { sheetId });
+  return r.ok ? { ok: true } : { ok: false, error: r.error, code: r.code };
+}
+
+/** KAIZEN2611-022 削除したWBSを元に戻す（行・ステータス・紐づけ・休日・バックアップの履歴が元の id のまま戻る） */
+export async function undeleteWbsSheet(sheetId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postWbsApi("undelete", { sheetId });
   return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 
