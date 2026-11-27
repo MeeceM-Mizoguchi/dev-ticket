@@ -710,7 +710,8 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
                   const someSel = !allSel && visibleIds.some(id => selectedTicketIds.has(id));
                   return (
                     <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center", borderBottom: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
-                      <SelBox checked={allSel} indeterminate={someSel}
+                      {/* KAIZEN2611-023 押せる範囲を、見出しの行の高さいっぱい・左端までに広げる（行の padding: 7px 16px） */}
+                      <SelBox checked={allSel} indeterminate={someSel} hit={{ y: 7, left: 16 }}
                         onClick={e => { e.stopPropagation(); bulk.setSelection(displayTickets, !allSel); }} />
                       {COLS.map((col, idx) => (
                         <ColumnFilter key={col} col={col}
@@ -810,7 +811,8 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
                           style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: rowAlert ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.status === "on-hold" || t.status === "withdrawn") ? 0.65 : 1, outline: rowAlert ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = rowAlert ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg; }}>
-                          <SelBox checked={isSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(t.id); }} />
+                          {/* KAIZEN2611-023 行の padding（10px 16px）の分まで押せる。ここを押してもチケット詳細は開かない */}
+                          <SelBox checked={isSel} hit={{ y: 10, left: 16 }} onClick={e => { e.stopPropagation(); bulk.toggleTicket(t.id); }} />
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
                             {rowAlert && (
                               <span
@@ -886,7 +888,8 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
                               style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: childBaseBg, transition: "background 0.1s", opacity: (child.status === "closed" || child.status === "released" || child.status === "on-hold" || child.status === "withdrawn") ? 0.65 : 1, outline: childNeedsPr ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                               onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = (child.status === "on-hold" || child.status === "withdrawn") ? "#ECECEB" : "#EEF7F3"; }}
                               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childBaseBg; }}>
-                              <SelBox checked={isChildSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(child.id); }} />
+                              {/* KAIZEN2611-023 子の行の padding（8px 16px 8px 32px）の分まで押せる（字下げの部分も） */}
+                              <SelBox checked={isChildSel} hit={{ y: 8, left: 32 }} onClick={e => { e.stopPropagation(); bulk.toggleTicket(child.id); }} />
                               <div style={{ display: "flex", justifyContent: "center" }}>
                                 <span style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>{child.wbs}</span>
                               </div>
