@@ -7,6 +7,9 @@
 // 画面と同じく、一番右の段より上の行（3段なら大項目・中項目）は見出し行にする:
 // No.・段・項目だけを書き、行全体（ガントの側まで）を色で塗りつぶす。段は「項目」の字下げでも表す。
 //
+// KAIZEN2611-016 表のいちばん右に、行の id を入れた「ID」の列を置く。列は隠し、シートを保護して
+// その列だけ書き換えられないようにする（「変わったところだけ反映する」で、ファイルの行と今の行を結びつけるため）。
+//
 // exceljs は大きいので、使うときにだけ読み込む（ファイルボックスの Excel 表示と同じやり方）。
 import type ExcelJS from "exceljs";
 import { businessDays, textColorOn, type WbsGanttModel, type WbsRow } from "@/app/lib/wbsCalc";
@@ -28,9 +31,9 @@ const ALL_BORDERS = { top: BORDER, left: BORDER, bottom: BORDER, right: BORDER }
 const DOW = ["日", "月", "火", "水", "木", "金", "土"];
 
 /** 列の幅（Excel の文字数単位）。WBS_FILE_HEADERS と同じ並び */
-const COL_WIDTHS = [6, 5, 52, 14, 13, 13, 9, 9, 12, 20, 28];
+const COL_WIDTHS = [6, 5, 52, 14, 13, 13, 9, 9, 12, 20, 28, 38];
 // 列の位置（1始まり）。WBS_FILE_HEADERS の並びと合わせること
-const C = { no: 1, level: 2, name: 3, assignee: 4, start: 5, end: 6, days: 7, progress: 8, status: 9, tickets: 10, note: 11 } as const;
+const C = { no: 1, level: 2, name: 3, assignee: 4, start: 5, end: 6, days: 7, progress: 8, status: 9, tickets: 10, note: 11, id: 12 } as const;
 
 /** テンプレートで入力できる最後の行（見出しを除いて 299 行ぶん） */
 const TEMPLATE_LAST_ROW = 300;
@@ -111,6 +114,10 @@ export async function exportWbsXlsx(input: {
     ...COL_WIDTHS.map(width => ({ width })),
     ...days.map(() => ({ width: 3.2 })),
   ];
+  // KAIZEN2611-016 シートを保護するので、ID の列のほかは鍵を外しておく（ここで決めた書式を、あとから作るセルが受け継ぐ）。
+  // ID の列は隠して、鍵をかけたままにする（書き換えられない）
+  for (let c = 1; c <= lastCol; c++) ws.getColumn(c).protection = { locked: c === C.id };
+  ws.getColumn(C.id).hidden = true;
 
   // 見出しは2行。表の列は縦に結合し、ガントの列は「月/日」と曜日に分ける
   const head1 = ws.getRow(1);
@@ -147,6 +154,7 @@ export async function exportWbsXlsx(input: {
     r.getCell(C.no).value = row.no;
     r.getCell(C.level).value = WBS_FILE_LEVEL_MARKS[item.level - 1] ?? null;
     r.getCell(C.name).value = item.name || null;
+    r.getCell(C.id).value = item.id;
 
     // 見出し行（一番右の段より上）は、ここまで。行全体を塗りつぶす
     if (!row.isLeafLevel) { styleHeadingRow(r, item.level, lastCol); return; }
@@ -196,6 +204,15 @@ export async function exportWbsXlsx(input: {
   // 左上の「1」「2」「3」の数のもとになる、いちばん深い段
   ws.properties.outlineLevelRow = Math.max(0, ...input.rows.map(r => r.item.level - 1));
 
+  // KAIZEN2611-016 ID の列を書き換えられないよう、シートを保護する。パスワードは付けない。
+  // 鍵を外したセル（ID のほかすべて）は今までどおり入力・書式の変更・行の追加と削除・並べ替えができる
+  await ws.protect("", {
+    selectLockedCells: true, selectUnlockedCells: true,
+    formatCells: true, formatColumns: true, formatRows: true,
+    insertRows: true, deleteRows: true, insertColumns: false, deleteColumns: false,
+    sort: true, autoFilter: true,
+  });
+
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], { type: XLSX_MIME });
 }
@@ -214,6 +231,8 @@ export async function buildWbsTemplateXlsx(statusNames: string[], levels: number
   ws.columns = COL_WIDTHS.map(width => ({ width }));
   ws.getRow(1).values = [...WBS_FILE_HEADERS];
   styleHeader(ws.getRow(1), base);
+  // KAIZEN2611-016 ID の列は空のまま隠して、鍵をかけておく（テンプレートの行は、取り込むと新しい行になる）
+  ws.getColumn(C.id).hidden = true;
 
   const [s0, s1] = [statusNames[0] ?? "未着手", statusNames[1] ?? statusNames[0] ?? "着手中"];
   type Sample = { level: number; name: string; assignee?: string; start?: string; end?: string; progress?: number; status?: string; note?: string };
@@ -262,8 +281,8 @@ export async function buildWbsTemplateXlsx(statusNames: string[], levels: number
       const cell = row.getCell(c);
       cell.border = ALL_BORDERS;
       cell.font = { size: 10 };
-      // シートを保護するので、入力できるセルだけ鍵を外す
-      cell.protection = { locked: false };
+      // シートを保護するので、入力できるセルだけ鍵を外す（ID の列は鍵をかけたまま）
+      cell.protection = { locked: c === C.id };
       if (c !== C.name) cell.alignment = { vertical: "middle", horizontal: ([C.no, C.level, C.start, C.end, C.days, C.progress, C.status] as number[]).includes(c) ? "center" : "left" };
     }
     row.getCell(C.level).dataValidation = {
@@ -336,6 +355,7 @@ export async function buildWbsTemplateXlsx(statusNames: string[], levels: number
       : "このWBSは1段なので、見出し行はありません。すべての行に中身を入れられます。"],
     ["入力する行", `担当者・日付・進捗率・ステータス・チケット・備考を入れるのは、${leafLabel}の行です。`],
     ["No.／予定日数", "取り込みでは使いません（空でかまいません）。No. は上からの順番、予定日数は日付から自動で計算されます。"],
+    ["ID（隠した列）", "画面からエクスポートしたファイルでは、行ごとの ID が入っています（書き換えられません）。「変わったところだけ反映する」で、ファイルの行と今の行を結びつけるのに使います。テンプレートでは空のままです。"],
     ["担当者", "プロジェクトのメンバーの名前を、DevTicket の表示どおりに入れます。"],
     ["開始予定日／終了予定日", "2026/10/12 のように入れます。空でもかまいません。"],
     ["進捗率", "0〜100 で入れます（セルは％表示なので、50 と打てば 50% になります）。"],

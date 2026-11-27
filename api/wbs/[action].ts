@@ -9,6 +9,7 @@
 //   POST /api/wbs/purge         {projectId, sheetId}         … 削除したWBSの、Storage に残ったファイルを消す
 //   POST /api/wbs/proposal-apply  {proposalId}               … AI からの更新の案を反映する（KAIZEN2611-015）
 //   POST /api/wbs/proposal-reject {proposalId}               … AI からの更新の案を取り消す（KAIZEN2611-015）
+//   POST /api/wbs/apply-ops {sheetId, expectedVersion, ops}  … インポートの「変わったところだけ反映する」（KAIZEN2611-016）
 //
 // 画面からの呼び出しの認証は、ログイン中の人の Supabase のアクセストークンだけ（APIキーは受けない）。
 // service_role で動くので RLS は効かない。権限（見られるか・編集可か・ロック中でないか）は
@@ -262,6 +263,45 @@ async function handleProposalDecide(sb: SupabaseClient, userId: string, body: an
   return res.status(200).json({ ok: true, version: result.version ?? null });
 }
 
+// ── POST /api/wbs/apply-ops（KAIZEN2611-016） ─────────────────
+// インポートの「変わったところだけ反映する」で、比べる画面の「この内容で反映」から呼ぶ。
+// 画面が作った操作（wbs_api_apply に渡す形）を、押した人の権限でまとめて反映する。
+// 権限・ロック・アーカイブ・版の番号（ファイルを読んだときの edit_version）の確認、反映前のバックアップ、
+// 操作の形の確認は wbs_api_apply が行う。すべて反映するか、何も反映しないか
+const MAX_APPLY_OPS = 5000;
+async function handleApplyOps(sb: SupabaseClient, userId: string, body: any, res: any) {
+  const sheetId = typeof body?.sheetId === "string" ? body.sheetId.trim() : "";
+  const expectedVersion = Number(body?.expectedVersion);
+  const ops = body?.ops;
+  if (!/^[0-9a-f-]{36}$/i.test(sheetId)) return res.status(400).json({ error: "sheetId は必須です" });
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 0) return res.status(400).json({ error: "expectedVersion は 0 以上の整数で指定してください" });
+  if (!Array.isArray(ops) || ops.length === 0) return res.status(400).json({ error: "反映する変更がありません" });
+  if (ops.length > MAX_APPLY_OPS) return res.status(400).json({ error: `一度に反映できる変更は ${MAX_APPLY_OPS} 件までです` });
+
+  const { data: result, error } = await sb.rpc("wbs_api_apply", {
+    p_user_id: userId, p_sheet_id: sheetId, p_expected_version: expectedVersion, p_ops: ops,
+  });
+  if (error) {
+    if (error.code === "PGRST202" || error.code === "42883") {
+      return res.status(503).json({ error: "反映の仕組み（supabase/add_wbs_api_KAIZEN2611-013.sql）が、まだデータベースに作られていません。管理者に SQL の適用を依頼してください" });
+    }
+    return res.status(500).json({ error: `反映に失敗しました: ${error.message}` });
+  }
+  if (!result?.ok) {
+    const reason = String(result?.reason ?? "");
+    if (reason === "conflict") {
+      return res.status(409).json({
+        error: "ファイルを読んだあとに WBS が変わったため反映できません", code: reason,
+        editedByName: result?.editedByName ?? "", editedAt: result?.editedAt ?? null,
+      });
+    }
+    if (reason === "invalid") return res.status(422).json({ error: `反映できない変更がありました（${String(result?.detail ?? "")}）。WBS は何も変えていません`, code: reason });
+    const f = failure(result);
+    return res.status(f.status).json(f.body);
+  }
+  return res.status(200).json({ ok: true, version: result.version ?? null });
+}
+
 // ── GET /api/wbs/cron-backup ────────────────────────────────
 async function runCronBackup(sb: SupabaseClient, res: any) {
   const started = Date.now();
@@ -345,6 +385,7 @@ export default async function handler(req: any, res: any) {
     snapshot: handleSnapshot, restore: handleRestore, archive: handleArchive, unarchive: handleUnarchive, purge: handlePurge,
     "proposal-apply": (s, u, b, r) => handleProposalDecide(s, u, b, r, "apply"),
     "proposal-reject": (s, u, b, r) => handleProposalDecide(s, u, b, r, "reject"),
+    "apply-ops": handleApplyOps,
   };
   const run = handlers[action];
   if (!run) return res.status(404).json({ error: `不明なエンドポイントです: /api/wbs/${action}` });

@@ -13,8 +13,12 @@ import { PageLoader } from "@/app/components/shared/PageLoader";
 import { computeSortOrder } from "@/app/lib/taskService";
 import {
   WBS_SORT_GAP, addWbsItemTickets, createWbsItem, deleteWbsItems, loadWbsEditVersion, loadWbsHolidays, loadWbsItemTickets, loadWbsItems,
-  loadWbsStatuses, removeWbsItemTickets, renumberWbsItems, updateWbsItem,
+  loadWbsStatuses, removeWbsItemTickets, renumberWbsItems, updateWbsItem, applyWbsOps,
 } from "@/app/lib/wbsService";
+import { WbsDiffView } from "./WbsDiffView";
+import { buildWbsDiff, type WbsDiffOp } from "@/app/lib/wbsDiff";
+import { buildWbsImportDiff } from "@/app/lib/wbsImportDiff";
+import type { WbsImportItem } from "@/app/lib/wbsImport";
 import { buildWbsGantt, buildWbsRows, siblingsOf, todayStr } from "@/app/lib/wbsCalc";
 import type { Project, WbsHoliday, WbsItem, WbsSheet, WbsSnapshotContent, WbsStatus } from "@/app/types";
 import { WbsSummary } from "./WbsSummary";
@@ -378,6 +382,47 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
 
   const ticketIdByNumber = useMemo(() => new Map(tickets.map(t => [t.ticket.wbs, t.ticket.id])), [tickets]);
 
+  // ── KAIZEN2611-016 インポートの「変わったところだけ反映する」 ──
+  // ファイルを読んだときの版の番号と、今の行との違い（反映する操作）。あるあいだは表の代わりに比べる画面を出す
+  const [importDiff, setImportDiff] = useState<{ ops: WbsDiffOp[]; warnings: string[]; version: number } | null>(null);
+  const [importDiffNotice, setImportDiffNotice] = useState<string | null>(null);
+  const [importApplying, setImportApplying] = useState(false);
+  // BUG-05 反映は await を含むので ref で二重送信を止める
+  const importApplyingRef = useRef(false);
+  const handleImportCompare = (fileItems: WbsImportItem[], version: number) => {
+    const { ops, warnings } = buildWbsImportDiff({ fileItems, items, statuses, levels: sheet.levels, links, ticketIdByNumber });
+    setImportDiffNotice(null);
+    setImportDiff({ ops, warnings, version });
+  };
+  const importDiffModel = useMemo(() => (importDiff
+    ? buildWbsDiff({
+      items, statuses, levels: sheet.levels, links,
+      ticketWbs: new Map(tickets.map(t => [t.ticket.id, t.ticket.wbs])), ops: importDiff.ops,
+    })
+    : null), [importDiff, items, statuses, sheet.levels, links, tickets]);
+  const handleImportApply = async () => {
+    if (!importDiff || importApplyingRef.current) return;
+    importApplyingRef.current = true;
+    setImportApplying(true);
+    setImportDiffNotice(null);
+    try {
+      const r = await applyWbsOps(sheet.id, importDiff.version, importDiff.ops);
+      if (!r.ok) {
+        setImportDiffNotice(r.code === "conflict"
+          ? "ファイルを読んだあとに画面で WBS が直されたため、反映できません。もう一度エクスポートしてから直してください"
+          : r.error);
+        return;
+      }
+      toast("ファイルの変わったところを反映しました（反映の前の状態はバックアップに残っています）");
+      setImportDiff(null);
+      await load();
+      onExternalChange?.();
+    } finally {
+      importApplyingRef.current = false;
+      setImportApplying(false);
+    }
+  };
+
   // ── 編集 ────────────────────────────────────────────────────
   const handleUpdate = useCallback((id: string, patch: Partial<WbsItem>) => {
     // 先に画面へ反映してから保存する。失敗したら読み直して元へ戻す
@@ -622,6 +667,28 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
 
   if (loading && !initializedRef.current) return <PageLoader label="WBSを読み込み中..." />;
 
+  // KAIZEN2611-016 比べる画面。「この内容で反映」を押すまで WBS は変えない。「閉じる」は何も反映せずに戻る
+  if (importDiff && importDiffModel) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, padding: 10, boxSizing: "border-box",
+        ...(fullscreen ? { position: "fixed", inset: 0, zIndex: 250, background: "#FFFFFF" } : null) }}>
+        <WbsDiffView
+          title="インポート：変わったところだけ反映する"
+          meta="ファイルの行を ID で今の行と結びつけた結果です。「この内容で反映」を押すまで WBS は変わりません"
+          model={importDiffModel}
+          warnings={importDiff.warnings}
+          notice={importDiffNotice}
+          canApply={canEdit}
+          disabledReason={canEdit ? undefined : "この WBS を編集する権限がありません"}
+          busy={importApplying}
+          onApply={() => { void handleImportApply(); }}
+          onReject={() => { setImportDiff(null); setImportDiffNotice(null); }}
+          onClose={() => { setImportDiff(null); setImportDiffNotice(null); }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div ref={setRootEl} style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0,
       // 全画面中は画面いっぱいに広げる。重なり順はダイアログとチケット詳細のパネル（300）より下
@@ -715,6 +782,7 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
           tailSortOrder={tailOrder(null)}
           ticketIdByNumber={ticketIdByNumber}
           onImported={load}
+          onCompare={sheet.backupEnabled ? handleImportCompare : undefined}
           onClose={() => setImportOpen(false)}
         />
       )}
