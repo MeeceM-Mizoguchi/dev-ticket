@@ -5,7 +5,7 @@
 // KAIZEN2611-004 snapshot を渡したときは、DB の今の行ではなく、その時点（バックアップ）の中身を表示する。
 // そのときは呼び出し側が canEdit=false で渡すので、変更の操作は出ない。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Trash2, Tags, CalendarOff, Download, Upload, FilterX, Maximize2, Minimize2, FolderInput } from "lucide-react";
+import { Trash2, Settings, Download, Upload, FilterX, Maximize2, Minimize2, FolderInput } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -58,7 +58,7 @@ function readColOrder(userId: string, sheetId: string): WbsColKey[] {
   return [];
 }
 
-export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange, focusItemId = null, onFocusDone, onExternalChange, snapshot = null, fullscreen = false, onFullscreenChange }: {
+export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange, focusItemId = null, onFocusDone, onExternalChange, snapshot = null, fullscreen = false, onFullscreenChange, openDialog = null, onOpenSettings }: {
   sheet: WbsSheet;
   /**
    * KAIZEN2611-019 全画面（上の見出し・タブ・WBSの操作の列を隠して、表の領域を広げる）か。
@@ -66,6 +66,13 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
    */
   fullscreen?: boolean;
   onFullscreenChange?: (on: boolean) => void;
+  /**
+   * KAIZEN2611-021 「WBSの設定」のモーダルから、ステータス設定・休日設定を開く。nonce が変わるたびに開く
+   * （ダイアログはこの部品の中のステータス・休日を使うので、開くのもここで行う）
+   */
+  openDialog?: { kind: "status" | "holiday"; nonce: number } | null;
+  /** 全画面のときに表の上へ出す「設定」。渡さなければ出さない */
+  onOpenSettings?: () => void;
   project: Project;
   canEdit: boolean;
   /** KAIZEN2611-004 過去の時点を表示するときの中身。null なら今のデータ */
@@ -108,6 +115,15 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   const [statusOpen, setStatusOpen] = useState(false);
   const [holidayOpen, setHolidayOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  // KAIZEN2611-021 設定のモーダルから頼まれたダイアログを開く（編集できるときだけ）。
+  // この部品は時点の切り替えなどで作り直されるので、作り直す前の頼みはもう一度開かない
+  const handledDialogRef = useRef(openDialog?.nonce ?? 0);
+  useEffect(() => {
+    if (!openDialog || openDialog.nonce === handledDialogRef.current) return;
+    handledDialogRef.current = openDialog.nonce;
+    if (!canEdit) return;
+    if (openDialog.kind === "status") setStatusOpen(true); else setHolidayOpen(true);
+  }, [openDialog, canEdit]);
   const [exporting, setExporting] = useState(false);
   const exportingRef = useRef(false);
   const [linkTargetId, setLinkTargetId] = useState<string | null>(null);
@@ -713,14 +729,12 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
         <button type="button" onClick={handleExport} disabled={exporting} title="このWBSを Excel ファイルにして保存します" style={exporting ? wbsToolBtnDisabled : wbsToolBtn}>
           <Download style={{ width: 12, height: 12 }} />{exporting ? "作成中..." : "エクスポート"}
         </button>
-        {canEdit && (
-          <button type="button" onClick={() => setStatusOpen(true)} title="このWBSのステータスを追加・削除・変更します" style={wbsToolBtn}>
-            <Tags style={{ width: 12, height: 12 }} />ステータス設定
-          </button>
-        )}
-        {canEdit && (
-          <button type="button" onClick={() => setHolidayOpen(true)} title="土日のほかに休みにする日を登録します（全WBSに適用するか、このWBSだけかを選べます）" style={wbsToolBtn}>
-            <CalendarOff style={{ width: 12, height: 12 }} />休日設定
+        {/* KAIZEN2611-021 ステータス設定・休日設定は「設定」のモーダルへ移した。全画面のときは上の「設定」が
+            隠れるので、ここ（全画面の左）に「設定」を出す */}
+        {fullscreen && onOpenSettings && (
+          <button type="button" onClick={onOpenSettings}
+            title="名前変更・段数・公開設定・ステータス設定・休日設定・ロック・アーカイブ・WBSの削除" style={wbsToolBtn}>
+            <Settings style={{ width: 12, height: 12 }} />設定
           </button>
         )}
         {/* 閲覧のみの人にも出す */}

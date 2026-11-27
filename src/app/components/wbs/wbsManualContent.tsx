@@ -195,7 +195,7 @@ export const WBS_MANUAL: WbsManualGroup[] = [
             </div>
             <div style={{ position: "relative", display: "flex", gap: 6, marginBottom: 6, justifyContent: "flex-end" }}>
               <Mark n={2} style={{ top: 2, left: -4 }} />
-              <ToolBtn>インポート</ToolBtn><ToolBtn>エクスポート</ToolBtn><ToolBtn>ステータス設定</ToolBtn><ToolBtn>休日設定</ToolBtn>
+              <ToolBtn>インポート</ToolBtn><ToolBtn>エクスポート</ToolBtn><ToolBtn>全画面</ToolBtn>
             </div>
             <div style={{ position: "relative", display: "flex", border: BORDER, borderRadius: 6, overflow: "hidden" }}>
               <Mark n={3} style={{ top: 30, left: 6 }} />
@@ -214,7 +214,7 @@ export const WBS_MANUAL: WbsManualGroup[] = [
         ),
         steps: [
           "① 集計：全体進捗率・総タスク数・遅延と、ステータスごとの件数が出ます。",
-          "② 操作列：インポート・エクスポート・ステータス設定・休日設定などのボタンが並びます。",
+          "② 操作列：行の削除・移動、インポート・エクスポート・全画面などのボタンが並びます。ステータス設定・休日設定は、上部の「設定」から開きます。",
           "③ 表：左側です。作業を1行ずつ入力します。",
           "④ ガント：右側です。開始予定日〜終了予定日を、1日1列の帯で表示します。",
         ],
@@ -248,21 +248,20 @@ export const WBS_MANUAL: WbsManualGroup[] = [
       {
         id: "sheets",
         title: "作成・切り替え・名前変更・削除",
-        lead: "1つのプロジェクトに、WBS を複数作れます。画面上部の操作列で切り替えます。",
+        lead: "1つのプロジェクトに、WBS を複数作れます。画面上部の操作列で切り替えます。名前変更・削除などは「設定」から行います。",
         editOnly: true,
         illustration: (
           <Frame style={{ padding: 10 }}>
             <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 6 }}>
               <Mark n={1} style={{ top: -8, left: 40 }} /><Mark n={2} style={{ top: -8, left: 150 }} /><Mark n={3} style={{ top: -8, right: 20 }} />
-              <ToolBtn>全体計画　▾</ToolBtn><ToolBtn>名前変更</ToolBtn><ToolBtn danger>削除</ToolBtn>
-              <span style={{ fontSize: 10, color: "#A09790", fontWeight: 700 }}>段数</span><ToolBtn>3段（大・中・小）▾</ToolBtn><ToolBtn>全メンバーに公開</ToolBtn>
-              <span style={{ flex: 1 }} /><ToolBtn>マニュアル</ToolBtn><ToolBtn primary>＋ 新しいWBS</ToolBtn>
+              <ToolBtn>全体計画　▾</ToolBtn>
+              <span style={{ flex: 1 }} /><ToolBtn>マニュアル</ToolBtn><ToolBtn primary>＋ 新しいWBS</ToolBtn><ToolBtn>設定</ToolBtn>
             </div>
           </Frame>
         ),
         steps: [
           "① 左端のプルダウンで、表示する WBS を切り替えます。",
-          "② 「名前変更」で名前を変え、「削除」でその WBS を消します。",
+          "② 「設定」を押すと「WBSの設定」が開きます。名前変更・段数・公開設定・ステータス設定・休日設定・ロック・アーカイブ・WBSの削除は、ここから行います。WBSの削除は、いちばん下の「危険な操作」の区画にあります（行の削除とは別のものです）。",
           "③ 「新しいWBS」で、WBS を追加します。3段・全メンバーに公開・5つのステータスで始まります。",
         ],
         notes: [
@@ -296,7 +295,7 @@ export const WBS_MANUAL: WbsManualGroup[] = [
           </div>
         ),
         steps: [
-          "上部の「段数」のプルダウンで、3段・2段・1段から選びます。",
+          "上部の「設定」を押し、「段数」のプルダウンで、3段・2段・1段から選びます。",
           "一番下の段の行が「入力する行」になり、担当者・日付・進捗率・ステータスなどを入れます。",
           "それより上の段の行は「見出し行」になり、名前だけを持ちます。",
         ],
@@ -317,7 +316,7 @@ export const WBS_MANUAL: WbsManualGroup[] = [
           </div>
         ),
         steps: [
-          "上部の「全メンバーに公開」（または「指定したメンバーのみ」）のボタンを押します。",
+          "上部の「設定」を押し、「公開設定」の「変更」を押します。",
           "どちらにするかを選びます。「指定したメンバーのみ」では、見せるメンバーにチェックを付けます。",
           "「保存する」を押します。",
         ],
@@ -584,7 +583,7 @@ export const WBS_MANUAL: WbsManualGroup[] = [
           </Frame>
         ),
         steps: [
-          "操作列の「ステータス設定」を押します。",
+          "上部の「設定」を押し、「ステータス設定」の「開く」を押します。",
           "① 矢印で、並び順を変えます。",
           "② 色の四角を押して色を、名前の欄で名前を変えます。",
           "③ ごみ箱で削除します。下の欄に名前を入れて「追加」を押すと、ステータスが増えます。",
@@ -623,7 +622,7 @@ export const WBS_MANUAL: WbsManualGroup[] = [
           </Frame>
         ),
         steps: [
-          "操作列の「休日設定」を押します。",
+          "上部の「設定」を押し、「休日設定」の「開く」を押します。",
           "① 休日を、プロジェクトのすべての WBS で使うときは、「全WBSに適用する」にチェックを付けます。付けなければ、いま開いている WBS だけの休日になります。",
           "② 日付をカレンダーで選び、休日の名前を入れて「追加」を押します。",
           "③ 登録した休日には、「全WBS」か「このWBSのみ」の印が付きます。ごみ箱で削除します。",
@@ -778,7 +777,7 @@ export const WBS_MANUAL: WbsManualGroup[] = [
           <Frame style={{ padding: 10 }}>
             <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
               <Mark n={1} style={{ top: -8, left: 40 }} /><Mark n={2} style={{ top: -8, left: 128 }} />
-              <ToolBtn>全体計画　▾</ToolBtn><ToolBtn>アーカイブ</ToolBtn>
+              <ToolBtn>全体計画　▾</ToolBtn><ToolBtn>設定</ToolBtn>
             </div>
             <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", border: BORDER, borderRadius: 7 }}>
               <Mark n={3} style={{ top: -8, right: 8 }} />
@@ -789,7 +788,7 @@ export const WBS_MANUAL: WbsManualGroup[] = [
         ),
         steps: [
           "① アーカイブした WBS は、WBS を切り替えるプルダウンの一番下の「アーカイブ済み（◯件）」から見られます。",
-          "② 上部の「アーカイブ」を押し、確認のダイアログで「アーカイブする」を押すと、その WBS が一覧から外れます。",
+          "② 上部の「設定」を押し、「危険な操作」の「アーカイブ」を押します。確認のダイアログで「アーカイブする」を押すと、その WBS が一覧から外れます。",
           "③ 「アーカイブ済み」の画面で「アーカイブから戻す」を押すと、WBS とバックアップの履歴が元に戻ります。",
         ],
         notes: [

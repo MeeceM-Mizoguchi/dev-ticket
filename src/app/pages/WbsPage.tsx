@@ -33,6 +33,7 @@ import {
   wbsSnapshotLabel, type WbsRestoreConflict, loadWbsPendingProposals, type WbsProposal,
 } from "@/app/lib/wbsService";
 import { WbsProposalPanel } from "@/app/components/wbs/WbsProposalPanel";
+import { WbsSettingsDialog } from "@/app/components/wbs/WbsSettingsDialog";
 import { WbsArchivedView } from "@/app/components/wbs/WbsArchivedView";
 import { WbsSheetBar } from "@/app/components/wbs/WbsSheetBar";
 import { WbsSheetNameDialog } from "@/app/components/wbs/WbsSheetNameDialog";
@@ -127,6 +128,9 @@ export function WbsPage() {
   // KAIZEN2611-019 全画面（上の見出し・タブ・WBSの操作の列を隠して、表の領域を広げる）。
   // 作業領域（WbsWorkspace）は時点の切り替えで作り直されるので、オン・オフはここで持つ
   const [fullscreen, setFullscreen] = useState(false);
+  // KAIZEN2611-021 「WBSの設定」のモーダル。ステータス設定・休日設定は作業領域の中のダイアログなので、開く頼みを渡す
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [workspaceDialog, setWorkspaceDialog] = useState<{ kind: "status" | "holiday"; nonce: number } | null>(null);
 
   const isAdminRole = userRole === "owner" || userRole === "admin";
   const canEdit = perm === "edit";
@@ -512,22 +516,17 @@ export function WbsPage() {
           <div style={{ flexShrink: 0, display: hideChrome ? "none" : undefined }}>
             <WbsSheetBar
               sheets={activeSheets} current={currentArchived ? null : current}
-              // 過去の時点を表示している間は、WBSの変更の操作（名前変更・段数・ロック・削除など）も使えなくする
-              canEdit={canEdit && !viewing} canManage={canManage && !viewing}
+              canEdit={canEdit && !viewing}
               archivedCount={archivedSheets.length} archivedSelected={currentArchived} onOpenArchived={openArchived}
-              onArchive={current?.backupEnabled ? () => setArchiveOpen(true) : undefined}
+              // KAIZEN2611-021 名前変更・段数・公開設定・ステータス設定・休日設定・ロック・アーカイブ・削除は「設定」から。
+              // 閲覧のみの人には出さない（使える項目が無いため）
+              onOpenSettings={canEdit && !currentArchived ? () => setSettingsOpen(true) : undefined}
               snapshots={snapshots} snapshotId={viewing?.meta.id ?? ""} snapshotLoadingId={viewLoadingId}
               onSelectSnapshot={backupOn ? (id => { void handleSelectSnapshot(id); }) : undefined}
               // KAIZEN2611-013 API の更新は版の番号（バックアップの仕組み）を使うので、その仕組みがある環境だけで出す
               onOpenAiUpdate={backupOn ? () => setAiUpdateOpen(true) : undefined}
               onSelect={selectSheet}
               onCreate={() => setNameDialog("create")}
-              onRename={() => setNameDialog("rename")}
-              onDelete={() => { if (!current?.isLocked) setDeleteOpen(true); }}
-              onLock={() => { void handleSetLock(true); }}
-              onUnlock={() => setUnlockOpen(true)}
-              onChangeLevels={handleChangeLevels}
-              onOpenVisibility={() => setVisibilityOpen(true)}
               onOpenManual={() => setManualOpen(true)}
               onCopyUrl={handleCopyUrl}
               onOpenMaster={() => { if (current) navigate(`/${projectSlug}/wbs/${current.id}/master`); }}
@@ -613,6 +612,8 @@ export function WbsPage() {
                 highlightIds={highlightIds} onHighlightChange={setHighlightIds}
                 focusItemId={focusItemId}
                 fullscreen={hideChrome} onFullscreenChange={setFullscreen}
+                openDialog={workspaceDialog}
+                onOpenSettings={canEdit ? () => setSettingsOpen(true) : undefined}
                 // KAIZEN2611-013 画面に戻ったときに API などでの更新を読み直したら、バックアップの一覧も読み直す
                 onExternalChange={() => { reloadSnapshots().catch(() => { }); }}
                 // 強調したら履歴から外す（ブラウザの再読み込みで、もう一度強調し直さないように）
@@ -707,6 +708,22 @@ export function WbsPage() {
           hasWarningText={false}
           onConfirm={handleArchive}
           onClose={() => setArchiveOpen(false)}
+        />
+      )}
+
+      {settingsOpen && current && !currentArchived && (
+        <WbsSettingsDialog
+          sheet={current} canEdit={canEdit} canManage={canManage} viewing={!!viewing}
+          onClose={() => setSettingsOpen(false)}
+          onRename={() => setNameDialog("rename")}
+          onChangeLevels={levels => { void handleChangeLevels(levels); }}
+          onOpenVisibility={() => setVisibilityOpen(true)}
+          onOpenStatus={() => setWorkspaceDialog({ kind: "status", nonce: Date.now() })}
+          onOpenHoliday={() => setWorkspaceDialog({ kind: "holiday", nonce: Date.now() })}
+          onLock={() => { void handleSetLock(true); }}
+          onUnlock={() => setUnlockOpen(true)}
+          onArchive={current.backupEnabled ? () => setArchiveOpen(true) : undefined}
+          onDelete={() => { if (!current.isLocked) setDeleteOpen(true); }}
         />
       )}
 
