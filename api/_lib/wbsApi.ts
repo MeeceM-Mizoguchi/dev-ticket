@@ -35,6 +35,12 @@ const SORT_GAP = 1024;
 /** 一度に読む行数（Supabase は既定で 1000 行までしか返さないので、分けて全部読む） */
 const PAGE_SIZE = 1000;
 const LEVEL_LABELS = ["大項目", "中項目", "小項目"];
+/** KAIZEN2611-017 大項目・中項目の行で受けない項目（API の名前と、warnings に出す呼び方） */
+const HEADING_ONLY_FIELDS: [string, string][] = [
+  ["assignee", "担当者"], ["startDate", "開始日"], ["endDate", "終了日"], ["progress", "進捗"], ["status", "ステータス"], ["note", "備考"],
+];
+/** 一番右の段の行で変えられる項目（GET /api/v1/wbs の editableFields） */
+const LEAF_EDITABLE_FIELDS = ["name", "assignee", "startDate", "endDate", "progress", "status", "note", "tickets"];
 
 const MISSING_FUNCTION_ERROR =
   "WBS を API で更新する仕組み（supabase/add_wbs_api_KAIZEN2611-013.sql）が、まだデータベースに作られていません。管理者に SQL の適用を依頼してください";
@@ -320,15 +326,19 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
         level: item.level,
         levelLabel: LEVEL_LABELS[Math.min(Math.max(item.level, 1), 3) - 1],
         name: item.name,
-        assignee: item.assignee,
-        startDate: item.startDate,
-        endDate: item.endDate,
+        // KAIZEN2611-017 大項目・中項目の行は、画面と同じく名前のほかは空で返す（DB の値は消さない。
+        // 段数を増やしたときに残った値などが、画面に出ないまま AI に見えないようにする）
+        assignee: leaf ? item.assignee : null,
+        startDate: leaf ? item.startDate : null,
+        endDate: leaf ? item.endDate : null,
         // 上の段の行は、一番右の段の行の平均（画面と同じ。下に行が無ければ null）
         progress,
         progressEditable: leaf,
-        status: (item.statusId && statusName.get(item.statusId)) || fallback,
-        note: item.note,
-        tickets: (links.get(item.id) ?? []).map(l => l.wbs).filter(Boolean),
+        status: leaf ? ((item.statusId && statusName.get(item.statusId)) || fallback) : null,
+        note: leaf ? item.note : null,
+        tickets: leaf ? (links.get(item.id) ?? []).map(l => l.wbs).filter(Boolean) : [],
+        // 変えられる項目。大項目・中項目の行は名前だけ
+        editableFields: leaf ? LEAF_EDITABLE_FIELDS : ["name"],
       })),
     });
   }
@@ -370,6 +380,8 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
       loadItems(sb, sheet.id), loadStatuses(sb, sheet.id), loadLinks(sb, sheet.id), loadMembers(sb, key.project_id),
     ]);
     const state = new Map(items.map(i => [i.id, { ...i }]));
+    // KAIZEN2611-017 warnings に「No.◯」を出すための、画面と同じ並びの番号
+    const noById = new Map(orderRows(items, levels).map(r => [r.item.id, r.no]));
     const linkState = new Map([...links].map(([k, v]) => [k, new Set(v.map(l => l.ticketId))]));
     const statusIdByName = new Map(statuses.map(s => [s.name, s.id]));
     const statusNameById = new Map(statuses.map(s => [s.id, s.name]));
@@ -410,6 +422,8 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
     const skippedRefs = new Set<string>();
 
     const labelOf = (it: ItemState) => `「${it.name || "(名前なし)"}」`;
+    /** warnings に出す行の呼び方。「No.3「設計」」（足した行は番号が無いので名前だけ） */
+    const rowLabelOf = (it: ItemState) => (noById.has(it.id) ? `No.${noById.get(it.id)}${labelOf(it)}` : labelOf(it));
     /** 行の id か、前の add の ref を、行の id に直す。見つからなければ null */
     const resolve = (v: unknown): string | null | undefined => {
       if (v === undefined) return undefined;
@@ -441,13 +455,22 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
     /**
      * 項目の値を確かめて、反映する値に直す。受けられない値は warnings に出して undefined を返す（その項目は変えない）
      */
-    const readFields = (where: string, f: any, it: { level: number }) => {
+    const readFields = (where: string, f: any, it: { level: number }, rowLabel: string) => {
       const out: Partial<Pick<ItemState, "name" | "assignee" | "startDate" | "endDate" | "progress" | "statusId" | "note">> = {};
       if (f.name !== undefined) {
         const v = typeof f.name === "string" ? f.name.trim() : null;
         if (v === null) warnings.push(`${where}：name は文字で指定してください（変えていません）`);
         else if (v.length > MAX_NAME_LENGTH) warnings.push(`${where}：name が長すぎます（${MAX_NAME_LENGTH}文字まで。変えていません）`);
         else out.name = v;
+      }
+      // KAIZEN2611-017 大項目・中項目（一番右の段より上）の行は、画面に名前しか出ないので名前だけを受ける。
+      // ほかの項目は保存せず、どの行の何を変えなかったかを warnings に出す
+      if (it.level < levels) {
+        const ignored = HEADING_ONLY_FIELDS.filter(([k]) => f[k] !== undefined).map(([, label]) => label);
+        if (ignored.length > 0) {
+          warnings.push(`${where}：${rowLabel}は${LEVEL_LABELS[it.level - 1]}の行です。大項目・中項目の行で変えられるのは名前だけです（${ignored.join("・")}は変えていません。日付・担当者などは一番右の段（${LEVEL_LABELS[levels - 1]}）の行に入れてください）`);
+        }
+        return out;
       }
       if (f.assignee !== undefined) {
         const v = f.assignee === null ? "" : typeof f.assignee === "string" ? f.assignee.trim() : null;
@@ -463,8 +486,7 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
       }
       if (f.progress !== undefined) {
         const v = Number(f.progress);
-        if (it.level < levels) warnings.push(`${where}：進捗は一番右の段（${LEVEL_LABELS[levels - 1]}）の行だけ変えられます（上の段は下の行の平均です。変えていません）`);
-        else if (!Number.isInteger(v) || v < 0 || v > 100) warnings.push(`${where}：進捗「${String(f.progress)}」は 0〜100 の整数で指定してください（変えていません）`);
+        if (!Number.isInteger(v) || v < 0 || v > 100) warnings.push(`${where}：進捗「${String(f.progress)}」は 0〜100 の整数で指定してください（変えていません）`);
         else out.progress = v;
       }
       if (f.status !== undefined) {
@@ -544,7 +566,7 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
         const afterId = resolve(op.afterId);
         const sortOrder = orderAt(parentId, null, beforeId, afterId);
         if (sortOrder === null) { errors.push(`${where}：beforeId / afterId の行が、同じ親の下に見つかりません`); return; }
-        const f = readFields(`${where}（「${name}」）`, { ...op, name }, { level });
+        const f = readFields(`${where}（「${name}」）`, { ...op, name }, { level }, `追加する「${name}」`);
         const it: ItemState = {
           id: crypto.randomUUID(), parentId, level, name: f.name ?? name,
           assignee: f.assignee ?? "", startDate: f.startDate ?? null, endDate: f.endDate ?? null,
@@ -565,7 +587,10 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
           (it.startDate || it.endDate) && `${dateText(it.startDate)}〜${dateText(it.endDate)}`,
         ].filter(Boolean).join("・");
         changes.push(`追加：「${it.name}」（${LEVEL_LABELS[level - 1]}${parent ? `・親「${parent.name}」` : ""}${extra ? `・${extra}` : ""}）`);
-        if (op.tickets !== undefined) applyLinks(`${where}（「${name}」）`, it, op.tickets, "link");
+        if (op.tickets !== undefined) {
+          if (level < levels) warnings.push(`${where}（「${name}」）：${LEVEL_LABELS[level - 1]}の行にはチケットを紐づけられません（紐づけていません。一番右の段（${LEVEL_LABELS[levels - 1]}）の行に紐づけてください）`);
+          else applyLinks(`${where}（「${name}」）`, it, op.tickets, "link");
+        }
         return;
       }
 
@@ -578,7 +603,7 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
         if (kind === "update") {
           const unknown = Object.keys(op).filter(k => !UPDATE_KEYS.has(k));
           if (unknown.length) warnings.push(`${where}：${unknown.join("・")} は update では変えられません（無視しました。段や位置は move で変えます）`);
-          const f = readFields(`${where}（${labelOf(it)}）`, op, it);
+          const f = readFields(`${where}（${labelOf(it)}）`, op, it, rowLabelOf(it));
           const set: Record<string, unknown> = {};
           const parts: string[] = [];
           if (f.name !== undefined && f.name !== it.name) { parts.push(`項目名 ${quoted(it.name)} → ${quoted(f.name)}`); set.name = f.name; }
@@ -627,6 +652,10 @@ export function createWbsHandlers(opts: { appOrigin: () => string }) {
           return;
         }
 
+        if (kind === "link" && it.level < levels) {
+          warnings.push(`${where}：${rowLabelOf(it)}は${LEVEL_LABELS[it.level - 1]}の行です。大項目・中項目の行にはチケットを紐づけられません（紐づけていません。一番右の段（${LEVEL_LABELS[levels - 1]}）の行に紐づけてください）`);
+          return;
+        }
         applyLinks(`${where}（${labelOf(it)}）`, it, op.tickets, kind);
         return;
       }

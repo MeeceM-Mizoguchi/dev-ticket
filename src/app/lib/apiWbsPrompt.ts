@@ -66,6 +66,10 @@ export function buildWbsUpdatePrompt(ctx: WbsPromptContext): string {
     "- 案を送ったら、**応答の `url` を必ず利用者に渡す。**利用者はその URL を開いて、変わる行を確かめてから反映する。",
     "- **行の削除はできない。**消すべき行があれば、その旨を利用者に伝え、画面で消してもらう（API で名前を空にするなどの代わりの操作もしない）。",
     "- 文字起こしの内容を、Dev Ticket のコメント・備考などに丸ごと書き写さない（必要な要点だけを備考に入れるのはよい）。",
+    ...(levels > 1 ? [
+      `- **${LEVEL_LABELS.slice(0, levels - 1).join("・")}の行で変えられるのは名前だけ。**日付・担当者・進捗・ステータス・備考・チケットは、一番右の段（${leafLabel}）の行に入れる（上の段の行に送っても保存されず、\`warnings\` に出る）。`,
+      `  - 「調査フェーズは12/11まで」のような${LEVEL_LABELS.slice(0, levels - 1).join("・")}についての話は、その下の${leafLabel}の行に当てはめる。どの行に当てはめるか決められないときは、案に入れずに「確認が必要」として利用者に聞く。`,
+    ] : []),
     "",
   );
 
@@ -109,15 +113,22 @@ export function buildWbsUpdatePrompt(ctx: WbsPromptContext): string {
     "  \"statuses\": [{ \"name\": \"未着手\", \"color\": \"#EDECF4\" }, { \"name\": \"進行中\", \"color\": \"…\" }],",
     "  \"members\": [\"山田 太郎\", \"佐藤 花子\"],",
     "  \"rows\": [",
-    "    { \"no\": 1, \"id\": \"<行のid>\", \"parentId\": null, \"level\": 1, \"levelLabel\": \"大項目\", \"name\": \"設計\",",
+    ...(levels > 1 ? [
+      "    { \"no\": 1, \"id\": \"<行のid>\", \"parentId\": null, \"level\": 1, \"levelLabel\": \"大項目\", \"name\": \"設計\",",
+      "      \"assignee\": null, \"startDate\": null, \"endDate\": null,",
+      "      \"progress\": 40, \"progressEditable\": false, \"status\": null, \"note\": null, \"tickets\": [], \"editableFields\": [\"name\"] },",
+    ] : []),
+    `    { "no": ${levels > 1 ? 2 : 1}, "id": "<行のid>", "parentId": ${levels > 1 ? '"<親の行のid>"' : "null"}, "level": ${levels}, "levelLabel": "${leafLabel}", "name": "画面設計",`,
     "      \"assignee\": \"山田 太郎\", \"startDate\": \"2026-12-01\", \"endDate\": \"2026-12-05\",",
-    "      \"progress\": 40, \"progressEditable\": false, \"status\": \"進行中\", \"note\": \"\", \"tickets\": [\"T-012\"] }",
+    "      \"progress\": 40, \"progressEditable\": true, \"status\": \"進行中\", \"note\": \"\", \"tickets\": [\"T-012\"],",
+    "      \"editableFields\": [\"name\", \"assignee\", \"startDate\", \"endDate\", \"progress\", \"status\", \"note\", \"tickets\"] }",
     "  ]",
     "}",
     FENCE,
     "",
     "- `rows` は画面と同じ並び（親の行のすぐ下に子の行）。`parentId` で親子が分かる。",
     `- \`progress\` は、一番右の段（${leafLabel}）の行だけが入力値。それより上の段の行は、下の行の平均（変えられない。\`progressEditable: false\`）。`,
+    "- `editableFields` は、その行で変えられる項目。上の段の行は `[\"name\"]` だけで、担当者・日付・ステータス・備考・チケットは空（`null`・`[]`）で返る。",
     "- `version`（版の番号）を控える。更新のときに `expectedVersion` として送る。",
     "- `sheet.locked` が true（ロック中）、または `sheet.canEdit` が false なら、更新できない。その旨を利用者に伝えて止まる。",
   );
@@ -175,6 +186,7 @@ export function buildWbsUpdatePrompt(ctx: WbsPromptContext): string {
     "| `status` | 文字 | `statuses` の名前のどれか |",
     "| `note` | 文字 | 備考 |",
     "",
+    ...(levels > 1 ? [`- 上の段（${LEVEL_LABELS.slice(0, levels - 1).join("・")}）の行で変えられるのは \`name\` だけ。ほかの項目・\`link\` は保存されず、\`warnings\` に出る（\`unlink\` はできる）。上の段に \`add\` するときも、名前だけの行になる。`] : []),
     "- **行の削除（`op: \"delete\"`）は送らない。**送ると 400 になり、何も変わらない。",
     `- このWBSは${levels}段なので、${leafLabel}の下には行を足せない（足そうとすると、その行は足されずに \`warnings\` に出る）。`,
     "- **operations は、すべて反映されるか、1つも反映されないかのどちらか。**存在しない行の id などがあると 400 になり、何も変わらない（`errors` に理由が並ぶ）。",
