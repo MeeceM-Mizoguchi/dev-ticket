@@ -30,7 +30,8 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor, clipboardHasTable } from "@/app/components/shared/RichEditor";
 import { ImageLightbox, useImageLightbox } from "@/app/components/shared/ImageLightbox";
 import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory, mapSprint } from "@/app/lib/mappers";
-import { isAckTarget, isUnackedComment, isUnackedForMe, setCommentAck, emitCommentAckChanged, LEGACY_RESOLVED_BY } from "@/app/lib/commentAck";
+import { isAckTarget, isUnackedComment, isUnackedForMe, setCommentAck, emitCommentAckChanged, LEGACY_RESOLVED_BY, useUnackedCommentCounts } from "@/app/lib/commentAck";
+import { UnackedCommentChip } from "@/app/components/tickets/UnackedCommentChip";
 import { FileAttachments } from "@/app/components/shared/FileAttachments";
 import {
   fetchTicketAttachments, uploadTicketAttachment, deleteTicketAttachment,
@@ -503,6 +504,11 @@ export function TicketDetailPanel({
   // 子チケットの取得が済んだかどうか（BRU11-046）。
   // 工数入力画面の初期値に子の実績合計を入れるため、取得前に入力欄を出さないようにする。
   const [childTicketsLoaded, setChildTicketsLoaded] = useState(false);
+  // KAIZEN2611-020 子チケットごとの、自分宛ての未確認のコメントの件数（スプリント一覧の子の行と同じ数え方）。
+  // 行は先に出し、件数は取れてから足す（子の表示を件数の取得で待たせない・スピナーで隠さない）。
+  // 子でコメントを確認済みにすると、commentAck の知らせで取り直される
+  const childUnackedCounts = useUnackedCommentCounts(childTickets.map(c => c.id), childTickets, userName);
+  const childUnackedTotal = childTickets.reduce((n, c) => n + (childUnackedCounts.get(c.id) ?? 0), 0);
   const [showCreateChild, setShowCreateChild] = useState(false);
   // MDファイルから子チケットをまとめて作る（1件ずつの showCreateChild と同じ場所から開く）
   const [showMdChildImport, setShowMdChildImport] = useState(false);
@@ -3794,6 +3800,8 @@ export function TicketDetailPanel({
                         実績合計 {childActualHoursTotal}H
                       </span>
                     )}
+                    {/* KAIZEN2611-020 子チケットの未確認の合計 */}
+                    <UnackedCommentChip count={childUnackedTotal} compact />
                   </p>
                   {canEdit && (
                     plan.featureChildTickets ? (
@@ -3836,6 +3844,8 @@ export function TicketDetailPanel({
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childBg; }}>
                           <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#059669", fontWeight: 700, flexShrink: 0 }}>{child.wbs}</span>
                           <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
+                          {/* KAIZEN2611-020 自分宛ての未確認のコメント。タイトルが … で切れても切れない（flexShrink: 0） */}
+                          <UnackedCommentChip count={childUnackedCounts.get(child.id) ?? 0} compact />
                           <ChildHoursBadge hours={childHours} />
                           <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, flexShrink: 0 }}>{ctsm.label}</span>
                           <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, flexShrink: 0 }}>{cPriLabel}</span>
