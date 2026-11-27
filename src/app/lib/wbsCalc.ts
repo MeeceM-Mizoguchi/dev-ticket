@@ -243,6 +243,10 @@ export function buildWbsGantt(rows: WbsRow[], holidays: ReadonlyMap<string, stri
   let min: Date | null = null;
   let max: Date | null = null;
   for (const r of rows) {
+    // KAIZEN2611-018 期間は、画面に出る一番右の段の行の日付だけで決める。大項目・中項目の行に
+    // 残っている日付（段数を増やしたときなど。表にもバーにも出ない）で、何も描かれない日を広げない。
+    // DB の値は消さない（段数を戻したときに、元の値がまた表に出るように）
+    if (!r.isLeafLevel) continue;
     for (const s of [r.item.startDate, r.item.endDate]) {
       const d = parseDateStr(s);
       if (!d) continue;
