@@ -57,7 +57,8 @@ export function WbsMasterSchedulePage() {
     const [level, list] = await Promise.all([loadWbsPermission(p.id, userId, isAdminRole), loadWbsSheets(p.id)]);
     setPerm(level);
     // KAIZEN2611-004 アーカイブしたWBSは中身が無いので出さない（WBS画面へ寄せる）
-    const target = list.find(s => s.id === wbsId && !s.archivedAt) ?? null;
+    // KAIZEN2611-022 削除済み（論理削除）のWBSも中身が無いので出さない
+    const target = list.find(s => s.id === wbsId && !s.archivedAt && !s.deletedAt) ?? null;
     setSheet(target);
     if (target) {
       const [its, hols, sts] = await Promise.all([loadWbsItems(target.id), loadWbsHolidays(p.id, target.id), loadWbsStatuses(target.id)]);

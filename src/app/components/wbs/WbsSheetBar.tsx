@@ -13,10 +13,13 @@ import { wbsToolBtn, wbsToolLabel } from "./wbsStyles";
 
 /** WBSを切り替えるプルダウンの、アーカイブ済みの一覧へ移る選択肢の値（WBSの id とは重ならない） */
 const ARCHIVED_OPTION = "__archived__";
+/** KAIZEN2611-022 削除済みの一覧へ移る選択肢の値 */
+const DELETED_OPTION = "__deleted__";
 
 export function WbsSheetBar({
   sheets, current, canEdit, onSelect, onCreate, onOpenManual, onCopyUrl, onOpenMaster, onOpenSettings,
   archivedCount = 0, archivedSelected = false, onOpenArchived,
+  deletedCount = 0, deletedSelected = false, onOpenDeleted,
   snapshots = [], snapshotId = "", snapshotLoadingId = null, onSelectSnapshot, onOpenAiUpdate, children,
 }: {
   /** 切り替えの候補（アーカイブしていないWBS） */
@@ -43,6 +46,11 @@ export function WbsSheetBar({
   /** アーカイブ済みの一覧を開いているか */
   archivedSelected?: boolean;
   onOpenArchived?: () => void;
+  /** KAIZEN2611-022 削除済みのWBSの数（作成者・オーナーが見られるもの）。1件以上あれば、プルダウンのいちばん下に出す */
+  deletedCount?: number;
+  /** 削除済みの一覧を開いているか */
+  deletedSelected?: boolean;
+  onOpenDeleted?: () => void;
   /** バックアップの一覧（新しい順）。onSelectSnapshot を渡したときだけ日付の選択を出す */
   snapshots?: WbsSnapshotMeta[];
   /** 表示中のバックアップ。"" は今の状態 */
@@ -59,11 +67,12 @@ export function WbsSheetBar({
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
       {/* プルダウンはブラウザ標準の <select> ではなく、タスク画面と同じ PickerCell を使う */}
-      <PickerCell variant="chip" value={archivedSelected ? ARCHIVED_OPTION : current?.id ?? ""} title="WBSを切り替える"
-        onChange={v => { if (v === ARCHIVED_OPTION) onOpenArchived?.(); else onSelect(v); }}
+      <PickerCell variant="chip" value={archivedSelected ? ARCHIVED_OPTION : deletedSelected ? DELETED_OPTION : current?.id ?? ""} title="WBSを切り替える"
+        onChange={v => { if (v === ARCHIVED_OPTION) onOpenArchived?.(); else if (v === DELETED_OPTION) onOpenDeleted?.(); else onSelect(v); }}
         options={[
           ...sheets.map(s => ({ value: s.id, label: s.name })),
           ...(archivedCount > 0 ? [{ value: ARCHIVED_OPTION, label: `アーカイブ済み（${archivedCount}件）` }] : []),
+          ...(deletedCount > 0 ? [{ value: DELETED_OPTION, label: `削除済み（${deletedCount}件）` }] : []),
         ]}
         textStyle={{ minWidth: 180, maxWidth: 320, height: 30, padding: "0 10px", fontSize: 12, fontWeight: 700, color: "#1A1714" }} />
 

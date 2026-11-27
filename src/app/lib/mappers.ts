@@ -249,6 +249,10 @@ export function mapWbsSheet(r: any): WbsSheet {
     editVersion: Number(r.edit_version ?? 0),
     archivedAt: r.archived_at ?? null,
     archivedByName: r.archived_by_name || "",
+    // KAIZEN2611-022 列が無い（SQL 未適用）ときは、今までどおりの物理削除で動かす
+    deletedAt: r.deleted_at ?? null,
+    deletedByName: r.deleted_by_name || "",
+    softDeleteEnabled: "deleted_at" in r,
   };
 }
 

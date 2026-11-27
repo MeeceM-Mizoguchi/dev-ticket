@@ -266,8 +266,33 @@ export const WBS_MANUAL: WbsManualGroup[] = [
         ],
         notes: [
           "同じ名前の WBS は作れません。",
-          "WBS を削除すると、その行・ステータス・チケットの紐づけ・バックアップもすべて消えます（チケット自体は消えません）。元に戻せません。使い終えた WBS を残しておきたいときは、削除ではなく「アーカイブ」を使います。",
+          "WBS を削除すると、その行・ステータス・チケットの紐づけ・バックアップが一覧から消えます（チケット自体は消えません）。間違えて消したときは、プルダウンの「削除済み」から元に戻せます（下の「削除済み」を参照）。使い終えた WBS を残しておきたいときは、削除ではなく「アーカイブ」を使います。",
           "削除できるのは、その WBS を作った人とオーナーです。",
+        ],
+      },
+      {
+        id: "deleted",
+        title: "削除済み（削除した WBS を元に戻す）",
+        lead: "削除した WBS は、中身とバックアップを保管しておき、あとから元に戻せます。保管の期限はありません。",
+        editOnly: true,
+        illustration: (
+          <Frame style={{ padding: 10 }}>
+            <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", border: BORDER, borderRadius: 7 }}>
+              <Mark n={2} style={{ top: -8, right: 120 }} /><Mark n={3} style={{ top: -8, right: 8 }} />
+              <span style={{ fontSize: 10, fontWeight: 700 }}>旧計画</span><span style={{ fontSize: 9, color: "#A09790" }}>削除：2026/11/27 10:00（山田 太郎）</span>
+              <span style={{ flex: 1 }} /><ToolBtn>元に戻す</ToolBtn><ToolBtn danger>完全に削除</ToolBtn>
+            </div>
+          </Frame>
+        ),
+        steps: [
+          "① 削除した WBS は、WBS を切り替えるプルダウンのいちばん下の「削除済み（◯件）」から見られます。",
+          "② 「元に戻す」を押すと、行・並び順・ステータス・チケットの紐づけ・この WBS だけの休日・バックアップの履歴が、削除する前と同じに戻ります。",
+          "③ 「完全に削除」を押すと、確認のあと、その WBS と保管している中身がすべて消えます。元に戻せません。",
+        ],
+        notes: [
+          "削除済みの一覧を見られる人・元に戻せる人・完全に削除できる人は、その WBS を作った人とオーナーです。",
+          "削除済みの WBS は、WBS の一覧・マスタースケジュール・API には出ません。バックアップも取られません。",
+          "ロック中の WBS は削除できません。",
         ],
       },
       {
