@@ -15,6 +15,10 @@
 // 「段」が空の行はエラーにする（字下げなどから段を推測しない）。
 //
 // 以前の形（「大項目／中項目／小項目」を3列に分けた表）も、そのまま読める。
+//
+// KAIZEN2611-016 エクスポートのファイルには、行の ID の列（「ID」。隠した列）がある。
+// 「変わったところだけ反映する」では、この ID でファイルの行と今の行を結びつける。
+// 「追加する」「すべて置き換える」では、ID の列は読み飛ばす（今までどおり新しい行として取り込む）。
 import { parseHolidayDate } from "@/app/lib/wbsHolidayCsv";
 
 /** 読み取った1セル。Excel の日付・数値は、文字にする前の値も持つ */
@@ -43,6 +47,10 @@ export interface WbsImportItem {
   note: string;
   /** 紐づけるチケット番号 */
   ticketNumbers: string[];
+  /** KAIZEN2611-016 ファイルの「ID」の列の値（今の行の id）。列が無い・空なら "" */
+  fileRowId: string;
+  /** ファイル上の行番号（1始まり）。名前から自動で作った上の段の行は、その行を作ったもとの行 */
+  line: number;
 }
 
 export interface WbsImportResult {
@@ -55,15 +63,18 @@ export interface WbsImportResult {
   newStatuses: string[];
   /** 段ごとの行数（添字は level - 1） */
   counts: [number, number, number];
+  /** KAIZEN2611-016 ファイルに「ID」の列があるか（無ければ「変わったところだけ反映する」は選べない） */
+  hasIdColumn: boolean;
 }
 
 /** ファイルの見出し。テンプレート・エクスポートの列の並びにも使う（画面の表と同じ並び） */
-export const WBS_FILE_HEADERS = ["No.", "段", "項目", "担当者", "開始予定日", "終了予定日", "予定日数", "進捗率", "ステータス", "チケット", "備考"] as const;
+// KAIZEN2611-016 最後の「ID」は行の id。エクスポート・テンプレートでは隠して、書き換えられないようにする
+export const WBS_FILE_HEADERS = ["No.", "段", "項目", "担当者", "開始予定日", "終了予定日", "予定日数", "進捗率", "ステータス", "チケット", "備考", "ID"] as const;
 
 /** 「段」の列に書く文字。添字は level - 1 */
 export const WBS_FILE_LEVEL_MARKS = ["大", "中", "小"] as const;
 
-type Field = "level" | "name" | "l1" | "l2" | "l3" | "assignee" | "start" | "end" | "progress" | "status" | "tickets" | "note";
+type Field = "level" | "name" | "l1" | "l2" | "l3" | "assignee" | "start" | "end" | "progress" | "status" | "tickets" | "note" | "id";
 
 /** 見出しの書き方のゆれ。空白と全角・半角の違いは比べる前に落とす */
 const HEADER_ALIASES: Record<Field, string[]> = {
@@ -80,6 +91,7 @@ const HEADER_ALIASES: Record<Field, string[]> = {
   status: ["ステータス", "状態"],
   tickets: ["チケット", "チケット番号"],
   note: ["備考", "メモ"],
+  id: ["ID", "id", "行ID"],
 };
 
 const LEVEL_LABELS = ["大項目", "中項目", "小項目"];
@@ -130,7 +142,7 @@ function parseDate(cell: WbsFileCell | undefined): string | null {
  * levels はそのWBSの段数。statusNames はそのWBSにいまあるステータスの名前。
  */
 export function parseWbsTable(table: WbsFileCell[][], levels: number, statusNames: string[]): WbsImportResult {
-  const result: WbsImportResult = { items: [], errors: [], warnings: [], newStatuses: [], counts: [0, 0, 0] };
+  const result: WbsImportResult = { items: [], errors: [], warnings: [], newStatuses: [], counts: [0, 0, 0], hasIdColumn: false };
   const error = (msg: string) => { if (result.errors.length < MAX_ERRORS) result.errors.push(msg); else if (result.errors.length === MAX_ERRORS) result.errors.push("…ほかにもエラーがあります。"); };
 
   // ── 見出しの行を探す（「項目」か「大項目」のセルがある最初の行） ──
@@ -151,16 +163,18 @@ export function parseWbsTable(table: WbsFileCell[][], levels: number, statusName
   const text = (row: WbsFileCell[], f: Field): string => (get(row, f)?.text ?? "").trim();
   // 「項目」の列があればいまの形、無ければ以前の形（大項目／中項目／小項目の3列）
   const single = col.name !== undefined;
+  result.hasIdColumn = single && col.id !== undefined;
 
   const known = new Set(statusNames);
   const fresh = new Set<string>();
   // いま読んでいる位置の、各段の行（添字は level - 1）。implicit = 名前から自動で作っただけの行
   const cur: ({ item: WbsImportItem; implicit: boolean } | null)[] = [null, null, null];
 
-  const create = (level: number, name: string, implicit: boolean) => {
+  const create = (level: number, name: string, implicit: boolean, line: number, fileRowId = "") => {
     const item: WbsImportItem = {
       id: newId(), parentId: level > 1 ? cur[level - 2]!.item.id : null, level, name,
       assignee: "", startDate: "", endDate: "", progress: 0, statusName: "", note: "", ticketNumbers: [],
+      fileRowId, line,
     };
     result.items.push(item);
     result.counts[level - 1]++;
@@ -222,7 +236,7 @@ export function parseWbsTable(table: WbsFileCell[][], levels: number, statusName
         error(`${line}行目：${LEVEL_LABELS[level - 1]}の前に、${LEVEL_LABELS[level - 2]}の行がありません（どこに属するかが分かりません）。`);
         continue;
       }
-      const item = create(level, name, false);
+      const item = create(level, name, false, line, text(row, "id"));
       // 一番右の段より上の行は見出し行。名前だけを読む
       if (level === levels) readDetails(row, item, line);
       continue;
@@ -249,7 +263,7 @@ export function parseWbsTable(table: WbsFileCell[][], levels: number, statusName
         if (!now) { error(`${line}行目：${LEVEL_LABELS[lv - 1]}が空で、上の行にもありません（${LEVEL_LABELS[depth - 1]}がどこに属するかが分かりません）。`); broken = true; break; }
         continue;
       }
-      if (!now || now.item.name !== given) create(lv, given, true);
+      if (!now || now.item.name !== given) create(lv, given, true, line);
     }
     if (broken) continue;
 
@@ -258,7 +272,7 @@ export function parseWbsTable(table: WbsFileCell[][], levels: number, statusName
     // 直前に名前から自動で作った行と同じ名前なら、その行の中身として扱う（二重に作らない）
     const item = same && same.implicit && same.item.name === name
       ? (same.implicit = false, same.item)
-      : create(depth, name, false);
+      : create(depth, name, false, line);
     if (depth === levels) readDetails(row, item, line);
   }
 

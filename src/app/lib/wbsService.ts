@@ -578,7 +578,7 @@ type WbsApiResult<T> = { ok: true; data: T } | { ok: false; error: string; code?
  * `api/wbs/[action]` を呼ぶ。認証はログイン中ユーザーのアクセストークン。
  * Vite の開発サーバーは api/ を実行しないため、`npm run dev` ではHTMLが返る（その旨を伝える）。
  */
-async function postWbsApi<T>(action: "snapshot" | "restore" | "archive" | "unarchive" | "purge" | "proposal-apply" | "proposal-reject", body: unknown): Promise<WbsApiResult<T>> {
+async function postWbsApi<T>(action: "snapshot" | "restore" | "archive" | "unarchive" | "purge" | "proposal-apply" | "proposal-reject" | "apply-ops", body: unknown): Promise<WbsApiResult<T>> {
   if (!isSupabaseEnabled) return { ok: false, error: "Supabase が設定されていません" };
   const { data: { session } } = await supabase!.auth.getSession();
   if (!session?.access_token) return { ok: false, error: "ログインが必要です" };
@@ -714,5 +714,14 @@ export async function loadWbsProposal(id: string): Promise<WbsProposal | null> {
  */
 export async function decideWbsProposal(id: string, action: "apply" | "reject"): Promise<{ ok: true } | { ok: false; error: string; code?: string }> {
   const r = await postWbsApi(action === "apply" ? "proposal-apply" : "proposal-reject", { proposalId: id });
+  return r.ok ? { ok: true } : { ok: false, error: r.error, code: r.code };
+}
+
+/**
+ * KAIZEN2611-016 インポートの「変わったところだけ反映する」。比べる画面で確かめた操作を、まとめて反映する。
+ * expectedVersion はファイルを読んだときの版の番号。違えば DB が止める（code: conflict）
+ */
+export async function applyWbsOps(sheetId: string, expectedVersion: number, ops: WbsDiffOp[]): Promise<{ ok: true } | { ok: false; error: string; code?: string }> {
+  const r = await postWbsApi("apply-ops", { sheetId, expectedVersion, ops });
   return r.ok ? { ok: true } : { ok: false, error: r.error, code: r.code };
 }

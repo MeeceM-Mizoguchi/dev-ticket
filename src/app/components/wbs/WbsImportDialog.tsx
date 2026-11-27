@@ -4,6 +4,8 @@
 //   1. テンプレートをダウンロードして入力する（画面からエクスポートしたファイルも同じ形なので、そのまま使える）
 //   2. ファイルを選ぶ → 中身を読み取って、取り込む内容とエラーを先に見せる
 //   3. 「いまの行に追加する／いまの行をすべて置き換える」を選んで取り込む
+//      KAIZEN2611-016「変わったところだけ反映する」を選ぶと、ダイアログを閉じて比べる画面を出す
+//      （ファイルの行を「ID」の列で今の行と結びつけ、違いだけを反映する。ID の列が無いファイルでは選べない）
 // エラーが1つでもあるうちは取り込まない（途中まで入った中途半端なWBSを作らないため）。
 import { useRef, useState } from "react";
 import { Check, Download, FileUp } from "lucide-react";
@@ -13,16 +15,18 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { downloadBlob } from "@/app/lib/articleExport/download";
 import { buildWbsTemplateXlsx, readWbsFile } from "@/app/lib/wbsExcel";
 import { parseWbsTable, type WbsImportResult } from "@/app/lib/wbsImport";
-import { importWbsItems } from "@/app/lib/wbsService";
+import { importWbsItems, loadWbsEditVersion } from "@/app/lib/wbsService";
+import type { WbsImportItem } from "@/app/lib/wbsImport";
 import type { WbsSheet, WbsStatus } from "@/app/types";
 
 const LEVEL_LABELS = ["大項目", "中項目", "小項目"];
 
-function Radio({ on, label, desc, danger, onClick }: { on: boolean; label: string; desc: string; danger?: boolean; onClick: () => void }) {
+function Radio({ on, label, desc, danger, disabled, onClick }: { on: boolean; label: string; desc: string; danger?: boolean; disabled?: boolean; onClick: () => void }) {
   const color = danger ? "#DC2626" : "#059669";
   return (
-    <button type="button" role="radio" aria-checked={on} onClick={onClick}
-      style={{ flex: 1, display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", textAlign: "left", cursor: "pointer", borderRadius: 10,
+    <button type="button" role="radio" aria-checked={on} aria-disabled={disabled} onClick={disabled ? undefined : onClick}
+      style={{ flex: 1, display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", textAlign: "left", cursor: disabled ? "not-allowed" : "pointer", borderRadius: 10,
+        opacity: disabled ? 0.55 : 1,
         background: on ? (danger ? "#FEF2F2" : "#ECFDF5") : "#FFFFFF", border: `1.5px solid ${on ? color : "rgba(26,23,20,0.10)"}` }}>
       <span style={{ width: 16, height: 16, borderRadius: "50%", flexShrink: 0, marginTop: 1, display: "flex", alignItems: "center", justifyContent: "center", background: on ? color : "#FFF", border: on ? "none" : "1.5px solid rgba(26,23,20,0.18)" }}>
         {on && <Check style={{ width: 10, height: 10, color: "#FFF" }} />}
@@ -35,7 +39,10 @@ function Radio({ on, label, desc, danger, onClick }: { on: boolean; label: strin
   );
 }
 
-export function WbsImportDialog({ sheet, statuses, existingRowCount, tailSortOrder, ticketIdByNumber, onImported, onClose }: {
+/** KAIZEN2611-016 取り込み方。diff ＝ 変わったところだけ反映する */
+type ImportMode = "append" | "replace" | "diff";
+
+export function WbsImportDialog({ sheet, statuses, existingRowCount, tailSortOrder, ticketIdByNumber, onImported, onCompare, onClose }: {
   sheet: WbsSheet;
   statuses: WbsStatus[];
   /** いまこのWBSにある行の数（置き換えの確認に出す） */
@@ -45,11 +52,20 @@ export function WbsImportDialog({ sheet, statuses, existingRowCount, tailSortOrd
   /** チケット番号 → チケットの id（「チケット」列の紐づけに使う） */
   ticketIdByNumber: ReadonlyMap<string, string>;
   onImported: () => Promise<void>;
+  /**
+   * KAIZEN2611-016「変わったところだけ反映する」で「新旧を見比べる」を押したとき。
+   * version はファイルを読んだときの版の番号（反映のときに DB が今の版の番号と比べる）。
+   * 渡されないとき（バックアップの仕組みが無い環境）は、この取り込み方を出さない
+   */
+  onCompare?: (fileItems: WbsImportItem[], version: number) => void;
   onClose: () => void;
 }) {
   const [fileName, setFileName] = useState("");
   const [parsed, setParsed] = useState<WbsImportResult | null>(null);
-  const [replace, setReplace] = useState(false);
+  const [mode, setMode] = useState<ImportMode>("append");
+  const replace = mode === "replace";
+  // ファイルを読んだときの版の番号（変わったところだけ反映するときに使う）
+  const [readVersion, setReadVersion] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -81,7 +97,13 @@ export function WbsImportDialog({ sheet, statuses, existingRowCount, tailSortOrd
       return;
     }
     try {
-      setParsed(parseWbsTable(await readWbsFile(file), sheet.levels, statuses.map(s => s.name)));
+      // 版の番号はファイルの中身と比べる前の今の WBS のもの。読んだあとに WBS が直されたら、反映のときに止める
+      const version = onCompare ? await loadWbsEditVersion(sheet.id) : null;
+      const result = parseWbsTable(await readWbsFile(file), sheet.levels, statuses.map(s => s.name));
+      setReadVersion(version);
+      setParsed(result);
+      // ID の列が無いファイルで「変わったところだけ」を選んでいたら、追加に戻す
+      if (!result.hasIdColumn) setMode(m => (m === "diff" ? "append" : m));
     } catch {
       setMessage("ファイルを読み込めませんでした。Excel（.xlsx）か CSV のファイルかを確かめてください。");
     }
@@ -93,9 +115,22 @@ export function WbsImportDialog({ sheet, statuses, existingRowCount, tailSortOrd
     : [];
   const canImport = !!parsed && parsed.errors.length === 0 && parsed.items.length > 0;
 
+  const diffAvailable = !!onCompare && !!parsed?.hasIdColumn && readVersion !== null;
+  const diffUnavailableReason = !onCompare
+    ? "この環境では使えません（バックアップの仕組みが必要です）"
+    : parsed && !parsed.hasIdColumn
+      ? "このファイルには ID の列がありません。画面の「エクスポート」で作ったファイルを直して使ってください（テンプレート・古いファイルでは使えません）"
+      : "";
+
   const handleImport = () => guarded(async () => {
     if (!parsed || !canImport) return;
     setMessage(null);
+    if (mode === "diff") {
+      if (!diffAvailable || !onCompare || readVersion === null) return;
+      onCompare(parsed.items, readVersion);
+      onClose();
+      return;
+    }
     const ok = await importWbsItems({
       sheetId: sheet.id, replace, items: parsed.items, statuses, newStatuses: parsed.newStatuses,
       baseSortOrder: replace ? 0 : tailSortOrder, ticketIdByNumber,
@@ -109,8 +144,8 @@ export function WbsImportDialog({ sheet, statuses, existingRowCount, tailSortOrd
     <DialogShell title="WBSをインポート" size="lg" minHeight={0} onClose={busy ? () => {} : onClose} busy={busy}
       footer={<>
         <BtnSecondary onClick={onClose} disabled={busy}>キャンセル</BtnSecondary>
-        <BtnPrimary onClick={handleImport} disabled={!canImport} loading={busy && canImport}>
-          {parsed && canImport ? `${parsed.items.length} 行を取り込む` : "取り込む"}
+        <BtnPrimary onClick={handleImport} disabled={!canImport || (mode === "diff" && !diffAvailable)} loading={busy && canImport}>
+          {mode === "diff" ? "新旧を見比べる" : parsed && canImport ? `${parsed.items.length} 行を取り込む` : "取り込む"}
         </BtnPrimary>
       </>}>
       <p style={{ fontSize: 12, color: "#6B6458", lineHeight: 1.7 }}>
@@ -172,10 +207,16 @@ export function WbsImportDialog({ sheet, statuses, existingRowCount, tailSortOrd
         <div>
           <p style={{ fontSize: 11, fontWeight: 700, color: "#A09790", marginBottom: 6 }}>取り込み方</p>
           <div role="radiogroup" style={{ display: "flex", gap: 8 }}>
-            <Radio on={!replace} onClick={() => setReplace(false)} label="いまの行に追加する"
+            <Radio on={mode === "append"} onClick={() => setMode("append")} label="いまの行に追加する"
               desc={existingRowCount > 0 ? `いまある ${existingRowCount} 行は残し、その下に追加します。` : "このWBSにはまだ行がありません。"} />
-            <Radio on={replace} danger onClick={() => setReplace(true)} label="いまの行をすべて置き換える"
+            <Radio on={replace} danger onClick={() => setMode("replace")} label="いまの行をすべて置き換える"
               desc={existingRowCount > 0 ? `いまある ${existingRowCount} 行と、そのチケットの紐づけを削除してから取り込みます。元に戻せません。` : "いまある行を削除してから取り込みます。"} />
+            {onCompare && (
+              <Radio on={mode === "diff"} disabled={!diffAvailable} onClick={() => setMode("diff")} label="変わったところだけ反映する"
+                desc={diffAvailable
+                  ? "ファイルの行を ID で今の行と結びつけ、違いだけを反映します。反映の前に新旧を見比べられます。"
+                  : diffUnavailableReason} />
+            )}
           </div>
         </div>
       )}
