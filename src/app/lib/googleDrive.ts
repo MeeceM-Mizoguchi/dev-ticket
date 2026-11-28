@@ -274,6 +274,133 @@ export function trashGoogleFiles(target: { fileId?: string; folderId?: string })
   return postApi<TrashResult>("trash", target);
 }
 
+// ── KAIZEN2611-024 ファイルボックスの形を共有ドライブに写す ─────────────
+// フォルダとファイル（PDFなども）を、共有ドライブの「指定したフォルダ/プロジェクト名/」の下にも同じ形で入れる。
+// 写す処理はサーバー（api/google/[action].ts の mirror-sync）が「Dev Ticket の今の形と Drive に入れた形の差」を
+// 埋める形で行うので、画面は操作のあと・ファイルボックスを開いたとき・タブに戻ったときに呼ぶだけでよい。
+// Drive への反映が失敗しても Dev Ticket の操作は止めない（次に呼んだときに入れ直す）。
+
+interface MirrorSyncResult {
+  skipped?: boolean;
+  /** not_shared_drive / not_migrated / no_actor / busy */
+  reason?: string;
+  message?: string;
+  pending?: number;
+  done?: number;
+  remaining?: number;
+  failed?: { name: string; reason: string }[];
+}
+
+/** 「Drive に反映中 ◯／◯件」の表示に使う進み具合 */
+export interface DriveMirrorProgress {
+  running: boolean;
+  /** 反映が要る件数。最初の応答が来るまでは null */
+  total: number | null;
+  /** 反映できた件数 */
+  done: number;
+  /** 反映できなかったもの（次に開いたときにもう一度試す） */
+  failed: { name: string; reason: string }[];
+  /** 反映できない理由（Googleを連携している管理者がいない など）。無ければ null */
+  note: string | null;
+}
+
+const IDLE_MIRROR: DriveMirrorProgress = { running: false, total: null, done: 0, failed: [], note: null };
+const mirrorEnabled = new Set<string>();
+const mirrorState = new Map<string, { progress: DriveMirrorProgress; again: boolean; againVerify: boolean }>();
+const mirrorListeners = new Map<string, Set<(p: DriveMirrorProgress) => void>>();
+// 1回の要求で呼び直す回数の上限（1回 20 秒ほど。上限に達したら、次に開いたときに続きを進める）
+const MIRROR_MAX_ROUNDS = 30;
+
+function emitMirror(projectId: string, progress: DriveMirrorProgress) {
+  const st = mirrorState.get(projectId);
+  if (st) st.progress = progress;
+  for (const fn of mirrorListeners.get(projectId) ?? []) fn(progress);
+}
+
+/**
+ * このプロジェクトが共有ドライブ運用か（ファイルボックスが組織の設定を読んだときに覚える）。
+ * アップロードが別の画面にいる間に終わったときも、写しを頼めるようにするため（UploadContext）。
+ */
+export function setDriveMirrorEnabled(projectId: string, enabled: boolean): void {
+  if (enabled) mirrorEnabled.add(projectId); else mirrorEnabled.delete(projectId);
+}
+
+export function isDriveMirrorEnabled(projectId: string): boolean {
+  return mirrorEnabled.has(projectId);
+}
+
+/** 進み具合を受け取る。戻り値で受け取りをやめる */
+export function subscribeDriveMirror(projectId: string, fn: (p: DriveMirrorProgress) => void): () => void {
+  let set = mirrorListeners.get(projectId);
+  if (!set) { set = new Set(); mirrorListeners.set(projectId, set); }
+  set.add(fn);
+  fn(mirrorState.get(projectId)?.progress ?? IDLE_MIRROR);
+  return () => { set!.delete(fn); };
+}
+
+/**
+ * ファイルボックスの今の形を Drive に写すよう頼む（結果は待たない。進み具合は subscribeDriveMirror で受け取る）。
+ * BUG-05 処理中にもう一度頼まれたら重ねて走らせず、終わってから1回だけ呼び直す。
+ * @param verify Drive 側で写しが消された・動かされたかも確かめる（開いたとき・タブに戻ったとき）
+ */
+export function requestDriveMirror(projectId: string, verify = false): void {
+  if (!isSupabaseEnabled || !projectId) return;
+  const st = mirrorState.get(projectId);
+  if (st?.progress.running) {
+    st.again = true;
+    st.againVerify = st.againVerify || verify;
+    return;
+  }
+  mirrorState.set(projectId, { progress: { ...IDLE_MIRROR, running: true }, again: false, againVerify: false });
+  emitMirror(projectId, { ...IDLE_MIRROR, running: true });
+  void runDriveMirror(projectId, verify);
+}
+
+async function runDriveMirror(projectId: string, verify: boolean): Promise<void> {
+  let total: number | null = null;
+  let done = 0;
+  let failed: { name: string; reason: string }[] = [];
+  let note: string | null = null;
+  try {
+    for (let round = 0; round < MIRROR_MAX_ROUNDS; round++) {
+      // 確かめるのは最初の1回だけ（2回目以降は、残りを進めるだけ）
+      const r = await postApi<MirrorSyncResult>("mirror-sync", { projectId, verify: verify && round === 0 });
+      if (r.skipped) {
+        if (r.reason === "no_actor") note = r.message ?? null;
+        break;
+      }
+      if (total === null) total = r.pending ?? 0;
+      done = Math.max(0, total - (r.remaining ?? 0));
+      failed = r.failed ?? [];
+      emitMirror(projectId, { running: true, total, done, failed, note });
+      // 進まなかった（失敗・親のフォルダがまだ無い）ときは止める。次に開いたときにもう一度試す。
+      // ただし確かめた回（1回目）は、確かめるだけで時間を使い切ることがあるので、もう1回は呼ぶ
+      const checkedOnly = verify && round === 0;
+      if ((r.remaining ?? 0) <= 0 || ((r.done ?? 0) === 0 && !checkedOnly)) break;
+    }
+  } catch (e) {
+    // 反映できなくてもファイルボックスは使えるので、画面は止めない
+    console.warn("[googleDrive] Googleドライブへの反映に失敗しました", e);
+  } finally {
+    const st = mirrorState.get(projectId);
+    emitMirror(projectId, { running: false, total, done, failed, note });
+    if (st?.again) {
+      const againVerify = st.againVerify;
+      st.again = false; st.againVerify = false;
+      requestDriveMirror(projectId, againVerify);
+    }
+  }
+}
+
+/**
+ * 削除の前に、Drive の写しをゴミ箱へ入れる（共有ドライブ運用のみ。Googleのファイルは何もしない）。
+ * ★ DevTicket 側の削除(deleteProjectFile)より「前」に呼ぶこと（trashGoogleFiles と同じ理由）。
+ * @param keepGoogle フォルダを消すとき、中の Googleのファイルは Drive に残す（削除の確認で「Drive には残す」）
+ */
+export function trashDriveMirror(fileId: string, keepGoogle: boolean): Promise<TrashResult> {
+  return postApi<TrashResult>("mirror-trash", { fileId, keepGoogle });
+}
+
 /** リンクを知っている全員が編集できる状態にする / やめる */
 export function setGoogleLinkShare(fileId: string, enabled: boolean): Promise<{ linkShared: boolean }> {
   return postApi<{ linkShared: boolean }>("share-link", { fileId, enabled });

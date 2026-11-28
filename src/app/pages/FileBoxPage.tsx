@@ -41,7 +41,8 @@ import {
   openGoogleFile, openGoogleFileEnsuringAccess, ensureGoogleAccess, renameGoogleFile, setGoogleLinkShare, syncGoogleNames,
   convertExistingFile, exportGoogleToOffice, startGoogleOAuth, DRAWIO_OPEN_HINT, officeOnDriveHint, trashGoogleFiles,
   syncGoogleFileAcl, requestGoogleTextExtract,
-  type GoogleDriveProjectConfig, type GoogleDriveMode, type TrashResult,
+  requestDriveMirror, setDriveMirrorEnabled, subscribeDriveMirror, trashDriveMirror,
+  type GoogleDriveProjectConfig, type GoogleDriveMode, type TrashResult, type DriveMirrorProgress,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
 import { useGoogleLinkGate } from "@/app/hooks/useGoogleLinkGate";
@@ -66,6 +67,11 @@ const OFFICE_EXPORT_KIND: Partial<Record<FileKind, GoogleAppKind>> = {
 // Google 側で名前を変える操作はどう急いでもこれより時間がかかるので、取りこぼさない。
 // 画面遷移・リロードのときは間引かず必ず同期する。
 const DRIVE_SYNC_MIN_INTERVAL_MS = 10_000;
+// KAIZEN2611-024 Drive 側で写しが消された・動かされたかを確かめる間隔（Drive のフォルダを1つずつ一覧するので間引く）。
+// 画面遷移・リロードのときは間引かず必ず確かめる。操作のあとの写しは、確かめずに差だけを埋める
+const DRIVE_MIRROR_VERIFY_INTERVAL_MS = 60_000;
+// 「Drive に反映中」を出すまでの待ち。1件だけの写しはすぐ終わるので、一瞬だけ出てチラつかないようにする
+const DRIVE_MIRROR_BANNER_DELAY_MS = 1500;
 // パンくずのドロップ先を表すキー。ルートは folderId が null なので代わりにこれを使う
 const ROOT_CRUMB = "__root__";
 const TOO_MANY_MSG =`一度に扱えるのは ${MAX_UPLOAD_ENTRIES} 件までです。先頭の ${MAX_UPLOAD_ENTRIES} 件だけ取り込みます`;
@@ -291,6 +297,48 @@ function StorageUsageBar({ usage }: { usage: FileBoxUsage | undefined }) {
   );
 }
 
+/**
+ * KAIZEN2611-024 Googleドライブ（共有ドライブ）への写しの進み具合。
+ * 反映中は「Googleドライブに反映中 ◯／◯件」、終わって反映できなかったものがあれば件数と理由を出す。
+ * すぐ終わる写し（操作のあとの1件など）では出さない（DRIVE_MIRROR_BANNER_DELAY_MS）。
+ */
+function DriveMirrorBanner({ progress }: { progress: DriveMirrorProgress }) {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (!progress.running) { setShown(false); return; }
+    const t = setTimeout(() => setShown(true), DRIVE_MIRROR_BANNER_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [progress.running]);
+
+  const box: CSSProperties = {
+    display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", marginBottom: 8,
+    borderRadius: 7, fontSize: 11, lineHeight: 1.5,
+  };
+  if (progress.running) {
+    if (!shown || progress.total === 0) return null;
+    return (
+      <div role="status" style={{ ...box, background: "#F3F7FE", border: "1px solid #D6E4FB", color: "#2B4C7E" }}>
+        <span className="loading-dot" /><span className="loading-dot" /><span className="loading-dot" />
+        <span>
+          Googleドライブに反映中{progress.total !== null && ` ${progress.done}／${progress.total}件`}
+          <span style={{ color: "#6B7FA0" }}>（このまま使えます）</span>
+        </span>
+      </div>
+    );
+  }
+  const message = progress.note
+    ?? (progress.failed.length > 0
+      ? `Googleドライブに反映できなかったものがあります（${progress.failed.length}件）。次にファイルボックスを開いたときにもう一度試します`
+      : null);
+  if (!message) return null;
+  return (
+    <div role="status" style={{ ...box, background: "#FFF8EB", border: "1px solid #F5DFB3", color: "#7A5A14" }}
+      title={progress.failed.map(f => `${f.name}：${f.reason}`).join("\n") || undefined}>
+      <span>{message}</span>
+    </div>
+  );
+}
+
 function FileListSkeleton() {
   const nameW = ["58%", "42%", "66%", "36%", "50%"];
   return (
@@ -380,6 +428,16 @@ export function FileBoxPage() {
   // 一覧と同じ read で取るので、ボタンだけ遅れて出ることがない（load() 参照）。
   const [googleDrive, setGoogleDrive] = useState<GoogleDriveProjectConfig | null>(null);
 
+  // KAIZEN2611-024 共有ドライブへの写しの進み具合（「Googleドライブに反映中 ◯／◯件」）
+  const [driveMirror, setDriveMirror] = useState<DriveMirrorProgress | null>(null);
+  const lastMirrorVerifyRef = useRef(0);
+  const lastMirrorRequestRef = useRef(0);
+  const mirrorProjectId = project?.id;
+  useEffect(() => {
+    if (!mirrorProjectId) return;
+    return subscribeDriveMirror(mirrorProjectId, setDriveMirror);
+  }, [mirrorProjectId]);
+
   // Drive 上に見つからなかった Googleファイル（project_files の id）。
   // 行は消さず、一覧に「Driveで削除済み」と出して気づけるようにする。
   const [missingGoogleIds, setMissingGoogleIds] = useState<Set<string>>(new Set());
@@ -444,8 +502,10 @@ export function FileBoxPage() {
   /**
    * @param forceDriveSync Drive 側の変更の取り込みを間引かずに行う。
    *   画面遷移・リロードのときは true。タブ復帰のときは false（短時間の往復で叩かない）。
+   * @param fromFocus タブ復帰からの読み直し。KAIZEN2611-024 の Drive への写しを間引くのに使う
+   *   （操作のあとの読み直しは間引かない。操作の反映が遅れるため）
    */
-  const load = useCallback(async (forceDriveSync = false) => {
+  const load = useCallback(async (forceDriveSync = false, fromFocus = false) => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
     // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
     // 引きずらないよう毎回クリアしてから引き直す。
@@ -488,6 +548,19 @@ export function FileBoxPage() {
       folderName: orgResult.data?.google_shared_drive_name ?? null,
     });
 
+    // KAIZEN2611-024 共有ドライブ運用なら、ファイルボックスの今の形を Drive に写す（結果は待たない）。
+    // load は開いたとき・タブに戻ったとき・各操作のあとに通るので、ここで頼めば操作の反映と入れ直しの両方になる。
+    // Drive 側で写しが消されたかを確かめるのは、開いたときと、前に確かめてから時間が経ったときだけ
+    // タブ復帰（fromFocus）は短い間の往復で何度も呼ばないよう、Drive の同期と同じ間隔で間引く
+    const mirrorOn = driveMode === "shared_drive";
+    setDriveMirrorEnabled(p.id, mirrorOn);
+    if (mirrorOn && !(fromFocus && Date.now() - lastMirrorRequestRef.current < DRIVE_SYNC_MIN_INTERVAL_MS)) {
+      const verify = forceDriveSync || Date.now() - lastMirrorVerifyRef.current >= DRIVE_MIRROR_VERIFY_INTERVAL_MS;
+      if (verify) lastMirrorVerifyRef.current = Date.now();
+      lastMirrorRequestRef.current = Date.now();
+      requestDriveMirror(p.id, verify);
+    }
+
     if (isAdminRole) {
       setEffectiveWikiPerm("edit"); setEffectiveBacklogPerm("edit");
       setEffectiveMinutesPerm("edit"); setEffectiveWhiteboardPerm("edit");
@@ -517,7 +590,7 @@ export function FileBoxPage() {
   // アプリ側(Excel/Word)での保存はブラウザの外で起きるため、この画面は気づけない。
   // タブに戻ってきたタイミングで一覧を取り直し、新しいバージョンを反映する。
   useEffect(() => {
-    const refresh = () => { if (!document.hidden) load(); };
+    const refresh = () => { if (!document.hidden) load(false, true); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
@@ -1097,6 +1170,20 @@ export function FileBoxPage() {
         }
       }
 
+      // KAIZEN2611-024 共有ドライブの写し（フォルダ・ファイル）も、行を消す前にゴミ箱へ入れる。
+      // Googleのファイルの実体は上の trashGoogleFiles が受け持つので、ここでは触らない。
+      // フォルダで「Drive には残す」を選んだときは、中の Googleのファイルをプロジェクトのフォルダへ出してから入れる。
+      // 入れられなくても Dev Ticket の削除は続ける（結果はトーストで伝える）
+      let mirrorError: string | null = null;
+      if (googleDrive?.mode === "shared_drive" && !isGoogleFile(file)) {
+        try {
+          const r = await trashDriveMirror(file.id, !alsoDrive);
+          if (r.failed.length > 0) mirrorError = summarize(r.failed.map(f => `${f.name}（${f.reason}）`));
+        } catch (e) {
+          mirrorError = e instanceof Error ? e.message : "Googleドライブの写しをゴミ箱へ入れられませんでした";
+        }
+      }
+
       try {
         await deleteProjectFile(file.id);
       } catch (e) {
@@ -1107,6 +1194,9 @@ export function FileBoxPage() {
       toast(!alsoDrive && (googleCount > 0 || file.externalLinked)
         ? `「${file.fileName}」をファイルボックスから削除しました。Googleドライブ上のファイルは残っています`
         : `「${file.fileName}」を削除しました`);
+      if (mirrorError) {
+        toast(`Googleドライブの写しをゴミ箱へ入れられませんでした：${mirrorError}。Googleドライブには残っています`, "error");
+      }
 
       // Drive 側の結果は別のトーストで伝える。消せなかったものに必ず気づけるようにする
       if (alsoDrive) {
@@ -1138,7 +1228,7 @@ export function FileBoxPage() {
     } finally {
       deletingRef.current = false;
     }
-  }, [toast, files]);
+  }, [toast, files, googleDrive]);
 
   // 保存や差し替えのたびに版が増えるので、一覧は同名ファイルの最新版だけを見せる。
   // (files は created_at 降順で取得済み。同じフォルダの同名なら version が大きい方を残す)
@@ -1325,6 +1415,7 @@ export function FileBoxPage() {
 
         {/* 容量（組織全体の使用量 / プランの上限） */}
         {usage !== null && <StorageUsageBar usage={usage} />}
+        {googleDrive?.mode === "shared_drive" && driveMirror && <DriveMirrorBanner progress={driveMirror} />}
 
         {/* アップロード */}
         <div ref={uploadAreaRef}

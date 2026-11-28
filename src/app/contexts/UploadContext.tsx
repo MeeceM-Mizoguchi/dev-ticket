@@ -15,7 +15,7 @@ import {
   uploadProjectFile, ensureFolderPath, googleConvertKind, splitFileName, formatFileSize,
   UPLOAD_ABORTED_MSG,
 } from "@/app/lib/projectFiles";
-import { uploadAsGoogleFile } from "@/app/lib/googleDrive";
+import { uploadAsGoogleFile, isDriveMirrorEnabled, requestDriveMirror } from "@/app/lib/googleDrive";
 import { looksLikeFolder, type UploadEntry } from "@/app/lib/folderUpload";
 
 export const MAX_UPLOAD_FILE_SIZE = 52428800; // 50MB（バケットの file_size_limit と揃える）
@@ -198,6 +198,8 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       }
       if (sum.ok > 0) {
         emitLinkItemsChanged(projectId, "file"); // 他タブの %サジェストへ即時反映
+        // KAIZEN2611-024 共有ドライブ運用なら、Googleドライブにも同じフォルダへ写す（別の画面に移っていても進める）
+        if (isDriveMirrorEnabled(projectId)) requestDriveMirror(projectId);
         for (const fn of finishedListenersRef.current) fn(projectId);
       }
     }

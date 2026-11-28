@@ -50,6 +50,10 @@ import { googleExportPlan, textFromGoogleExport, saveFileText } from "../_lib/fi
 //   POST /api/google/extract-text     { fileId }                          → { ok, skipped?, error? }（ENHA2-056 高度検索）
 //   POST /api/google/resolve-folder   { folderId }                        → { id, name, driveId }
 //   POST /api/google/test-connection  { folderId }                        → { ok } / 400
+//   POST /api/google/mirror-sync      { projectId, verify? }              → { pending, done, remaining, failed } / { skipped, reason }
+//                                     … KAIZEN2611-024 ファイルボックスの形を共有ドライブに写す（mirrorProject 参照）
+//   POST /api/google/mirror-trash     { fileId, keepGoogle? }             → { trashed, failed }
+//                                     … KAIZEN2611-024 削除の前に Drive の写しをゴミ箱へ入れる
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
@@ -1006,6 +1010,584 @@ async function recordGrant(sb: SupabaseClient, fileId: string, email: string): P
   );
 }
 
+// ── KAIZEN2611-024 ファイルボックスの形を Drive に写す（共有ドライブ運用のみ） ──────
+// ファイルボックスのフォルダとファイル（PDF・画像・Office文書など）を、Drive の
+// 「指定したフォルダ/プロジェクト名/」の下にも同じ形で入れる。Dev Ticket が元で、Drive は写すだけ（片方向）。
+//   フォルダ      … 同じ名前の Drive のフォルダを作り、名前の変更・移動も合わせる
+//   ファイル      … Storage の最新の版を Drive へ中継して入れる。新しい版ができたら同じ Drive のファイルを
+//                   置き換える（Drive の版の履歴に残る）。Storage の実体は消さない
+//   Googleのファイル … ファイルボックスのフォルダに対応する Drive のフォルダへ移す（元ファイルのまま追加したものは移さない）
+//   限定公開のファイル … 写さない。共有ドライブではメンバー全員が中を見られ、限定公開が効かないため。
+//                   限定公開にしたら写しをゴミ箱へ入れ、公開に戻したら入れ直す
+//
+// ★ 写しは操作のたびではなく「Dev Ticket の今の形と、Drive に入れた形（drive_mirror_* の列）の差」を埋める形で行う
+//   （mirror-sync）。画面は操作のあと・ファイルボックスを開いたとき・タブに戻ったときに呼ぶだけ。
+//   これで、Drive への反映が失敗しても Dev Ticket の操作は止まらず、次に呼ばれたときに入れ直せる。
+//   api/project-files/[action].ts と api/dav-open.ts は変えない（新しい版は drive_mirror_version との比較で拾う）。
+// ★ 削除だけは行が消えると写しの ID も消えるので、画面が削除の「前」に mirror-trash を呼ぶ。
+// ★ スコープは drive.file のまま。触るのは Dev Ticket が作ったフォルダ・ファイルと、Dev Ticket に登録した Googleのファイルだけ。
+// ★ 使うトークンは「組織の管理者 → 操作した本人」の順（mirrorActors）。drive.file では作ったトークンからしか
+//   見えないため、写しは毎回なるべく同じ人（管理者）のトークンで作る。Google を連携していない人の操作も、
+//   管理者のトークンで入れる。連携している管理者がいなければ、未反映のまま残す。
+// テーブル・列は supabase/add_project_files_drive_mirror.sql。未適用のときは何もしない（not_migrated）。
+
+const MIRROR_LOCK_TABLE = "google_drive_mirror_locks";
+// 1回の呼び出しで処理する時間の目安。超えたら次の1件には手を付けずに返し、画面が呼び直す。
+// 関数の上限（vercel.json の maxDuration = 300秒）より十分短くし、大きいファイルの途中でも収まるようにする
+const MIRROR_BUDGET_MS = 20_000;
+// 鍵の有効時間。処理の途中で関数が落ちても、この時間が過ぎれば次の人が取り直せる
+const MIRROR_LOCK_MS = 5 * 60 * 1000;
+const NO_MIRROR_ACTOR = "Googleを連携している管理者がいないため、Googleドライブに反映できません";
+
+// 拡張子 → Drive に渡す形式。file_type が空のファイル（古い行・ブラウザが形式を付けなかったもの）用。
+// ここに無いものは形式を指定せず、Drive に中身から判断させる
+const MIRROR_EXT_MIME: Record<string, string> = {
+  pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", txt: "text/plain", md: "text/markdown",
+  csv: "text/csv", json: "application/json", xml: "application/xml", zip: "application/zip",
+  ...Object.fromEntries(Object.entries(CONVERTIBLE).map(([ext, v]) => [ext, v.mime])),
+  xlsm: "application/vnd.ms-excel.sheet.macroEnabled.12",
+};
+
+/** project_files の行（select("*")）。drive_mirror_* は SQL を当てるまで無い */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type PfRow = Record<string, any>;
+
+/** そのプロジェクトの行を全件引く（列は SQL の適用前後どちらでも読めるよう *）。BUG-01 順序を固定する */
+async function projectRows(sb: SupabaseClient, projectId: string): Promise<PfRow[]> {
+  const all: PfRow[] = [];
+  for (let from = 0; from < 50_000; from += 1000) {
+    const { data, error } = await sb.from("project_files").select("*").eq("project_id", projectId)
+      .order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, from + 999);
+    if (error) throw new HttpError(500, error.message);
+    all.push(...((data ?? []) as PfRow[]));
+    if ((data ?? []).length < 1000) break;
+  }
+  return all;
+}
+
+/** drive_mirror_* の列があるか（supabase/add_project_files_drive_mirror.sql を当てたか） */
+async function mirrorColumnsReady(sb: SupabaseClient): Promise<boolean> {
+  const { error } = await sb.from("project_files").select("drive_mirror_id").limit(1);
+  return !error;
+}
+
+/** 写しの状態を書く。列が無い・書けないときは何もしない（写しは次の呼び出しで入れ直せる） */
+async function writeMirror(sb: SupabaseClient, ids: string[], patch: Record<string, unknown>): Promise<void> {
+  if (ids.length === 0) return;
+  const { error } = await sb.from("project_files").update(patch).in("id", ids);
+  if (error) console.error("[google] mirror state update failed:", error.message);
+}
+
+/**
+ * 写しに使うトークンを、試す順に持つ。順は「firstId（Googleのファイルの追加者など）→ 組織の管理者 → 本人」。
+ * driveActors と同じく 404（このトークンからは見えない）なら次を試し、それ以外の失敗はそのまま投げる。
+ * driveActors と違い、本人が未連携でも 428 にしない（管理者のトークンで代わりに入れるため）。
+ */
+async function mirrorActors(sb: SupabaseClient, selfId: string, orgId: string | null) {
+  let base: string[] | null = null;
+  const emails = new Map<string, string>();
+  const tokens = new Map<string, DriveActor | null>();
+
+  const loadBase = async (): Promise<string[]> => {
+    if (base) return base;
+    const admins = (orgId
+      ? (await sb.from("profiles").select("id, role").eq("organization_id", orgId).in("role", ["admin", "owner"])
+        .order("id", { ascending: true })).data
+      : []) as { id: unknown; role: unknown }[] | null;
+    const adminIds = (admins ?? [])
+      // 組織の管理者を先に試す（owner は運営の立場で設定していることがある。driveActors と同じ）
+      .sort((a, b) => (a.role === "admin" ? 0 : 1) - (b.role === "admin" ? 0 : 1))
+      .map(r => String(r.id)).slice(0, MAX_DELEGATES);
+    base = [...new Set([...adminIds, selfId])];
+    return base;
+  };
+
+  const actorOf = async (userId: string): Promise<DriveActor | null> => {
+    if (!tokens.has(userId)) {
+      if (!emails.has(userId)) {
+        const { data } = await sb.from("google_drive_tokens").select("google_email").eq("user_id", userId).maybeSingle();
+        emails.set(userId, data ? String(data.google_email ?? "") : "\u0000");
+      }
+      // 連携していない・連携が切れている人は飛ばす
+      const accessToken = emails.get(userId) === "\u0000" ? "" : await getAccessToken(sb, userId).catch(() => "");
+      tokens.set(userId, accessToken ? { accessToken, email: emails.get(userId) ?? "" } : null);
+    }
+    return tokens.get(userId) ?? null;
+  };
+
+  const run = async function run<T>(fn: (actor: DriveActor) => Promise<T>, firstId?: string | null): Promise<T> {
+    const order = [...new Set([...(firstId ? [String(firstId)] : []), ...(await loadBase())])];
+    let notFound: unknown = null;
+    for (const id of order) {
+      const actor = await actorOf(id);
+      if (!actor) continue;
+      try {
+        return await fn(actor);
+      } catch (e) {
+        if (e instanceof HttpError && e.status === 404) { notFound = e; continue; }
+        throw e;
+      }
+    }
+    if (notFound) throw notFound;
+    throw new HttpError(428, NO_MIRROR_ACTOR);
+  };
+
+  /** 使えるトークンが1つでもあるか */
+  const available = async (): Promise<boolean> => {
+    for (const id of await loadBase()) if (await actorOf(id)) return true;
+    return false;
+  };
+  return Object.assign(run, { available });
+}
+type MirrorRun = Awaited<ReturnType<typeof mirrorActors>>;
+
+/** 鍵を取る。取れなければ false（他の人・他のタブが写している） */
+async function acquireMirrorLock(sb: SupabaseClient, projectId: string): Promise<boolean> {
+  const now = new Date();
+  await sb.from(MIRROR_LOCK_TABLE).upsert(
+    { project_id: projectId, locked_until: new Date(0).toISOString() },
+    { onConflict: "project_id", ignoreDuplicates: true },
+  );
+  // 「期限切れなら取る」を1つの update で行う（読んでから書くと、2人が同時に取れてしまう）
+  const { data, error } = await sb.from(MIRROR_LOCK_TABLE)
+    .update({ locked_until: new Date(now.getTime() + MIRROR_LOCK_MS).toISOString(), updated_at: now.toISOString() })
+    .eq("project_id", projectId).lt("locked_until", now.toISOString()).select("project_id");
+  if (error) throw new HttpError(503, `Googleドライブへの反映の準備ができませんでした（${error.message}）`);
+  return (data ?? []).length > 0;
+}
+
+async function releaseMirrorLock(sb: SupabaseClient, projectId: string): Promise<void> {
+  const nowIso = new Date().toISOString();
+  await sb.from(MIRROR_LOCK_TABLE).update({ locked_until: nowIso, updated_at: nowIso }).eq("project_id", projectId);
+}
+
+/**
+ * Drive のファイル・フォルダの名前を変え、置き場所を移す（どちらも要らなければ何もしない）。
+ * @param fromParent いま置いてあるフォルダ。分からなければ Drive に聞く（共有ドライブでは親は1つだけ）
+ */
+async function moveDriveItem(
+  accessToken: string, id: string, opts: { name?: string; toParent: string; fromParent?: string | null },
+): Promise<void> {
+  const gid = encodeURIComponent(id);
+  let from: string[];
+  if (opts.fromParent) {
+    from = [opts.fromParent];
+  } else {
+    const info = await drive(accessToken, `/files/${gid}?supportsAllDrives=true&fields=id,parents`);
+    from = Array.isArray(info?.parents) ? info.parents.map(String) : [];
+  }
+  const move = !from.includes(opts.toParent);
+  if (!move && opts.name === undefined) return;
+  const params = new URLSearchParams({ supportsAllDrives: "true", fields: "id" });
+  if (move) {
+    params.set("addParents", opts.toParent);
+    if (from.length) params.set("removeParents", from.join(","));
+  }
+  await drive(accessToken, `/files/${gid}?${params}`, {
+    method: "PATCH", body: opts.name === undefined ? {} : { name: opts.name },
+  });
+}
+
+/**
+ * Storage にあるファイルの中身を Drive へ送る。existingId があればそのファイルの新しい版として置き換え
+ * （Drive の版の履歴に残る）、無ければ parent に新しく作る。
+ * ★ サーバーから送ること（RESUMABLE_URL のコメント参照。ブラウザ直送は CORS で弾かれる）。
+ */
+async function uploadMirrorFile(
+  accessToken: string, bytes: Buffer<ArrayBuffer>, contentType: string | null,
+  meta: { name: string; parent: string; existingId?: string | null; fromParent?: string | null },
+): Promise<string> {
+  const params = new URLSearchParams({ uploadType: "resumable", supportsAllDrives: "true", fields: "id" });
+  let url = RESUMABLE_URL;
+  let method = "POST";
+  const body: Record<string, unknown> = { name: meta.name };
+  if (meta.existingId) {
+    url = `${RESUMABLE_URL}/${encodeURIComponent(meta.existingId)}`;
+    method = "PATCH";
+    if (meta.fromParent && meta.fromParent !== meta.parent) {
+      params.set("addParents", meta.parent);
+      params.set("removeParents", meta.fromParent);
+    }
+  } else {
+    body.parents = [meta.parent];
+    if (contentType) body.mimeType = contentType;
+  }
+  const init = await fetch(`${url}?${params}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json; charset=UTF-8",
+      ...(contentType ? { "X-Upload-Content-Type": contentType } : {}),
+      "X-Upload-Content-Length": String(bytes.length),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!init.ok) {
+    const j = await init.json().catch(() => ({}));
+    const reason = j?.error?.errors?.[0]?.reason || "";
+    throw new HttpError(init.status,
+      driveErrorMessage(init.status, reason, j?.error?.message || "Googleドライブへの送信を開始できませんでした"));
+  }
+  const uploadUrl = init.headers.get("location");
+  if (!uploadUrl) throw new HttpError(502, "Googleドライブの送り先を取得できませんでした");
+
+  const put = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { ...(contentType ? { "Content-Type": contentType } : {}), "Content-Length": String(bytes.length) },
+    body: bytes,
+  });
+  const done = await put.json().catch(() => ({}));
+  if (!put.ok || !done?.id) {
+    const reason = done?.error?.errors?.[0]?.reason || "";
+    throw new HttpError(put.status || 502,
+      driveErrorMessage(put.status, reason, done?.error?.message || "Googleドライブへファイルを入れられませんでした"));
+  }
+  return String(done.id);
+}
+
+/** Drive のファイル・フォルダをゴミ箱へ入れる。もう無い（404）ときは入れたものとして扱う */
+async function trashDriveItem(run: MirrorRun, id: string): Promise<void> {
+  try {
+    await run(({ accessToken }) =>
+      drive(accessToken, `/files/${encodeURIComponent(id)}?supportsAllDrives=true`, {
+        method: "PATCH", body: { trashed: true },
+      }));
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 404) return;
+    throw e;
+  }
+}
+
+/** エラーを利用者向けの1行にする（drive() の 404 の文言は写しの文脈に合わないので言い直す） */
+function mirrorErrorText(e: unknown): string {
+  if (e instanceof HttpError && e.status === 404) {
+    return "Googleドライブ上の写しを操作できるGoogleアカウントが見つかりません";
+  }
+  return (e instanceof Error ? e.message : "Googleドライブに反映できませんでした").slice(0, 500);
+}
+
+/**
+ * 共有ドライブ運用で、ファイルボックスのフォルダ（parentId）に対応する Drive のフォルダ。
+ * まだ写していない・このトークンから見えない・ゴミ箱にあるときは null（呼び出し側はプロジェクトのフォルダに作り、
+ * あとで mirror-sync が対応するフォルダへ移す）。
+ */
+async function mirroredFolderFor(
+  sb: SupabaseClient, accessToken: string, cfg: OrgConfig, parentId: string | null,
+): Promise<string | null> {
+  if (cfg.mode !== "shared_drive" || !parentId) return null;
+  const { data, error } = await sb.from("project_files").select("*").eq("id", parentId).maybeSingle();
+  const id = !error && data?.drive_mirror_id ? String(data.drive_mirror_id) : "";
+  if (!id) return null;
+  try {
+    const info = await drive(accessToken, `/files/${encodeURIComponent(id)}?supportsAllDrives=true&fields=id,trashed`);
+    return info?.trashed ? null : id;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Googleのファイルを Drive のどのフォルダに作ったかを覚える（mirror-sync が移し直すかの判断に使う）。
+ * 共有ドライブ運用のときだけ。列が無い（SQL 未適用）ときは何もしない。
+ */
+async function noteMirrorParent(sb: SupabaseClient, cfg: OrgConfig, rowId: unknown, folderId: string): Promise<void> {
+  if (cfg.mode !== "shared_drive" || !rowId) return;
+  await sb.from("project_files").update({ drive_mirror_parent: folderId }).eq("id", String(rowId));
+}
+
+type MirrorResult = {
+  /** この呼び出しを始めたときに、反映が要ったものの件数（フォルダ・ファイル・Googleのファイル） */
+  pending: number;
+  /** この呼び出しで反映できた件数 */
+  done: number;
+  /** まだ反映できていない件数（時間切れ・失敗・親のフォルダがまだ無い） */
+  remaining: number;
+  failed: { name: string; reason: string }[];
+  skipped: false;
+};
+
+/**
+ * プロジェクトのファイルボックスの今の形を、Drive に写す（mirror-sync の本体）。
+ * フォルダ（親から順）→ ファイル → Googleのファイル の順に、差のあるものだけを直す。
+ * @param verify Drive 側で写しが消された・動かされたかも確かめる（ファイルボックスを開いたとき）
+ */
+async function mirrorProject(
+  sb: SupabaseClient, profile: { id: string }, project: { id: unknown; name: unknown },
+  cfg: OrgConfig, run: MirrorRun, rows: PfRow[], verify: boolean,
+): Promise<MirrorResult> {
+  const started = Date.now();
+  const overBudget = () => Date.now() - started > MIRROR_BUDGET_MS;
+  const failed: { name: string; reason: string }[] = [];
+  const str = (v: unknown) => (v === null || v === undefined || v === "" ? null : String(v));
+
+  const root = await run(a => resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id));
+
+  // ── 今の形 ──
+  const folders = rows.filter(r => r.is_folder);
+  const folderById = new Map(folders.map(f => [String(f.id), f]));
+  /** ファイルボックスのフォルダ（null = ルート）に対応する Drive のフォルダ。まだ写していなければ null */
+  const driveFolderOf = (parentId: unknown): string | null =>
+    parentId ? str(folderById.get(String(parentId))?.drive_mirror_id) : root;
+
+  // ファイルは同じフォルダの同名の行が同じファイルの版（api/project-files と同じ見分け方）
+  type Group = {
+    rows: PfRow[]; latest: PfRow;
+    mirrorId: string | null; mirrorVersion: number; mirrorParent: string | null; mirrorName: string | null; error: string | null;
+  };
+  const groups = new Map<string, Group>();
+  for (const r of rows) {
+    if (r.is_folder || r.external_provider === "google" || !r.file_path) continue;
+    const key = `${r.parent_id ?? ""}\u0000${r.file_name}`;
+    const g = groups.get(key);
+    if (!g) {
+      groups.set(key, { rows: [r], latest: r, mirrorId: null, mirrorVersion: 0, mirrorParent: null, mirrorName: null, error: null });
+    } else {
+      g.rows.push(r);
+      if (Number(r.version ?? 0) > Number(g.latest.version ?? 0)) g.latest = r;
+    }
+  }
+  for (const g of groups.values()) {
+    // 新しい版の行にはまだ書いていないので、写しの状態は「写しを持つ行のうち、いちばん新しい版を入れたもの」から読む
+    const mirrored = g.rows.filter(r => r.drive_mirror_id)
+      .sort((a, b) => Number(b.drive_mirror_version ?? 0) - Number(a.drive_mirror_version ?? 0))[0];
+    if (mirrored) {
+      g.mirrorId = String(mirrored.drive_mirror_id);
+      g.mirrorVersion = Number(mirrored.drive_mirror_version ?? 0);
+      g.mirrorParent = str(mirrored.drive_mirror_parent);
+      g.mirrorName = str(mirrored.drive_mirror_name);
+    }
+    g.error = str(g.latest.drive_mirror_error);
+  }
+  // 元ファイルのまま追加したもの（external_linked）は他の人のファイルなので移さない
+  const googleRows = rows.filter(r =>
+    !r.is_folder && r.external_provider === "google" && r.external_id && !r.external_linked);
+
+  // ── Drive 側で消された・動かされた写しを見つける（開いたときだけ） ──
+  // Drive のフォルダごとに中身を一覧し、写しが期待した場所に無ければ1件ずつ確かめる。
+  // 一覧に出ない（作ったトークンが違う）だけのこともあるので、消えたと決めるのは files.get で確かめてから。
+  if (verify) {
+    const listedFolders = new Set<string>();
+    const seen = new Map<string, { name: string; parents: string[] }>();
+    const driveFolderIds = [...new Set([root, ...folders.map(f => str(f.drive_mirror_id)).filter((x): x is string => !!x)])];
+    for (const fid of driveFolderIds) {
+      if (overBudget()) break;
+      try {
+        await run(async ({ accessToken }) => {
+          let pageToken = "";
+          for (let page = 0; page < 20; page++) {
+            const params = new URLSearchParams({
+              q: `'${q(fid)}' in parents and trashed=false`,
+              fields: "nextPageToken,files(id,name,parents)",
+              pageSize: "100", supportsAllDrives: "true", includeItemsFromAllDrives: "true",
+            });
+            if (cfg.sharedDriveId) { params.set("corpora", "drive"); params.set("driveId", cfg.sharedDriveId); }
+            if (pageToken) params.set("pageToken", pageToken);
+            const listed = await drive(accessToken, `/files?${params}`);
+            for (const f of listed?.files ?? []) {
+              seen.set(String(f.id), { name: String(f.name ?? ""), parents: (f.parents ?? []).map(String) });
+            }
+            pageToken = String(listed?.nextPageToken ?? "");
+            if (!pageToken) break;
+          }
+        });
+        listedFolders.add(fid);
+      } catch { /* 見えないフォルダは確かめられない。そこにある写しは消えたと決めない */ }
+    }
+
+    /** 写しの今の姿。消えた（ゴミ箱・どのトークンからも見えない）なら null。確かめられなければ undefined */
+    const actual = async (id: string, expectedParent: string | null) => {
+      const hit = seen.get(id);
+      if (hit) return hit;
+      if (!expectedParent || !listedFolders.has(expectedParent) || overBudget()) return undefined;
+      try {
+        const info = await run(({ accessToken }) =>
+          drive(accessToken, `/files/${encodeURIComponent(id)}?supportsAllDrives=true&fields=id,name,parents,trashed`));
+        if (info?.trashed) return null;
+        return { name: String(info?.name ?? ""), parents: (info?.parents ?? []).map(String) };
+      } catch (e) {
+        if (e instanceof HttpError && e.status === 404) return null;
+        return undefined;
+      }
+    };
+
+    for (const f of folders) {
+      const id = str(f.drive_mirror_id);
+      if (!id) continue;
+      const a = await actual(id, str(f.drive_mirror_parent));
+      if (a === undefined) continue;
+      if (a === null) {
+        // Drive で消された。作り直す（中の写しも一緒に消えているので、下のファイルの確認で入れ直しになる）
+        f.drive_mirror_id = null; f.drive_mirror_parent = null; f.drive_mirror_name = null;
+        await writeMirror(sb, [String(f.id)], { drive_mirror_id: null, drive_mirror_parent: null, drive_mirror_name: null });
+      } else {
+        f.drive_mirror_parent = a.parents[0] ?? null; f.drive_mirror_name = a.name;
+      }
+    }
+    for (const g of groups.values()) {
+      if (!g.mirrorId) continue;
+      const a = await actual(g.mirrorId, g.mirrorParent);
+      if (a === undefined) continue;
+      if (a === null) {
+        g.mirrorId = null; g.mirrorParent = null; g.mirrorName = null; g.mirrorVersion = 0;
+        await writeMirror(sb, g.rows.map(r => String(r.id)),
+          { drive_mirror_id: null, drive_mirror_version: null, drive_mirror_parent: null, drive_mirror_name: null });
+      } else {
+        g.mirrorParent = a.parents[0] ?? null; g.mirrorName = a.name;
+      }
+    }
+  }
+
+  // ── 差を見つける ──
+  // 前に失敗したもの（drive_mirror_error）は、開いたとき（verify）だけ試し直す。
+  // 操作のたびに試し直すと、直せない失敗（権限が無いなど）で毎回時間を使ってしまう
+  const retryable = (error: unknown) => verify || !error;
+  const folderPending = (f: PfRow) => retryable(f.drive_mirror_error) && (
+    !f.drive_mirror_id || !!f.drive_mirror_error
+    || str(f.drive_mirror_parent) !== driveFolderOf(f.parent_id) || str(f.drive_mirror_name) !== String(f.file_name));
+  const groupPending = (g: Group) => {
+    if (g.latest.acl_id) return !!g.mirrorId;
+    return retryable(g.error) && (
+      !g.mirrorId || !!g.error || g.mirrorVersion < Number(g.latest.version ?? 0)
+      || g.mirrorParent !== driveFolderOf(g.latest.parent_id) || g.mirrorName !== String(g.latest.file_name));
+  };
+  // 親のフォルダがまだ写していないもの（driveFolderOf が null）も数える。この呼び出しでフォルダを作ったあとに移せるように
+  // （ここで外すと、フォルダを作った回には移されず、次の呼び出しまで残ってしまう）
+  const googlePending = (r: PfRow) => retryable(r.drive_mirror_error)
+    && (!!r.drive_mirror_error || !driveFolderOf(r.parent_id) || str(r.drive_mirror_parent) !== driveFolderOf(r.parent_id));
+
+  // フォルダは親から順に（親の Drive のフォルダが無いと子を作れない）
+  const depthOf = (f: PfRow): number => {
+    let d = 0; let cur = f.parent_id ? folderById.get(String(f.parent_id)) : undefined;
+    const guard = new Set<string>();
+    while (cur && !guard.has(String(cur.id))) { guard.add(String(cur.id)); d++; cur = cur.parent_id ? folderById.get(String(cur.parent_id)) : undefined; }
+    return d;
+  };
+  const pendingFolders = folders.filter(folderPending).sort((a, b) => depthOf(a) - depthOf(b));
+  const pendingGroups = [...groups.values()].filter(groupPending);
+  const pendingGoogle = googleRows.filter(googlePending);
+  const pending = pendingFolders.length + pendingGroups.length + pendingGoogle.length;
+  let done = 0;
+
+  // ── フォルダ ──
+  for (const f of pendingFolders) {
+    if (overBudget()) break;
+    const parent = driveFolderOf(f.parent_id);
+    if (!parent) continue; // 親のフォルダの写しがまだ無い（親が失敗した）。次の呼び出しで
+    const name = String(f.file_name);
+    try {
+      let id = str(f.drive_mirror_id);
+      if (id) {
+        try {
+          await run(({ accessToken }) => moveDriveItem(accessToken, id as string,
+            { name, toParent: parent, fromParent: str(f.drive_mirror_parent) }));
+        } catch (e) {
+          if (!(e instanceof HttpError && e.status === 404)) throw e;
+          id = null; // どのトークンからも見えない。作り直す
+        }
+      }
+      if (!id) {
+        const created = await run(({ accessToken }) =>
+          drive(accessToken, "/files?supportsAllDrives=true&fields=id", {
+            method: "POST", body: { name, mimeType: FOLDER_MIME, parents: [parent] },
+          }));
+        if (!created?.id) throw new HttpError(502, `Googleドライブに「${name}」フォルダを作成できませんでした`);
+        id = String(created.id);
+      }
+      f.drive_mirror_id = id; f.drive_mirror_parent = parent; f.drive_mirror_name = name; f.drive_mirror_error = null;
+      await writeMirror(sb, [String(f.id)],
+        { drive_mirror_id: id, drive_mirror_parent: parent, drive_mirror_name: name, drive_mirror_error: null });
+      done++;
+    } catch (e) {
+      const reason = mirrorErrorText(e);
+      failed.push({ name, reason });
+      await writeMirror(sb, [String(f.id)], { drive_mirror_error: reason });
+    }
+  }
+
+  // ── ファイル ──
+  for (const g of pendingGroups) {
+    if (overBudget()) break;
+    const latest = g.latest;
+    const name = String(latest.file_name);
+    const ids = g.rows.map(r => String(r.id));
+    try {
+      // 限定公開：写さない。写しがあればゴミ箱へ（公開に戻したら、写しが無いので入れ直しになる）
+      if (latest.acl_id) {
+        if (g.mirrorId) await trashDriveItem(run, g.mirrorId);
+        await writeMirror(sb, ids, {
+          drive_mirror_id: null, drive_mirror_version: null, drive_mirror_parent: null,
+          drive_mirror_name: null, drive_mirror_error: null,
+        });
+        done++;
+        continue;
+      }
+      const parent = driveFolderOf(latest.parent_id);
+      if (!parent) continue;
+      const version = Number(latest.version ?? 0);
+      let id = g.mirrorId;
+      if (!id || g.mirrorVersion < version) {
+        const { data: blob, error: dlErr } = await sb.storage.from(STAGING_BUCKET).download(String(latest.file_path));
+        if (dlErr || !blob) throw new HttpError(502, "ファイルボックスのファイルを読み出せませんでした");
+        const bytes = Buffer.from(await blob.arrayBuffer());
+        const type = String(latest.file_type ?? "")
+          || MIRROR_EXT_MIME[splitName(name).ext.replace(/^\./, "").toLowerCase()] || null;
+        if (id) {
+          try {
+            await run(({ accessToken }) => uploadMirrorFile(accessToken, bytes, type,
+              { name, parent, existingId: id, fromParent: g.mirrorParent ?? undefined }));
+          } catch (e) {
+            if (!(e instanceof HttpError && e.status === 404)) throw e;
+            id = null; // どのトークンからも見えない。新しく入れる
+          }
+        }
+        if (!id) id = await run(({ accessToken }) => uploadMirrorFile(accessToken, bytes, type, { name, parent }));
+      } else {
+        try {
+          await run(({ accessToken }) => moveDriveItem(accessToken, id as string,
+            { name, toParent: parent, fromParent: g.mirrorParent }));
+        } catch (e) {
+          if (!(e instanceof HttpError && e.status === 404)) throw e;
+          // 写しが見えなくなった。版を 0 にして、次の呼び出しで新しく入れる
+          await writeMirror(sb, ids, { drive_mirror_id: null, drive_mirror_version: null });
+          throw e;
+        }
+      }
+      await writeMirror(sb, ids, {
+        drive_mirror_id: id, drive_mirror_version: version, drive_mirror_parent: parent,
+        drive_mirror_name: name, drive_mirror_error: null,
+      });
+      done++;
+    } catch (e) {
+      const reason = mirrorErrorText(e);
+      failed.push({ name, reason });
+      await writeMirror(sb, [String(latest.id)], { drive_mirror_error: reason });
+    }
+  }
+
+  // ── Googleのファイル（対応する Drive のフォルダへ移す） ──
+  for (const r of pendingGoogle) {
+    if (overBudget()) break;
+    const parent = driveFolderOf(r.parent_id);
+    if (!parent) continue;
+    try {
+      // 作った人のトークンから先に試す（drive.file では作ったトークンからしか見えないため）
+      await run(({ accessToken }) => moveDriveItem(accessToken, String(r.external_id), { toParent: parent }),
+        str(r.owner_id));
+      await writeMirror(sb, [String(r.id)], { drive_mirror_parent: parent, drive_mirror_error: null });
+      done++;
+    } catch (e) {
+      const reason = e instanceof HttpError && e.status === 404
+        ? "このファイルを移動できるGoogleアカウントが見つかりません（作成者のGoogle連携が切れている可能性があります）"
+        : mirrorErrorText(e);
+      failed.push({ name: String(r.file_name), reason });
+      await writeMirror(sb, [String(r.id)], { drive_mirror_error: reason });
+    }
+  }
+
+  return { pending, done, remaining: Math.max(0, pending - done), failed: failed.slice(0, 20), skipped: false };
+}
+
 // ============================================================
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default async function handler(req: any, res: any) {
@@ -1267,8 +1849,12 @@ export default async function handler(req: any, res: any) {
       if (parentId === false) return res.status(400).json({ error: "保存先のフォルダが見つかりません" });
 
       const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
-      const { actor, folderId } = await run(async a =>
-        ({ actor: a, folderId: await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id) }));
+      // KAIZEN2611-024 共有ドライブ運用では、ファイルボックスで開いているフォルダと同じ Drive のフォルダに作る
+      // （まだ写していなければプロジェクトのフォルダに作り、mirror-sync が移す）
+      const { actor, folderId } = await run(async a => {
+        const root = await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id);
+        return { actor: a, folderId: (await mirroredFolderFor(sb, a.accessToken, cfg, parentId)) ?? root };
+      });
       const accessToken = actor.accessToken;
 
       // DevTicket 側で一意な名前を先に決める。file_name は改名・削除・コメントの
@@ -1315,6 +1901,7 @@ export default async function handler(req: any, res: any) {
           .catch(() => undefined);
         return res.status(500).json({ error: error.message });
       }
+      await noteMirrorParent(sb, cfg, inserted?.id, folderId);
 
       return res.json({
         file: inserted,
@@ -1365,8 +1952,11 @@ export default async function handler(req: any, res: any) {
       const bytes = Buffer.from(await blob.arrayBuffer());
 
       const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
-      const { actor, folderId } = await run(async a =>
-        ({ actor: a, folderId: await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id) }));
+      // KAIZEN2611-024 開いているフォルダと同じ Drive のフォルダに作る（create と同じ）
+      const { actor, folderId } = await run(async a => {
+        const root = await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id);
+        return { actor: a, folderId: (await mirroredFolderFor(sb, a.accessToken, cfg, parentId)) ?? root };
+      });
       const accessToken = actor.accessToken;
 
       // Google形式に拡張子は無いので落とす。DevTicket 側で一意な名前を先に押さえる。
@@ -1401,6 +1991,7 @@ export default async function handler(req: any, res: any) {
           .catch(() => undefined);
         return res.status(500).json({ error: error.message });
       }
+      await noteMirrorParent(sb, cfg, inserted?.id, folderId);
 
       // ここまで来て初めて Storage の実体を片付ける（ファイルは Drive 側の1つだけにする）
       const { error: rmErr } = await sb.storage.from(STAGING_BUCKET).remove([path]);
@@ -1457,8 +2048,12 @@ export default async function handler(req: any, res: any) {
       const bytes = Buffer.from(await blob.arrayBuffer());
 
       const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
-      const { actor, folderId } = await run(async a =>
-        ({ actor: a, folderId: await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id) }));
+      // KAIZEN2611-024 元のファイルと同じフォルダに並べるので、Drive でもそのフォルダに対応する場所に作る
+      const srcParentId = src.parent_id ? String(src.parent_id) : null;
+      const { actor, folderId } = await run(async a => {
+        const root = await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id);
+        return { actor: a, folderId: (await mirroredFolderFor(sb, a.accessToken, cfg, srcParentId)) ?? root };
+      });
       const accessToken = actor.accessToken;
 
       // 名前は拡張子を落としたもの。同名の Googleファイルが既にあれば「(1)」を付ける
@@ -1500,6 +2095,7 @@ export default async function handler(req: any, res: any) {
         if (privateAclId) await sb.from("project_file_acls").delete().eq("id", privateAclId);
         return res.status(500).json({ error: error.message });
       }
+      await noteMirrorParent(sb, cfg, inserted?.id, folderId);
 
       return res.json({
         file: inserted, url: webViewLink, fileName,
@@ -1676,8 +2272,12 @@ export default async function handler(req: any, res: any) {
       const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
       const self = run.self;
       const accessToken = self.accessToken;
-      const { actor: dest, folderId } = await run(async a =>
-        ({ actor: a, folderId: await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id) }));
+      // KAIZEN2611-024 コピーは、ファイルボックスで開いているフォルダと同じ Drive のフォルダに作る（create と同じ）。
+      // プロジェクトのフォルダの直下にもともとあるものは、これまでどおりコピーせずに追加する（mirror-sync が対応するフォルダへ移す）
+      const { actor: dest, folderId, rootFolderId } = await run(async a => {
+        const root = await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id);
+        return { actor: a, rootFolderId: root, folderId: (await mirroredFolderFor(sb, a.accessToken, cfg, parentId)) ?? root };
+      });
       // 保存先が本人のトークンから見えないとき。files.copy は使えず、中身を中継する
       const delegated = dest !== self;
       const people = await projectMemberEmails(sb, project as any);
@@ -1736,7 +2336,8 @@ export default async function handler(req: any, res: any) {
 
           // フォルダの名前が .drawio で終わっていても draw.io の図としては扱わない
           const drawio = !isFolder && isDrawio(src ?? {});
-          const inFolder = Array.isArray(src?.parents) && src.parents.includes(folderId);
+          const inFolder = Array.isArray(src?.parents)
+            && (src.parents.includes(folderId) || src.parents.includes(rootFolderId));
           let fileId = String(src.id);
           let webViewLink = String(src.webViewLink ?? "");
           // Google形式（スプシ・ドキュメント・スライド）だけは拡張子を持たない。
@@ -1842,8 +2443,9 @@ export default async function handler(req: any, res: any) {
       if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
 
       // BUG-01 同じ順序で処理する（途中で止まっても結果が再現する）
+      // * で読むのは、KAIZEN2611-024 の drive_mirror_parent（SQL 未適用の環境では無い）も読むため
       const { data: rows } = await sb.from("project_files")
-        .select("id, file_name, file_type, parent_id, external_id, owner_id, acl_id, external_linked")
+        .select("*")
         .eq("project_id", projectId).eq("external_provider", "google")
         .order("created_at", { ascending: true }).order("id", { ascending: true });
       const targets = (rows ?? []).filter(r => !!r.external_id);
@@ -1867,27 +2469,49 @@ export default async function handler(req: any, res: any) {
       // フォルダ内を全件引く。ページングは100件ごと（1プロジェクトでこれを超えることは稀だが、
       // 打ち切ると「消された」と誤判定するので必ず最後まで辿る）
       // 保存先フォルダが本人から見えないときは管理者のトークンで見る（driveActors 参照）
+      // KAIZEN2611-024 共有ドライブ運用では、Googleのファイルはファイルボックスのフォルダに対応する
+      // Drive のフォルダ（写し）の中にもある。プロジェクトのフォルダに加えて、写したフォルダも1つずつ見る
+      const folderRows = (cfg.mode === "shared_drive"
+        ? (await sb.from("project_files").select("*").eq("project_id", projectId).eq("is_folder", true)
+          .order("created_at", { ascending: true }).order("id", { ascending: true })).data
+        : []) as PfRow[] | null;
+      const mirrorFolderIds = [...new Set((folderRows ?? [])
+        .map(r => String(r.drive_mirror_id ?? "")).filter(Boolean))];
+
       const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
+      // 中を一覧できたフォルダ。一覧できなかったフォルダ（このトークンから見えない）にあるはずのファイルは、
+      // 見つからなくても「削除済み」にしない
+      const listedFolders = new Set<string>();
+      let rootFolderId = "";
       const live = linkedRows.length === targets.length ? new Map<string, string>() : await run(async ({ accessToken }) => {
         const folderId = await resolveTargetFolder(sb, accessToken, cfg, project, profile.id);
+        rootFolderId = folderId;
         const found = new Map<string, string>(); // fileId → name
-        let pageToken = "";
-        for (let page = 0; page < 20; page++) {
-          const params = new URLSearchParams({
-            q: `'${q(folderId)}' in parents and trashed=false`,
-            fields: "nextPageToken,files(id,name)",
-            pageSize: "100",
-            supportsAllDrives: "true",
-            includeItemsFromAllDrives: "true",
-          });
-          if (cfg.mode === "shared_drive" && cfg.sharedDriveId) {
-            params.set("corpora", "drive"); params.set("driveId", cfg.sharedDriveId);
+        const listFolder = async (fid: string) => {
+          let pageToken = "";
+          for (let page = 0; page < 20; page++) {
+            const params = new URLSearchParams({
+              q: `'${q(fid)}' in parents and trashed=false`,
+              fields: "nextPageToken,files(id,name)",
+              pageSize: "100",
+              supportsAllDrives: "true",
+              includeItemsFromAllDrives: "true",
+            });
+            if (cfg.mode === "shared_drive" && cfg.sharedDriveId) {
+              params.set("corpora", "drive"); params.set("driveId", cfg.sharedDriveId);
+            }
+            if (pageToken) params.set("pageToken", pageToken);
+            const listed = await drive(accessToken, `/files?${params}`);
+            for (const f of listed?.files ?? []) found.set(String(f.id), String(f.name));
+            pageToken = String(listed?.nextPageToken ?? "");
+            if (!pageToken) break;
           }
-          if (pageToken) params.set("pageToken", pageToken);
-          const listed = await drive(accessToken, `/files?${params}`);
-          for (const f of listed?.files ?? []) found.set(String(f.id), String(f.name));
-          pageToken = String(listed?.nextPageToken ?? "");
-          if (!pageToken) break;
+          listedFolders.add(fid);
+        };
+        await listFolder(folderId);
+        for (const fid of mirrorFolderIds) {
+          if (fid === folderId) continue;
+          try { await listFolder(fid); } catch { /* 見えない・消えたフォルダは確かめられない */ }
         }
         return found;
       });
@@ -1944,7 +2568,9 @@ export default async function handler(req: any, res: any) {
       for (const row of targets) {
         const liveName = live.get(String(row.external_id));
         if (liveName === undefined) {
-          const gone = !row.external_linked || trashedLinked.has(String(row.external_id));
+          // 置いたはずのフォルダ（KAIZEN2611-024 で移したもの。移していなければプロジェクトのフォルダ）を一覧できたときだけ
+          const place = String(row.drive_mirror_parent ?? "") || rootFolderId;
+          const gone = row.external_linked ? trashedLinked.has(String(row.external_id)) : listedFolders.has(place);
           if (gone && seesFileRow(profile, row, shared)) missing.push(String(row.id));
           continue;
         }
@@ -2047,9 +2673,13 @@ export default async function handler(req: any, res: any) {
       // 変更前の名前で見つけたフォルダが、本当にこのプロジェクトのものかを確かめる。
       // oldName はクライアントから来るので、それだけを信じると別プロジェクトのフォルダを取り込みうる。
       // このプロジェクトのGoogleファイルが1件でも入っていれば、このプロジェクトのフォルダと見なす。
-      const { data: ownFiles } = await sb.from("project_files")
-        .select("external_id").eq("project_id", projectId).eq("external_provider", "google");
-      const ownIds = new Set((ownFiles ?? []).map(r => String(r.external_id ?? "")).filter(Boolean));
+      // KAIZEN2611-024 で Drive に写したフォルダ・ファイル（drive_mirror_id）も、このプロジェクトのものとして数える
+      // （Googleのファイルをフォルダの写しへ移すと、プロジェクトのフォルダの直下に Googleのファイルが無くなることがあるため）
+      const { data: ownFiles } = await sb.from("project_files").select("*").eq("project_id", projectId);
+      const ownIds = new Set((ownFiles ?? []).flatMap(r => [
+        r.external_provider === "google" ? String(r.external_id ?? "") : "",
+        String((r as Record<string, unknown>).drive_mirror_id ?? ""),
+      ]).filter(Boolean));
       const holdsOwnFile = async (accessToken: string, folderId: string): Promise<boolean> => {
         let pageToken = "";
         for (let page = 0; page < 20; page++) {
@@ -2560,6 +3190,143 @@ export default async function handler(req: any, res: any) {
       await sb.from("google_file_grants").delete().eq("file_id", fileId);
 
       return res.json({ ...result, skipped: false });
+    }
+
+    // ── KAIZEN2611-024 ファイルボックスの形を Drive に写す ──────────────
+    // 画面が操作のあと・ファイルボックスを開いたとき・タブに戻ったときに呼ぶ（考え方は mirrorProject の上のコメント）。
+    // 1回で時間の許す分だけ進め、remaining が 0 になるまで画面が呼び直す（「Drive に反映中 ◯／◯件」）。
+    // 共有ドライブ運用でない組織・SQL 未適用のときは何もしない（skipped）。
+    if (action === "mirror-sync") {
+      const projectId = String(body.projectId ?? "");
+      if (!projectId) return res.status(400).json({ error: "projectId が必要です" });
+      if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
+
+      const { data: project } = await sb.from("projects")
+        .select("id, name, organization_id").eq("id", projectId).maybeSingle();
+      if (!project) return res.status(404).json({ error: "プロジェクトが見つかりません" });
+      const orgId = project.organization_id ? String(project.organization_id) : null;
+      const cfg = await orgConfig(sb, orgId);
+      if (cfg.mode !== "shared_drive" || !cfg.sharedFolderId) {
+        return res.json({ skipped: true, reason: "not_shared_drive" });
+      }
+      if (!(await mirrorColumnsReady(sb))) return res.json({ skipped: true, reason: "not_migrated" });
+
+      const run = await mirrorActors(sb, profile.id, orgId);
+      if (!(await run.available())) return res.json({ skipped: true, reason: "no_actor", message: NO_MIRROR_ACTOR });
+
+      let locked: boolean;
+      try {
+        locked = await acquireMirrorLock(sb, projectId);
+      } catch {
+        // 鍵のテーブルが無い（SQL が途中までしか当たっていない）など。写さずに返す
+        return res.json({ skipped: true, reason: "not_migrated" });
+      }
+      if (!locked) return res.json({ skipped: true, reason: "busy" });
+      try {
+        const rows = await projectRows(sb, projectId);
+        return res.json(await mirrorProject(sb, profile, project, cfg, run, rows, body.verify === true));
+      } finally {
+        await releaseMirrorLock(sb, projectId);
+      }
+    }
+
+    // ── KAIZEN2611-024 削除の前に、Drive の写しをゴミ箱へ入れる ──────────
+    // 行を消すと写しの ID も消えて手が出せなくなるので、画面が api/project-files/delete より「前」に呼ぶ。
+    //   ファイル … 写し（同じファイルの全版で1つ）をゴミ箱へ
+    //   フォルダ … Drive のフォルダをゴミ箱へ（中の写しも一緒に入る）。keepGoogle のときは、中にある
+    //              Googleのファイルを先にプロジェクトのフォルダへ出してから入れる（削除の確認で「Drive には残す」を選んだとき）
+    //   Googleのファイル … 何もしない（Drive の実体は trash が受け持つ）
+    // 失敗しても画面は削除を続ける（Dev Ticket の操作は止めない）。
+    if (action === "mirror-trash") {
+      const fileId = String(body.fileId ?? "");
+      if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
+      const keepGoogle = body.keepGoogle !== false;
+
+      const { data: origin } = await sb.from("project_files").select("*").eq("id", fileId).maybeSingle();
+      if (!origin) return res.status(404).json({ error: "File not found" });
+      if (!(await isMember(sb, String(origin.project_id), profile))) return res.status(403).json({ error: "Forbidden" });
+      // この後に呼ばれる api/project-files/delete と同じ規則で止める（trash と同じ理由）
+      const blocker = await fileDeleteBlocker(sb, profile, origin as PfRow & { id: string; project_id: string });
+      if (blocker) return res.status(403).json({ error: blocker });
+
+      const none = { trashed: 0, failed: [] as { name: string; reason: string }[] };
+      if (origin.external_provider === "google" || !("drive_mirror_id" in origin)) return res.json(none);
+
+      const { data: project } = await sb.from("projects")
+        .select("id, name, organization_id").eq("id", String(origin.project_id)).maybeSingle();
+      if (!project) return res.status(404).json({ error: "プロジェクトが見つかりません" });
+      const orgId = project.organization_id ? String(project.organization_id) : null;
+      const cfg = await orgConfig(sb, orgId);
+      if (cfg.mode !== "shared_drive" || !cfg.sharedFolderId) return res.json(none);
+
+      const rows = await projectRows(sb, String(origin.project_id));
+      const run = await mirrorActors(sb, profile.id, orgId);
+      const failed: { name: string; reason: string }[] = [];
+      let trashed = 0;
+
+      if (origin.is_folder) {
+        if (!origin.drive_mirror_id) return res.json(none);
+        if (keepGoogle) {
+          // フォルダの中（入れ子の中まで）にある Googleのファイルのうち、写したフォルダの中へ移したもの
+          const byParent = new Map<string, PfRow[]>();
+          for (const r of rows) {
+            const k = String(r.parent_id ?? "");
+            const list = byParent.get(k);
+            if (list) list.push(r); else byParent.set(k, [r]);
+          }
+          const inside: PfRow[] = [];
+          const stack = [String(origin.id)];
+          const visited = new Set<string>();
+          while (stack.length) {
+            const cur = stack.pop() as string;
+            if (visited.has(cur)) continue;
+            visited.add(cur);
+            for (const c of byParent.get(cur) ?? []) {
+              if (c.external_provider === "google" && c.external_id && !c.external_linked && c.drive_mirror_parent) inside.push(c);
+              stack.push(String(c.id));
+            }
+          }
+          if (inside.length > 0) {
+            try {
+              const root = await run(a => resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id));
+              for (const g of inside) {
+                try {
+                  await run(({ accessToken }) =>
+                    moveDriveItem(accessToken, String(g.external_id), { toParent: root }), g.owner_id ? String(g.owner_id) : null);
+                } catch (e) {
+                  failed.push({ name: String(g.file_name), reason: mirrorErrorText(e) });
+                }
+              }
+            } catch (e) {
+              failed.push({ name: String(origin.file_name), reason: mirrorErrorText(e) });
+            }
+          }
+          // 出せなかった Googleのファイルがあるときは、フォルダごとゴミ箱へ入れない（巻き添えで消さない）
+          if (failed.length > 0) return res.json({ trashed: 0, failed });
+        }
+        try {
+          await trashDriveItem(run, String(origin.drive_mirror_id));
+          trashed++;
+        } catch (e) {
+          failed.push({ name: String(origin.file_name), reason: mirrorErrorText(e) });
+        }
+        return res.json({ trashed, failed });
+      }
+
+      // ファイル：同じフォルダの同名の行（＝同じファイルの全版）の写し
+      const ids = [...new Set(rows
+        .filter(r => !r.is_folder && r.external_provider !== "google"
+          && String(r.parent_id ?? "") === String(origin.parent_id ?? "") && r.file_name === origin.file_name)
+        .map(r => String(r.drive_mirror_id ?? "")).filter(Boolean))];
+      for (const id of ids) {
+        try {
+          await trashDriveItem(run, id);
+          trashed++;
+        } catch (e) {
+          failed.push({ name: String(origin.file_name), reason: mirrorErrorText(e) });
+        }
+      }
+      return res.json({ trashed, failed });
     }
 
     return res.status(404).json({ error: "Unknown action" });
